@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse, urlunparse
 
@@ -17,6 +18,8 @@ if not SEPOLIA_RPC_URL and ALCHEMY_API_KEY:
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 BACKEND_URL = os.getenv("BACKEND_URL", "")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
+# Optional regex for preview deployments (e.g. Vercel branch URLs).
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", "").strip()
 DEPLOY_ENV = os.getenv("DEPLOY_ENV", "development").lower()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 PGUSER = os.getenv("PGUSER", "postgres")
@@ -72,6 +75,21 @@ def get_cors_origins() -> list[str]:
     if DEPLOY_ENV == "production" and not origins:
         raise RuntimeError("CORS_ORIGINS or FRONTEND_URL must be configured in production")
     return list(dict.fromkeys(origin.rstrip("/") for origin in origins))
+
+
+def get_cors_origin_regex() -> str | None:
+    if CORS_ORIGIN_REGEX:
+        return CORS_ORIGIN_REGEX
+    if not FRONTEND_URL:
+        return None
+    host = (urlparse(FRONTEND_URL).hostname or "").lower()
+    if not host.endswith(".vercel.app"):
+        return None
+    # Production + preview URLs for the same Vercel project (e.g. *-team.vercel.app).
+    slug = host[: -len(".vercel.app")]
+    if not slug:
+        return None
+    return rf"https://{re.escape(slug)}(-[\w-]+)?\.vercel\.app"
 
 WEB3_PROVIDER_URI = os.getenv("WEB3_PROVIDER_URI", SEPOLIA_RPC_URL)
 DEPLOYER_PRIVATE_KEY = os.getenv("DEPLOYER_PRIVATE_KEY", "")

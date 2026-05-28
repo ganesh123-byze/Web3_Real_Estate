@@ -10,7 +10,13 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai.checkpointer import close_checkpointer, setup_checkpointer
 from backend.api.routes import router as api_router
-from backend.config.settings import get_cors_origins, validate_required_settings, LOG_LEVEL, RUN_INDEXER_IN_WEB
+from backend.config.settings import (
+    get_cors_origin_regex,
+    get_cors_origins,
+    validate_required_settings,
+    LOG_LEVEL,
+    RUN_INDEXER_IN_WEB,
+)
 from backend.db.schema import init_db
 from backend.services.blockchain_indexer import start_background_indexer, stop_background_indexer
 
@@ -61,10 +67,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Real Estate Web3 Backend", lifespan=lifespan)
 
 allowed_origins = get_cors_origins()
-if allowed_origins:
+allowed_origin_regex = get_cors_origin_regex()
+if allowed_origins or allowed_origin_regex:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
+        allow_origin_regex=allowed_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

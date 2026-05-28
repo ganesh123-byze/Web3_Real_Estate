@@ -15,7 +15,7 @@ export function coerceApiBaseUrlForBuild(url: string): string {
 
 const ttsEnabledRaw = process.env.NEXT_PUBLIC_WORKFLOW_TTS_ENABLED;
 const ttsGenderRaw = (process.env.NEXT_PUBLIC_WORKFLOW_TTS_GENDER || "female").toLowerCase();
-const defaultApiBaseUrl = "https://estatechain.onrender.com";
+const defaultApiBaseUrl = "https://web3-real-estate.onrender.com";
 
 export const RUNTIME_CONFIG = {
   apiBaseUrl: coerceApiBaseUrlForBuild(process.env.NEXT_PUBLIC_API_BASE_URL || defaultApiBaseUrl),

@@ -581,9 +581,10 @@ Frontend says backend URL is not configured
 
 Browser CORS errors
 
-- Add the frontend origin to `CORS_ORIGINS`.
-- Set `FRONTEND_URL` to the exact deployed frontend origin.
-- Redeploy the backend.
+- Add the frontend origin to `CORS_ORIGINS` (comma-separated, no trailing slash), **or** set `FRONTEND_URL` to the exact deployed frontend origin (it is merged into allowed origins automatically).
+- Example for Vercel: `FRONTEND_URL=https://web3-real-estate-zeta.vercel.app` on the Render service, then redeploy.
+- Vercel preview URLs: set `FRONTEND_URL` to your production Vercel URL (enables an auto regex for same-project previews), or set `CORS_ORIGIN_REGEX` explicitly.
+- Redeploy the backend after changing env vars.
 
 Indexer starts from block `0` or runs slowly
 
