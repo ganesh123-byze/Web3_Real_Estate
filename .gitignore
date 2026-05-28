@@ -1,0 +1,173 @@
+# =============================================================================
+# Real Estate Web3 — root .gitignore (monorepo: Python API, Next.js, Hardhat)
+# =============================================================================
+
+# ── Secrets & environment (never commit) ───────────────────────────────────
+.env
+.env.*
+!.env.example
+!**/.env.example
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.production.local
+*.pem
+*.key
+*_rsa
+*_ed25519
+*.p12
+*.pfx
+*.keystore
+secrets/
+*.local
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+# Python setuptools / wheel layout (do not use bare "lib/" — it ignores frontend/lib/)
+build/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+pip-log.txt
+*.manifest
+pip-delete-this-directory.txt
+
+# Virtual environments (any location)
+venv/
+env/
+ENV/
+.venv/
+backend/.venv/
+
+# Tooling & test caches
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+.pytype/
+cython_debug/
+*.cover
+*.py.cover
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.log
+
+# ── Node.js (root + frontend) ──────────────────────────────────────────────
+node_modules/
+jspm_packages/
+node_repl_history
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.eslintcache
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ── Next.js (frontend) ───────────────────────────────────────────────────────
+.next/
+out/
+.turbo/
+.vercel/
+*.tsbuildinfo
+
+# Voice / VAD assets downloaded at runtime (large; not source)
+frontend/public/**/*.onnx
+frontend/public/**/*.wasm
+
+# Generated per deploy / dev (see scripts/generate-runtime-config.js)
+frontend/runtime-config.js
+
+# ── Hardhat / Solidity ───────────────────────────────────────────────────────
+cache/
+artifacts/build-info/
+artifacts/@openzeppelin/
+artifacts/**/*.dbg.json
+typechain/
+typechain-types/
+coverage/
+coverage.json
+
+# ── Local databases & dumps ────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+backups/
+logs/
+*.pid
+*.tmp
+*.temp
+.cache/
+dump.rdb
+
+# ── OS-specific ─────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── Editors & IDEs ──────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# Cursor (local workspace metadata; add exceptions here if you commit shared rules)
+.cursor/
+
+# ── PaaS & CI local metadata ────────────────────────────────────────────────
+.render/
+
+# ── Misc merge / patch / backup ─────────────────────────────────────────────
+*.orig
+*.rej
+*.bak
+*.backup
+
+# ── Optional local config overrides (never commit real deploy keys) ─────────
+backend/config/contract-addresses.local.json
+
+# ── E2E / browser automation (if added later) ────────────────────────────────
+test-results/
+playwright-report/
+playwright/.cache/

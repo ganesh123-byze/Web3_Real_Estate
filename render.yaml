@@ -1,0 +1,69 @@
+# Single-instance web service (Render) — no Docker, Redis, or extra workers required.
+#
+# 1) Postgres (e.g. Neon): paste DATABASE_URL in the Render dashboard.
+# 2) Required env (dashboard): DATABASE_URL, SEPOLIA_RPC_URL (or RPC_URL alias), BACKEND_URL,
+#    FRONTEND_URL, CORS_ORIGINS, AUTH_JWT_SECRET or JWT_SECRET, INDEXER_START_BLOCK,
+#    deployed contract JSON path (CONTRACT_ADDRESSES_PATH default below).
+# 3) Optional: OPENAI_API_KEY / ANTHROPIC_API_KEY, AI_* toggles, RUN_AUTONOMOUS_AGENTS_IN_WEB
+#    (defaults on in code for in-process autonomous loop), DEPLOYER_PRIVATE_KEY only if needed.
+# 4) No Redis: queue/stream buffer/memory cache hooks stay off until you set REDIS_URL later.
+# 5) Run migrations once: Render Shell → alembic upgrade head (repo root `alembic.ini`).
+#
+# Indexer runs inside this web process (RUN_INDEXER_IN_WEB=true). Free tier may sleep
+# when idle — first request after wake can be slower; indexing resumes afterward.
+
+services:
+  - type: web
+    name: estatechain-backend
+    env: python
+    plan: free
+    region: oregon
+    # runtime-config.js is gitignored; generate it at build (needs Node on PATH).
+    buildCommand: npm install && node scripts/generate-runtime-config.js && pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DEPLOY_ENV
+        value: production
+      - key: RUN_INDEXER_IN_WEB
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CHAIN_ID
+        value: "11155111"
+      - key: AUTH_JWT_ALGORITHM
+        value: HS256
+      - key: AUTH_JWT_ISSUER
+        value: estatechain
+      - key: AUTH_SESSION_TTL_HOURS
+        value: "24"
+      - key: AUTH_NONCE_TTL_SECONDS
+        value: "300"
+      - key: CONTRACT_ADDRESSES_PATH
+        value: backend/config/contract-addresses.json
+      - key: ARTIFACTS_DIR
+        value: artifacts/contracts
+      # Paste in Render Dashboard (from Neon / Alchemy / your deploy):
+      - key: DATABASE_URL
+        sync: false
+      - key: SEPOLIA_RPC_URL
+        sync: false
+      - key: DEPLOYER_PRIVATE_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: BACKEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: AUTH_JWT_SECRET
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: INDEXER_START_BLOCK
+        sync: false
