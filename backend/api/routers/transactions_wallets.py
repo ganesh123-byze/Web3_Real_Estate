@@ -1,6 +1,4 @@
 """Cross-cutting read endpoints: /transactions list and /wallets/{addr}/balances."""
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api._helpers import format_transaction_row
@@ -17,7 +15,6 @@ from backend.services.blockchain import (
 )
 
 router = APIRouter()
-LOGGER = logging.getLogger(__name__)
 
 
 @router.get("/transactions", response_model=list[TransactionRead])
@@ -85,11 +82,7 @@ def get_wallet_balances(
         raise HTTPException(status_code=403, detail="You can only view your own wallet balances")
 
     checksum = web3.to_checksum_address(wallet_address)
-    try:
-        native_wei = get_native_balance(checksum)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Wallet native balance unavailable for %s: %s", checksum, exc)
-        native_wei = 0
+    native_wei = get_native_balance(checksum)
     native = {
         "symbol": "ETH",
         "balance_wei": str(native_wei),
@@ -107,11 +100,10 @@ def get_wallet_balances(
             token_address = row.get("token_address")
             if not token_address:
                 continue
+            contract = get_contract("SecurityToken", token_address)
             try:
-                contract = get_contract("SecurityToken", token_address)
                 balance_base = get_erc20_balance(contract, checksum)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning("Token balance unavailable for %s/%s: %s", checksum, token_address, exc)
+            except Exception:
                 balance_base = 0
             tokens.append(
                 {

@@ -177,7 +177,14 @@ def property_is_owned_by(property_item: dict, wallet: str) -> bool:
 
 
 def apply_property_visibility(property_item: dict, viewer: Optional["AuthUser"]) -> dict:
-    """Attach ``can_manage`` while keeping the creator wallet visible."""
+    """Attach ``can_manage`` and scrub ``owner_wallet`` for non-owning property owners.
+
+    Property owners may browse every listing, but the admin UI treats
+    ``owner_wallet === session wallet`` as permission to show edit/delete. For rows
+    the viewer does not own we omit ``owner_wallet`` so those controls stay hidden
+    while PUT/DELETE remain guarded by ``_assert_owner``. Investors/tenants still
+    receive the real owner address.
+    """
     if not property_item:
         return property_item
 
@@ -187,6 +194,9 @@ def apply_property_visibility(property_item: dict, viewer: Optional["AuthUser"])
     role = (viewer.role or "").lower() if viewer else ""
     can_manage = bool(viewer and role == "property_owner" and is_owner)
     property_item["can_manage"] = can_manage
+
+    if viewer and role == "property_owner" and owner and not is_owner:
+        property_item["owner_wallet"] = None
 
     return property_item
 

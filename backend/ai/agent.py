@@ -19,7 +19,6 @@ import logging
 import os
 from typing import Any, Literal, TypedDict
 
-import langchain
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
@@ -41,12 +40,6 @@ from backend.ai.tools import (
 from backend.services.auth import AuthUser, canonical_role
 
 LOGGER = logging.getLogger(__name__)
-
-# langchain-core in this environment still probes legacy root-module globals
-# that langchain 1.x no longer defines. Seed them once so callback setup works.
-for _name, _default in (("debug", False), ("verbose", False), ("llm_cache", None)):
-    if not hasattr(langchain, _name):
-        setattr(langchain, _name, _default)
 
 # Tools that perform irreversible on-chain side effects — require explicit user confirmation.
 # NOTE: start_* tools only return UI actions (OPEN_MODAL, NAVIGATE, FILL_FIELD).
