@@ -3,9 +3,6 @@
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
-import { WalletPill } from "./wallet-pill";
-import { StatusDot } from "./status-dot";
-import { AmbientSystemPulse } from "@/components/ai/ambient-system-pulse";
 import { cn } from "@/lib/utils";
 
 export function AdminTopbar({
@@ -46,10 +43,7 @@ export function AdminTopbar({
       <div className="flex items-center gap-2">
         {actions ?? (
           <>
-            <AmbientSystemPulse />
-            <WalletPill />
             <ThemeToggle />
-            <StatusDot />
           </>
         )}
       </div>

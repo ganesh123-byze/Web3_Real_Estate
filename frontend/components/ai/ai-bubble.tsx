@@ -133,9 +133,6 @@ function QuickActionCard({
         <span className="block truncate text-[13.5px] font-semibold tracking-tight text-foreground">
           {action.label}
         </span>
-        <span className="mt-0.5 line-clamp-1 block text-[11.5px] text-muted-foreground">
-          {action.prompt}
-        </span>
       </span>
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50 transition-all group-hover:translate-x-0.5 group-hover:text-primary" />
     </motion.button>
@@ -261,6 +258,17 @@ export function AIBubble() {
     });
   }, [open, state, voiceMode]);
 
+  const focusComposerWithText = useCallback((text: string) => {
+    if (!open || voiceMode || state === "thinking") return;
+    const input = textareaRef.current;
+    if (!input || input.disabled) return;
+    input.focus({ preventScroll: true });
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.setRangeText(text, start, end, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, [open, state, voiceMode]);
+
   useEffect(() => {
     if (open && !voiceMode) {
       focusComposer();
@@ -279,12 +287,13 @@ export function AIBubble() {
     function onKeyDown(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key.length !== 1 || isEditableTarget(e.target)) return;
-      focusComposer();
+      e.preventDefault();
+      focusComposerWithText(e.key);
     }
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [focusComposer, open, state, voiceMode]);
+  }, [focusComposerWithText, open, state, voiceMode]);
 
   // ESC closes the panel (when open).
   useEffect(() => {
@@ -314,6 +323,8 @@ export function AIBubble() {
 
   function handleQuickAction(action: QuickAction) {
     if (state === "thinking") return;
+    restoreComposerFocusRef.current = true;
+    focusComposer();
     void store.send(action.prompt, router, { fromVoice: false });
   }
 
@@ -656,9 +667,6 @@ export function AIBubble() {
                     <Send className="h-3.5 w-3.5" />
                   </button>
                 </form>
-                <p className="mt-2 px-1 text-center text-[10.5px] text-muted-foreground/70">
-                  Press <kbd className="rounded border border-border/60 bg-background/80 px-1 font-mono text-[9.5px]">Enter</kbd> to send · <kbd className="rounded border border-border/60 bg-background/80 px-1 font-mono text-[9.5px]">Shift+Enter</kbd> for newline
-                </p>
               </div>
             )}
           </motion.div>

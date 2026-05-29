@@ -387,9 +387,8 @@ def list_properties(
 ):
     """List active properties.
 
-    All property owners see every listing. ``apply_property_visibility`` clears
-    ``owner_wallet`` on rows the viewer does not own so the admin UI hides
-    edit/delete without blocking catalog visibility.
+    All property owners see every listing. ``can_manage`` tells the admin UI
+    when edit/delete controls should be enabled for the signed-in wallet.
     """
     cursor = db.cursor(dictionary=True)
     try:

@@ -17,6 +17,7 @@ export type Property = {
   token_supply: string | number;
   token_symbol: string;
   owner_wallet?: string | null;
+  can_manage?: boolean;
   token_address?: string | null;
   nft_token_id?: number | null;
   nft_contract_address?: string | null;

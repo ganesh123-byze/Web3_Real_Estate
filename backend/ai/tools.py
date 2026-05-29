@@ -1726,7 +1726,7 @@ async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
     return ToolResult(
         ok=True,
         data={
-            "message": "Opening the create property form.",
+            "message": "Starting chat-only property creation.",
             "filled": filled,
             "missing": missing,
             "next_field": next_field or "name",
@@ -1749,10 +1749,9 @@ register(ToolSpec(
     name="start_create_property",
     description=(
         "MANDATORY first step the moment the user asks to create / add a new "
-        "property. Returns UI actions that navigate to the Properties page, "
-        "open the Create Property dialog, and focus the name field — the form "
-        "must stay visible the whole time so fill_create_property can write "
-        "each answer into it on screen. After calling this tool, your spoken "
+        "property. Starts the chat-only collection flow; the frontend keeps "
+        "focus in the copilot textbox and does not show the Create Property "
+        "dialog behind the chat. After calling this tool, your spoken "
         "reply MUST end with the very next question to ask: \"What's the name "
         "of the property?\""
     ),
@@ -2308,10 +2307,10 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
                 "awaiting_ui_confirmation": True,
                 "auto_submit": True,
                 "speak_to_user": (
-                    f"Submitting {property_name} now — the form will fill and create the listing."
+                    f"Submitting {property_name} now — I will create the listing from this chat."
                 ),
                 "instruction": (
-                    "Tell the user the property form is submitting. Do not call more tools "
+                    "Tell the user the property is submitting from chat. Do not call more tools "
                     "until they see success."
                 ),
             }
@@ -2329,7 +2328,7 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         _mark_create_property_completed(property_name)
         data["new_property_session"] = True
         data["instruction"] = (
-            "Tell the user the property form is submitting. Do not call more tools "
+            "Tell the user the property is submitting from chat. Do not call more tools "
             "until they see success. After you confirm success (e.g. "
             "'Property created successfully'), the next property in this chat "
             "must call start_create_property again."
@@ -2363,13 +2362,13 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
 register(ToolSpec(
     name="fill_create_property",
     description=(
-        "Drive the on-screen Create Property dialog. Call this every time the "
+        "Drive the chat-only Create Property workflow. Call this every time the "
         "user answers a field — pass only the NEW value(s); the server merges "
         "them with everything already filled. The result includes `filled` "
         "(every value collected so far), `missing` (required fields still "
         "empty), and `next_field` (the single field to ask about next). "
         "NEVER ask about a field that already appears in `filled`. When "
-        "`missing` is empty the server auto-fills the form and submits it "
+        "`missing` is empty the frontend submits the chat-collected values "
         "(you may pass submit=true explicitly). Pass spoken numbers as-is "
         "(e.g. 'one lakh tokens', 'USD symbol') — the server normalizes them. "
         "Do not call more tools after a successful auto-submit."

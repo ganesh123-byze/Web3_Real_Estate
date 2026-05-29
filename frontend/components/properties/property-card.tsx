@@ -23,8 +23,9 @@ export function PropertyCard({ property }: { property: Property }) {
   const wallet = useCurrentWallet();
   const [detailOpen, setDetailOpen] = useState(false);
   const canManage = Boolean(
-    wallet && property.owner_wallet && property.owner_wallet.toLowerCase() === wallet.toLowerCase(),
+    property.can_manage ?? (wallet && property.owner_wallet && property.owner_wallet.toLowerCase() === wallet.toLowerCase()),
   );
+  const creatorWallet = property.owner_wallet ?? null;
 
   const sold = Number(property.tokens_sold ?? 0);
   const total = Number(property.token_supply ?? 0);
@@ -112,6 +113,11 @@ export function PropertyCard({ property }: { property: Property }) {
           <Stat label="Supply" value={formatNumber(total)} />
           <Stat label="Available" value={formatNumber(Number(property.tokens_available ?? 0))} />
           <Stat label="Rent" value={monthlyRentEth > 0 ? `${monthlyRentEth.toFixed(4)} ETH/mo` : "Not set"} />
+          <Stat
+            label="Created By"
+            value={creatorWallet ? shortAddress(creatorWallet, 6, 4) : "Not recorded"}
+            title={creatorWallet ?? undefined}
+          />
         </div>
 
         <div>
@@ -161,13 +167,13 @@ export function PropertyCard({ property }: { property: Property }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string | number }) {
+function Stat({ label, value, title }: { label: string; value: string | number; title?: string }) {
   return (
     <div className="min-w-0">
       <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
-      <span className="mt-0.5 block truncate text-sm font-medium tabular-nums">{value}</span>
+      <span className="mt-0.5 block truncate text-sm font-medium tabular-nums" title={title}>{value}</span>
     </div>
   );
 }
