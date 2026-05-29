@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from psycopg2.extras import Json
 
 from backend.api._helpers import (
+    acquire_property_create_dedup_lock,
     add_transaction_row,
     create_property_record,
     deploy_property_token,
@@ -17,6 +18,7 @@ from backend.api._helpers import (
     ensure_security_token_sale_inventory,
     fetch_property,
     find_existing_property,
+    property_is_dashboard_listable,
     property_is_owned_by,
     get_total_minted_base,
     lock_property,
@@ -192,6 +194,28 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
+def _property_stream_done_event(
+    property_id: int,
+    final: dict[str, Any],
+    *,
+    duplicate: bool = False,
+) -> dict[str, Any]:
+    """Terminal SSE payload for create-property streams.
+
+    ``property_id`` is intentionally omitted from intermediate steps so the
+    admin UI does not hide the row while on-chain setup is still running.
+    """
+    payload: dict[str, Any] = {
+        "step": "done",
+        "property_id": int(property_id),
+        "property": _json_safe_property(final),
+        "list_refresh": True,
+    }
+    if duplicate:
+        payload["duplicate"] = True
+    return payload
+
+
 @router.post("/properties/stream")
 async def create_property_stream(
     payload: PropertyCreate,
@@ -203,7 +227,7 @@ async def create_property_stream(
     Emits one ``{"step": "..."}`` event before each stage so the UI can
     light up the matching row on the progress card. Steps in order:
         creating          → DB insert started
-        created           → DB insert finished, property_id known
+        created           → DB insert finished (id withheld until ``done``)
         deploying_token   → SecurityToken deploy in flight
         token_deployed    → token deploy committed
         finalizing_inventory → ensure_security_token_sale_inventory
@@ -239,16 +263,22 @@ async def create_property_stream(
         property_id: int | None = None
         cursor = db.cursor(dictionary=True)
         try:
+            acquire_property_create_dedup_lock(cursor, owner_wallet, payload)
             existing = find_existing_property(
                 cursor, payload, token_price_wei, monthly_rent_wei, owner_wallet
             )
             if existing:
                 if property_needs_token_deployment(existing):
                     property_id = int(existing["id"])
-                    yield _sse({"step": "created", "property_id": property_id, "resuming_setup": True})
+                    # Do not expose property_id yet — same visibility contract as new creates.
+                    yield _sse({"step": "created", "resuming_setup": True})
                 else:
                     final = enrich_property_with_supply(cursor, existing, viewer=user)
-                    yield _sse({"step": "done", "duplicate": True, "property": _json_safe_property(final)})
+                    yield _sse(
+                        _property_stream_done_event(
+                            int(existing["id"]), final, duplicate=True
+                        )
+                    )
                     return
 
             yield _sse({"step": "creating"})
@@ -264,7 +294,8 @@ async def create_property_stream(
             )
             property_id = int(cursor.fetchone()["id"])
             db.commit()
-            yield _sse({"step": "created", "property_id": property_id})
+            # Withhold property_id until the listing is dashboard-ready on ``done``.
+            yield _sse({"step": "created"})
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             LOGGER.exception("create_property_stream insert failed")
@@ -343,7 +374,21 @@ async def create_property_stream(
         cursor = db.cursor(dictionary=True)
         try:
             cursor.execute("SELECT * FROM properties WHERE id = %s", (property_id,))
-            final = enrich_property_with_supply(cursor, cursor.fetchone(), viewer=user)
+            row = cursor.fetchone()
+            if not row:
+                yield _sse({"step": "error", "detail": "Property not found after setup."})
+                return
+            final = enrich_property_with_supply(cursor, row, viewer=user)
+            if not property_is_dashboard_listable(final):
+                LOGGER.warning(
+                    "create_property_stream property_id=%s finished setup but is not dashboard-listable "
+                    "(token_address=%s, supply=%s, available=%s, sold=%s)",
+                    property_id,
+                    final.get("token_address"),
+                    final.get("token_supply"),
+                    final.get("tokens_available"),
+                    final.get("tokens_sold"),
+                )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("create_property_stream final fetch failed")
             yield _sse({"step": "error", "detail": str(exc)[:300]})
@@ -351,7 +396,7 @@ async def create_property_stream(
         finally:
             cursor.close()
 
-        yield _sse({"step": "done", "property": _json_safe_property(final)})
+        yield _sse(_property_stream_done_event(property_id, final))
 
     return StreamingResponse(
         gen(),

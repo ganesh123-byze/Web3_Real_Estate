@@ -2,7 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import quote_plus, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
 
@@ -42,8 +42,46 @@ def _build_database_url() -> str:
     )
 
 
+_MANAGED_POSTGRES_MARKERS = (
+    "neon.tech",
+    "supabase.co",
+    "render.com",
+    "railway.app",
+    "elephantsql.com",
+    "amazonaws.com/rds",
+)
+
+
+def normalize_database_url(url: str) -> str:
+    """Normalize connection strings for psycopg2 + hosted Postgres (e.g. Neon on Windows)."""
+    if not url:
+        return url
+    parsed = urlparse(url)
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() != "channel_binding"
+    ]
+    host = (parsed.hostname or "").lower()
+    if any(marker in host for marker in ("neon.tech", "neon.database")) and not any(
+        key.lower() == "sslmode" for key, _ in query_items
+    ):
+        query_items.append(("sslmode", "require"))
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+
+def is_managed_postgres_url(url: str | None = None) -> bool:
+    """True for Neon, Supabase, Render Postgres, etc. — no local CREATE DATABASE."""
+    normalized = (url or normalize_database_url(_build_database_url())).lower()
+    if any(marker in normalized for marker in _MANAGED_POSTGRES_MARKERS):
+        return True
+    if "-pooler." in normalized:
+        return True
+    return False
+
+
 def get_database_url() -> str:
-    return _build_database_url()
+    return normalize_database_url(_build_database_url())
 
 
 def get_database_name() -> str:

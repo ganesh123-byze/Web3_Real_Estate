@@ -5,6 +5,7 @@ reaches for the same normalization / locking / formatting primitives.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from decimal import Decimal
@@ -68,6 +69,30 @@ def lock_property(cursor, property_id: int) -> dict | None:
     return cursor.fetchone()
 
 
+def property_create_dedup_lock_key(owner_wallet: str, payload: PropertyCreate) -> int:
+    """Stable signed bigint for ``pg_advisory_xact_lock`` (serializes concurrent creates)."""
+    parts = (
+        normalize_address(owner_wallet or ""),
+        payload.name.strip().casefold(),
+        payload.location.strip().casefold(),
+        str(payload.total_value),
+        str(payload.token_supply),
+        payload.token_symbol.strip().casefold(),
+    )
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def acquire_property_create_dedup_lock(
+    cursor,
+    owner_wallet: str,
+    payload: PropertyCreate,
+) -> None:
+    """Block until this owner+payload fingerprint is the only in-flight create."""
+    key = property_create_dedup_lock_key(owner_wallet, payload)
+    cursor.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+
+
 def find_existing_property(
     cursor,
     payload: PropertyCreate,
@@ -124,6 +149,7 @@ def create_property_record(db, user: "AuthUser", payload: PropertyCreate) -> dic
 
     cursor = db.cursor(dictionary=True)
     try:
+        acquire_property_create_dedup_lock(cursor, owner_wallet, payload)
         existing_property = find_existing_property(
             cursor, payload, token_price_wei, monthly_rent_wei, owner_wallet
         )
@@ -189,6 +215,24 @@ def apply_property_visibility(property_item: dict, viewer: Optional["AuthUser"])
     property_item["can_manage"] = can_manage
 
     return property_item
+
+
+def property_is_dashboard_listable(property_item: dict) -> bool:
+    """Mirror the admin UI rule: token deployed and sale inventory accounted for."""
+    if not property_item:
+        return False
+    token_address = str(property_item.get("token_address") or "").strip()
+    if not token_address:
+        return False
+    try:
+        supply = Decimal(property_item.get("token_supply") or 0)
+        available = Decimal(property_item.get("tokens_available") or 0)
+        sold = Decimal(property_item.get("tokens_sold") or 0)
+    except Exception:
+        return False
+    if supply <= 0:
+        return False
+    return (available + sold) >= supply
 
 
 def enrich_property_with_supply(

@@ -3,7 +3,7 @@ import logging
 from psycopg2 import connect, sql
 
 from backend.db.connection import get_connection
-from backend.config.settings import get_admin_database_url, get_database_name
+from backend.config.settings import get_admin_database_url, get_database_name, is_managed_postgres_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +34,9 @@ def _try_ensure_unique_index(cursor, index_sql: str, description: str) -> None:
 
 
 def _ensure_database_exists() -> None:
+    if is_managed_postgres_url():
+        LOGGER.debug("Skipping CREATE DATABASE — using managed Postgres (Neon/hosted)")
+        return
     database_name = get_database_name()
     admin_conn = connect(get_admin_database_url())
     admin_conn.autocommit = True
@@ -108,6 +111,12 @@ def _ensure_updated_at_trigger(cursor) -> None:
     )
 
 
+def _schema_checkpoint(conn, label: str) -> None:
+    """Commit between DDL batches so Neon/pooler connections are not dropped mid-transaction."""
+    conn.commit()
+    LOGGER.debug("Schema checkpoint: %s", label)
+
+
 def init_db() -> None:
     _ensure_database_exists()
 
@@ -136,6 +145,7 @@ def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wallet_lower "
             "ON users (LOWER(wallet_address))"
         )
+        _schema_checkpoint(conn, "users")
 
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS properties ("
@@ -167,6 +177,7 @@ def init_db() -> None:
         _ensure_column(cursor, "properties", "is_active", "BOOLEAN NOT NULL DEFAULT TRUE")
         _ensure_column(cursor, "properties", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         _ensure_column(cursor, "properties", "owner_wallet", "VARCHAR(42) NULL")
+        _schema_checkpoint(conn, "properties")
 
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS kyc_status ("
