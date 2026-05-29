@@ -1,6 +1,8 @@
 "use client";
 
 import type { AIAction } from "./types";
+import { clearSession, getApiBase, getToken } from "@/lib/api";
+import { markPropertyCreationComplete, markPropertyCreationPending } from "@/lib/properties/visibility";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -10,6 +12,8 @@ const MODAL_RETRY_DELAY = 220;
 const ACTION_EVENT = "estatechain:ai-action";
 const COMPLETION_EVENT = "estatechain:ai-completion";
 const PENDING_TTL = 8000;
+const CREATE_PROPERTY_MODAL = "CREATE_PROPERTY";
+export const CREATE_PROPERTY_CHAT_ONLY_EVENT = "estatechain:create-property-chat-only";
 
 export type AICompletionStatus = "success" | "error";
 
@@ -110,6 +114,26 @@ export function clearPendingModalActions(modal: string) {
  */
 export function getWorkflowFormValues(modal: string): Record<string, string> {
   return { ...(workflowFormValues.get(modal) ?? {}) };
+}
+
+function focusChatInput() {
+  if (typeof document === "undefined") return;
+  const focus = () => {
+    const chatInput = document.querySelector<HTMLTextAreaElement>("[data-ai-chat-input]");
+    if (chatInput && !chatInput.disabled) {
+      chatInput.focus({ preventScroll: true });
+    }
+  };
+  window.setTimeout(focus, 0);
+  window.setTimeout(focus, 80);
+  window.setTimeout(focus, 220);
+}
+
+function enterCreatePropertyChatOnlyMode() {
+  if (typeof window === "undefined") return;
+  clearPendingModalQueues(CREATE_PROPERTY_MODAL);
+  window.dispatchEvent(new CustomEvent(CREATE_PROPERTY_CHAT_ONLY_EVENT));
+  focusChatInput();
 }
 
 export function emitCompletion(event: AICompletionEvent) {
@@ -255,9 +279,163 @@ async function clickWorkflowSubmitVisibly(modal: string): Promise<boolean> {
   return true;
 }
 
+function calculateTokenPriceEth(totalValue: string | undefined, tokenSupply: string | undefined): string {
+  const total = Number(totalValue ?? 0);
+  const supply = Number(tokenSupply ?? 0);
+  if (!Number.isFinite(total) || !Number.isFinite(supply) || total <= 0 || supply <= 0) return "";
+  return String(total / supply);
+}
+
+async function submitCreatePropertyFromChat(): Promise<boolean> {
+  const values = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+  const required = ["name", "location", "total_value", "token_supply", "token_symbol"] as const;
+  const missing = required.filter((field) => !String(values[field] ?? "").trim());
+  if (missing.length) {
+    emitCompletion({
+      modal: CREATE_PROPERTY_MODAL,
+      status: "error",
+      message: `Missing property details: ${missing.join(", ")}.`,
+    });
+    focusChatInput();
+    return false;
+  }
+
+  const payload = {
+    name: String(values.name).trim(),
+    location: String(values.location).trim(),
+    total_value: String(values.total_value).trim(),
+    token_supply: String(values.token_supply).trim(),
+    token_symbol: String(values.token_symbol).trim(),
+    token_sale_price_eth: calculateTokenPriceEth(values.total_value, values.token_supply),
+    monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
+    images: [] as string[],
+  };
+
+  try {
+    const base = getApiBase();
+    const token = getToken();
+    const res = await fetch(`${base}/properties/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) clearSession();
+      const errText = await res.text().catch(() => "");
+      let detail = res.status === 401 ? "Session expired. Please log in again." : `HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed?.detail && res.status !== 401) detail = String(parsed.detail);
+      } catch {
+        if (errText) detail = errText;
+      }
+      throw new Error(detail);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let finalPropertyName = payload.name;
+    let finalError: string | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+      const parts = sseBuffer.split("\n\n");
+      sseBuffer = parts.pop() || "";
+
+      for (const part of parts) {
+        for (const line of part.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          try {
+            const event = JSON.parse(raw) as {
+              step?: string;
+              property?: { id?: number; name?: string };
+              property_id?: number;
+              detail?: string;
+            };
+            const eventPropertyId = event.property?.id ?? event.property_id;
+            if (event.step === "done") {
+              finalPropertyName = event.property?.name || finalPropertyName;
+              markPropertyCreationComplete(eventPropertyId);
+            } else if (event.step === "error") {
+              finalError = event.detail || "Property creation failed.";
+            } else if (eventPropertyId) {
+              markPropertyCreationPending(eventPropertyId);
+            }
+          } catch {
+            /* skip malformed SSE JSON */
+          }
+        }
+      }
+    }
+
+    if (finalError) throw new Error(finalError);
+    clearPendingModalActions(CREATE_PROPERTY_MODAL);
+    emitCompletion({
+      modal: CREATE_PROPERTY_MODAL,
+      status: "success",
+      message: finalPropertyName
+        ? `Property '${finalPropertyName}' created successfully.`
+        : "Property created successfully.",
+    });
+    focusChatInput();
+    return true;
+  } catch (err: any) {
+    emitCompletion({
+      modal: CREATE_PROPERTY_MODAL,
+      status: "error",
+      message: err?.message || "Failed to create property.",
+    });
+    focusChatInput();
+    return false;
+  }
+}
+
 /** Execute a single UI action. */
-export async function executeAction(action: AIAction, router: { push: (href: string) => void }) {
+export async function executeAction(
+  action: AIAction,
+  router: { push: (href: string) => void },
+  opts?: { createPropertyChatOnly?: boolean },
+) {
   console.log("[AI Action] Executing:", action.type, action);
+  if (opts?.createPropertyChatOnly) {
+    if (action.type === "NAVIGATE") {
+      enterCreatePropertyChatOnlyMode();
+      return;
+    }
+    if (action.modal === CREATE_PROPERTY_MODAL) {
+      if (action.type === "OPEN_MODAL" || action.type === "FOCUS_FIELD") {
+        enterCreatePropertyChatOnlyMode();
+        return;
+      }
+      if (action.type === "FILL_FIELD" && action.field) {
+        const values = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+        values[action.field] = String(action.value ?? "");
+        workflowFormValues.set(CREATE_PROPERTY_MODAL, values);
+        enterCreatePropertyChatOnlyMode();
+        return;
+      }
+      if (action.type === "SUBMIT_FORM") {
+        enterCreatePropertyChatOnlyMode();
+        await submitCreatePropertyFromChat();
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
+        }
+        return;
+      }
+    }
+  }
   if (action.type === "NAVIGATE" && action.route) {
     console.log("[AI Action] Navigating to:", action.route);
     router.push(action.route);
@@ -332,8 +510,9 @@ export async function executeAction(action: AIAction, router: { push: (href: str
 }
 
 export async function executeActions(actions: AIAction[], router: { push: (href: string) => void }) {
+  const createPropertyChatOnly = actions.some((action) => action.modal === CREATE_PROPERTY_MODAL);
   for (const action of actions) {
-    await executeAction(action, router);
+    await executeAction(action, router, { createPropertyChatOnly });
   }
 }
 

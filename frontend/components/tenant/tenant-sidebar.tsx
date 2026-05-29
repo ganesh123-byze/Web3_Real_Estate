@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Building2, History, LayoutDashboard } from "lucide-react";
+import { SidebarWalletPanel } from "@/components/layout/sidebar-wallet-panel";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -53,6 +54,7 @@ export function TenantSidebar() {
         })}
       </nav>
 
+      <SidebarWalletPanel />
     </aside>
   );
 }

@@ -50,7 +50,8 @@ function getOwnershipColor(index: number, isUnallocated?: boolean) {
 }
 
 export function InvestorShareChart({ property }: { property: Property | null }) {
-  const enabled = !!property?.id && !!property?.token_address;
+  const rentReady = !!property?.rent_enabled && Number(property?.monthly_rent_eth ?? 0) > 0;
+  const enabled = !!property?.id && !!property?.token_address && rentReady;
   const { data, isLoading, error } = useQuery({
     queryKey: ["preview-distribution", property?.id],
     queryFn: () => api.get<PreviewResponse>(`/tenant/preview-distribution/${property?.id}`),
@@ -110,9 +111,9 @@ export function InvestorShareChart({ property }: { property: Property | null }) 
             </div>
           ) : isLoading ? (
             <Skeleton className="h-[220px] w-[220px] rounded-full" />
-          ) : error || items.length === 0 ? (
+          ) : !rentReady || error || items.length === 0 ? (
             <div className="grid h-[220px] place-items-center px-4 text-center text-xs text-muted-foreground">
-              {error instanceof ApiError && error.status === 400
+              {!rentReady || (error instanceof ApiError && error.status === 400)
                 ? "Set monthly rent on this property to see investor distribution."
                 : "No investor data yet for this property."}
             </div>

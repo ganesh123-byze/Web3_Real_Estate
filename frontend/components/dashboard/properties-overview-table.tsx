@@ -52,7 +52,7 @@ export function PropertiesOverviewTable({
     queries: filtered.map((p) => ({
       queryKey: ["preview-distribution", p.id],
       queryFn: () => api.get<PreviewResponse>(`/tenant/preview-distribution/${p.id}`),
-      enabled: !!p.token_address,
+      enabled: !!p.token_address && !!p.rent_enabled && Number(p.monthly_rent_eth ?? 0) > 0,
       retry: false,
       refetchInterval: 20_000,
     })),
