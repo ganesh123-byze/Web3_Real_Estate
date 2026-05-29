@@ -107,7 +107,7 @@ export type AgentStore = {
   send: (
     text: string,
     router: { push: (href: string) => void },
-    opts?: { fromVoice?: boolean },
+    opts?: { fromVoice?: boolean; freshSession?: boolean; apiText?: string },
   ) => Promise<void>;
 
   enterVoiceMode: (
@@ -122,6 +122,21 @@ export type AgentStore = {
 
 const WELCOME =
   "Hi! I'm EstateChain Copilot. Ask about your properties, investments, or rent — or tap the voice icon for a live conversation.";
+
+function createClientSessionId(): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `web-${random}`;
+}
+
+let clientSessionId = createClientSessionId();
+
+function restartClientSession(): string {
+  clientSessionId = createClientSessionId();
+  return clientSessionId;
+}
 
 function _authToken(): string {
   try {
@@ -163,6 +178,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   clear() {
     stopSpeaking();
     cancelRecording();
+    restartClientSession();
     set({
       messages: [msg("assistant", WELCOME)],
       actions: [],
@@ -175,8 +191,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     const clean = text.trim();
     if (!clean) return;
     const fromVoice = opts?.fromVoice ?? false;
+    const freshSession = opts?.freshSession ?? false;
+    const apiText = opts?.apiText?.trim() || clean;
 
     stopSpeaking();
+    if (freshSession) restartClientSession();
 
     // If a voice session exists, route through it for unified duplex flow.
     if (get().voiceSession) {
@@ -187,12 +206,18 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
 
     const userMessage = msg("user", clean);
-    const history = [...get().messages, userMessage];
+    const baseMessages = freshSession ? [msg("assistant", WELCOME)] : get().messages;
+    const history = [...baseMessages, userMessage];
     set({ messages: history, state: "thinking", error: null });
 
     try {
       const base = getApiBase();
       const token = _authToken();
+      const apiMessages = history.map((m) => ({ role: m.role, content: m.content }));
+      apiMessages[apiMessages.length - 1] = {
+        ...apiMessages[apiMessages.length - 1],
+        content: apiText,
+      };
 
       const fetchRes = await fetch(`${base}/api/ai/chat/stream`, {
         method: "POST",
@@ -201,7 +226,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           Authorization: token ? `Bearer ${token}` : "",
         },
         body: JSON.stringify({
-          messages: history.map((m) => ({ role: m.role, content: m.content })),
+          messages: apiMessages,
+          client_session_id: clientSessionId,
         }),
       });
 

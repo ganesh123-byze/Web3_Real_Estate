@@ -37,8 +37,8 @@ const INVESTOR_ACTIONS: QuickAction[] = [
 const PROPERTY_OWNER_ACTIONS: QuickAction[] = [
   {
     id: "owner.create",
-    label: "List new property",
-    prompt: "Help me list a new property for tokenization.",
+    label: "Create new property",
+    prompt: "Help me create a new property.",
     icon: "Plus",
   },
   {
