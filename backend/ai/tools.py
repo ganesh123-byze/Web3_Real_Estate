@@ -56,6 +56,10 @@ from backend.api.rent_cycle import (
     compute_rent_period_status,
     get_last_confirmed_rent_payment_by_wallet,
 )
+from backend.services.tenant_catalog import (
+    fetch_tenant_rental_properties,
+    filter_tenant_dashboard_available,
+)
 from backend.services.auth import AuthUser, canonical_role, normalize_address
 from backend.services.investment_funding import (
     InvestmentFundingError,
@@ -333,6 +337,24 @@ def _serialize_property(row: dict) -> dict:
     }
 
 
+def _serialize_tenant_property(row: dict) -> dict:
+    """Tenant dashboard row — investors funded, rent cycle, pay eligibility."""
+    base = _serialize_property(row)
+    base["current_cycle_paid"] = bool(row.get("current_cycle_paid"))
+    base["can_pay_rent"] = bool(row.get("can_pay_rent", not base["current_cycle_paid"]))
+    base["rent_cycle_label"] = row.get("rent_cycle_label")
+    base["active_rental"] = bool(row.get("active_rental"))
+    base["has_investors"] = bool(row.get("has_investors"))
+    return base
+
+
+def _tenant_property_items(cursor, tenant_wallet: str | None) -> list[dict]:
+    return [
+        _serialize_tenant_property(row)
+        for row in fetch_tenant_rental_properties(cursor, tenant_wallet=tenant_wallet)
+    ]
+
+
 def _list_properties(cursor) -> list[dict]:
     cursor.execute(
         "SELECT * FROM properties WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY id DESC"
@@ -524,12 +546,46 @@ async def _list_properties_tool(args: dict, _user: AuthUser, db: Any) -> ToolRes
     return ToolResult(ok=True, data={"count": len(items), "properties": items[:25]})
 
 
+async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    """Properties on the tenant Rentals dashboard — not the investor marketplace."""
+    cursor = db.cursor(dictionary=True)
+    try:
+        raw_rows = fetch_tenant_rental_properties(
+            cursor, tenant_wallet=user.wallet_address
+        )
+    finally:
+        cursor.close()
+
+    if bool(args.get("dashboard_available_only")):
+        raw_rows = filter_tenant_dashboard_available(raw_rows)
+    elif bool(args.get("rent_enabled_only")):
+        raw_rows = [row for row in raw_rows if row.get("rent_enabled")]
+
+    items = [_serialize_tenant_property(row) for row in raw_rows]
+    q = (args.get("search") or "").strip()
+    if q:
+        items = _filter_properties_by_fuzzy_search(items, q)
+
+    return ToolResult(
+        ok=True,
+        data={
+            "count": len(items),
+            "properties": items[:25],
+            "catalog": "tenant_rentals_dashboard",
+            "instruction": (
+                "These are tenant-dashboard properties (funded by investors, eligible "
+                "for rent). This is NOT the investor token marketplace."
+            ),
+        },
+    )
+
+
 register(ToolSpec(
     name="list_properties",
     description=(
-        "List all active properties on the platform. Each property includes its "
-        "monthly rent (when set), token sale progress, and whether rent is "
-        "currently enabled."
+        "List active properties on the investor marketplace / platform catalog. "
+        "Property owners use this for cross-listing lookup; investors use it to "
+        "browse token sales. Tenants must use list_tenant_properties instead."
     ),
     parameters={
         "type": "object",
@@ -539,8 +595,43 @@ register(ToolSpec(
         },
         "additionalProperties": False,
     },
-    roles=ALL_ROLES,
+    roles=frozenset({"property_owner", "investor"}),
     handler=_list_properties_tool,
+))
+
+
+register(ToolSpec(
+    name="list_tenant_properties",
+    description=(
+        "List properties shown on the tenant Rentals dashboard — only listings "
+        "that already have investor token holders (funded properties). Includes "
+        "monthly rent, whether rent is enabled, and this wallet's current-cycle "
+        "payment status. NOT the investor marketplace."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "search": {
+                "type": "string",
+                "description": "Optional fuzzy search on property name, location, or token symbol.",
+            },
+            "rent_enabled_only": {
+                "type": "boolean",
+                "description": "When true, only properties with monthly rent configured.",
+            },
+            "dashboard_available_only": {
+                "type": "boolean",
+                "description": (
+                    "When true, match the tenant dashboard Available section: "
+                    "has investors, rent enabled, not paid this cycle, and not "
+                    "an active rental row for this wallet."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    roles=frozenset({"tenant"}),
+    handler=_list_tenant_properties_tool,
 ))
 
 
@@ -680,7 +771,7 @@ register(ToolSpec(
         "Return rentals the tenant has paid rent on at least once (the "
         "tenant_rentals table). NOTE: this does NOT cover properties the "
         "tenant could pay rent on for the first time — for that use "
-        "list_properties with rent_enabled_only=true."
+        "list_tenant_properties (optionally dashboard_available_only=true)."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"tenant"}),
@@ -1311,7 +1402,7 @@ register(ToolSpec(
     description=(
         "Return detailed info on a single property — sale progress, monthly "
         "rent, investor count, active rentals. Resolve the id from "
-        "list_properties first if you only have a name."
+        "list_tenant_properties (tenant) or list_properties / get_my_owned_properties first."
     ),
     parameters={
         "type": "object",
@@ -3194,12 +3285,14 @@ def _ensure_rent_chain_ready_for_payment(cursor, property_item: dict, property_i
     return len(synced)
 
 
-def _resolve_property_for_rent(db: Any, name: str) -> tuple[dict | None, str | None]:
-    """Fuzzy-match a spoken property name to a single rent-enabled listing."""
+def _resolve_property_for_rent(
+    db: Any, name: str, *, tenant_wallet: str | None = None
+) -> tuple[dict | None, str | None]:
+    """Fuzzy-match a spoken property name to a tenant-dashboard rent listing."""
     query = (name or "").strip()
     cursor = db.cursor(dictionary=True)
     try:
-        items = _list_properties(cursor)
+        items = _tenant_property_items(cursor, tenant_wallet)
     finally:
         cursor.close()
     return _resolve_rentable_property_from_items(items, query)
@@ -3465,7 +3558,9 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
     property_id: int | None = None
     resolved_name: str | None = None
     if accumulated.get("property_name"):
-        prop, err = _resolve_property_for_rent(db, accumulated["property_name"])
+        prop, err = _resolve_property_for_rent(
+            db, accumulated["property_name"], tenant_wallet=user.wallet_address
+        )
         if err:
             missing = [
                 f for f in _PAY_RENT_REQUIRED if f not in accumulated or not accumulated.get(f)
@@ -3639,7 +3734,7 @@ async def _start_pay_rent(args: dict, user: AuthUser, db: Any) -> ToolResult:
     if not pid and not name:
         return ToolResult(ok=False, error="property_id or property_name is required.")
     if not pid:
-        prop, err = _resolve_property_for_rent(db, name)
+        prop, err = _resolve_property_for_rent(db, name, tenant_wallet=user.wallet_address)
         if err:
             return ToolResult(ok=False, error=err)
         pid = int(prop["id"])

@@ -71,6 +71,7 @@ from backend.services.blockchain import (
     wait_for_transaction_receipt,
 )
 from backend.services.blockchain_indexer import _handle_rent_events, reconcile_transaction
+from backend.services.tenant_catalog import fetch_tenant_rental_properties
 from backend.api.rent_cycle import (
     compute_rent_period_status,
     get_last_confirmed_rent_payment,
@@ -434,30 +435,12 @@ def admin_active_rentals(db=Depends(get_db)):
 def tenant_list_properties(tenant_wallet: str | None = None, db=Depends(get_db)):
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT * FROM properties p "
-            "WHERE COALESCE(p.is_active, TRUE) = TRUE "
-            "AND EXISTS ("
-            "  SELECT 1 FROM token_ownerships t "
-            "  WHERE t.property_id = p.id AND t.token_amount > 0"
-            ") "
-            "ORDER BY p.id DESC"
-        )
-        rows = cursor.fetchall()
+        rows = fetch_tenant_rental_properties(cursor, tenant_wallet=tenant_wallet)
         result = []
         for row in rows:
-            row = enrich_property_with_supply(cursor, row)
-            rent_wei = row.get("monthly_rent_wei") or "0"
-            row["rent_enabled"] = rent_wei not in (None, "", "0")
-            if tenant_wallet:
-                period = _tenant_wallet_rent_period_status(cursor, tenant_wallet, int(row["id"]))
-                row.update(serialize_period_fields(period))
-            else:
-                row.update(
-                    serialize_period_fields(
-                        compute_rent_period_status(None),
-                    )
-                )
+            row = dict(row)
+            row.pop("has_investors", None)
+            row.pop("active_rental", None)
             result.append(row)
         return result
     finally:

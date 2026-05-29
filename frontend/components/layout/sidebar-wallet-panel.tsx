@@ -5,7 +5,6 @@ import { MetaMaskIcon } from "@/components/icons/metamask";
 import { Button } from "@/components/ui/button";
 import { getSession, type SessionRecord } from "@/lib/api";
 import { logout } from "@/lib/auth";
-import { shortAddress } from "@/lib/utils";
 
 export function SidebarWalletPanel() {
   const [session, setSession] = useState<SessionRecord | null>(null);
@@ -21,7 +20,13 @@ export function SidebarWalletPanel() {
     };
   }, []);
 
-  const wallet = session?.user?.wallet_address ?? "";
+  const accountLabel =
+    (session?.user as (SessionRecord["user"] & { name?: string | null; full_name?: string | null }) | undefined)
+      ?.name?.trim() ||
+    (session?.user as (SessionRecord["user"] & { name?: string | null; full_name?: string | null }) | undefined)
+      ?.full_name?.trim() ||
+    session?.user?.email?.trim() ||
+    "MetaMask account";
 
   return (
     <div className="mt-auto rounded-2xl border border-border/70 bg-background/70 p-3 shadow-sm">
@@ -29,10 +34,10 @@ export function SidebarWalletPanel() {
         <MetaMaskIcon size={15} />
         MetaMask
       </div>
-      {wallet ? (
+      {session ? (
         <>
-          <div className="mt-2 font-mono text-xs text-foreground" title={wallet}>
-            {shortAddress(wallet, 8, 6)}
+          <div className="mt-2 truncate text-xs font-medium text-foreground" title={accountLabel}>
+            {accountLabel}
           </div>
           <Button
             type="button"
