@@ -243,9 +243,12 @@ def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[s
 
 
 # Thresholds for chatbot confirmation before on-chain create (deploy + mint + rent sync).
+# Monthly rent uses a separate hard cap — see CREATE_MAX_MONTHLY_RENT_ETH.
 CREATE_HIGH_TOTAL_VALUE_ETH = Decimal("25")
 CREATE_HIGH_TOKEN_SUPPLY = 50_000
-CREATE_HIGH_MONTHLY_RENT_ETH = Decimal("5")
+
+# Admin chatbot hard limit — above this the user must enter a lower rent (no Yes/No gate).
+CREATE_MAX_MONTHLY_RENT_ETH = Decimal("50")
 
 
 def _decimal_field_value(raw: str) -> Decimal | None:
@@ -278,7 +281,11 @@ def _integer_field_value(raw: str) -> int | None:
 
 
 def assess_high_value_create_property(accumulated: dict[str, str]) -> dict[str, object]:
-    """Return whether create-property values warrant a Yes/No confirmation in chat."""
+    """Return whether create-property values warrant a Yes/No confirmation in chat.
+
+    Only total property value and token supply are considered here. Monthly rent
+    is validated separately via ``assess_monthly_rent_over_chatbot_limit``.
+    """
     reasons: list[str] = []
     total = _decimal_field_value(str(accumulated.get("total_value") or ""))
     if total is not None and total > CREATE_HIGH_TOTAL_VALUE_ETH:
@@ -291,14 +298,6 @@ def assess_high_value_create_property(accumulated: dict[str, str]) -> dict[str, 
         reasons.append(
             f"Token supply is {supply:,} (above {CREATE_HIGH_TOKEN_SUPPLY:,} tokens)."
         )
-
-    rent_raw = str(accumulated.get("monthly_rent_eth") or "").strip().lower()
-    if rent_raw and rent_raw not in {"0", "skip", "none", "no", "n/a"}:
-        rent = _decimal_field_value(rent_raw)
-        if rent is not None and rent > CREATE_HIGH_MONTHLY_RENT_ETH:
-            reasons.append(
-                f"Monthly rent is {rent} ETH (above {CREATE_HIGH_MONTHLY_RENT_ETH} ETH)."
-            )
 
     if not reasons:
         return {
@@ -324,6 +323,33 @@ def assess_high_value_create_property(accumulated: dict[str, str]) -> dict[str, 
     return {
         "is_high": True,
         "reasons": reasons,
+        "speak_to_user": speak,
+        "instruction": instruction,
+    }
+
+
+def assess_monthly_rent_over_chatbot_limit(accumulated: dict[str, str]) -> dict[str, object]:
+    """True when optional monthly rent exceeds the admin chatbot cap (50 ETH)."""
+    rent_raw = str(accumulated.get("monthly_rent_eth") or "").strip().lower()
+    if not rent_raw or rent_raw in {"0", "skip", "none", "no", "n/a"}:
+        return {"over_limit": False, "speak_to_user": "", "instruction": ""}
+
+    rent = _decimal_field_value(rent_raw)
+    if rent is None or rent <= CREATE_MAX_MONTHLY_RENT_ETH:
+        return {"over_limit": False, "speak_to_user": "", "instruction": ""}
+
+    speak = (
+        f"Monthly rent of {rent} ETH is too high. "
+        f"Please set monthly rent below {CREATE_MAX_MONTHLY_RENT_ETH} ETH."
+    )
+    instruction = (
+        "Tell the user rent must be below 50 ETH. Ask for a lower monthly rent, "
+        "then call fill_create_property with only monthly_rent_eth."
+    )
+    return {
+        "over_limit": True,
+        "rent_eth": str(rent),
+        "max_rent_eth": str(CREATE_MAX_MONTHLY_RENT_ETH),
         "speak_to_user": speak,
         "instruction": instruction,
     }
