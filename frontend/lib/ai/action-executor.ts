@@ -343,6 +343,7 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
     const decoder = new TextDecoder();
     let sseBuffer = "";
     let finalPropertyName = payload.name;
+    let completedPropertyId: number | string | null | undefined = null;
     let finalError: string | null = null;
 
     while (true) {
@@ -367,7 +368,8 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
             const eventPropertyId = event.property?.id ?? event.property_id;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
-              markPropertyCreationComplete(eventPropertyId);
+              completedPropertyId = eventPropertyId;
+              markPropertyCreationPending(eventPropertyId);
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
             } else if (eventPropertyId) {
@@ -389,6 +391,7 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
         ? `Property '${finalPropertyName}' created successfully.`
         : "Property created successfully.",
     });
+    window.setTimeout(() => markPropertyCreationComplete(completedPropertyId), 0);
     focusChatInput();
     return true;
   } catch (err: any) {

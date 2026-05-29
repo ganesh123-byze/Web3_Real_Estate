@@ -23,7 +23,7 @@ function chainLabel(): string {
 
 function propertyDescription(property: Property): string {
   const location = property.location || "its listed region";
-  const rentNote = property.rent_enabled
+  const rentNote = Number(property.monthly_rent_eth ?? 0) > 0
     ? " It offers rental yield to token holders when rent is collected on-chain."
     : " Rental yield activates once the owner configures monthly rent.";
   return `${property.name} is a modern and stylish rental property located in ${location}.${rentNote} Invest via fractional ${property.token_symbol} security tokens on ${chainLabel()}.`;
@@ -57,7 +57,7 @@ export function InvestorPropertyDetailContent({ property }: { property: Property
   const monthlyRent = Number(property.monthly_rent_eth ?? 0);
   const available = availablePropertyTokens(property);
   const unitValue = propertyUnitValue(property);
-  const rentReady = Boolean(property.rent_enabled && monthlyRent > 0);
+  const rentReady = monthlyRent > 0;
   const financials = deriveFinancialOverview(property);
 
   return (

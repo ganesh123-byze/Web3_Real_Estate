@@ -58,7 +58,17 @@ const ACTION_TINTS: { bg: string; ring: string; icon: string }[] = [
   { bg: "bg-warning/12", ring: "ring-warning/30", icon: "text-warning" },
 ];
 
-function ThinkingDots() {
+function AgentActivityText({ state }: { state: AIState }) {
+  const label = state === "transcribing" ? "Analyzing" : state === "speaking" ? "Speaking" : "Thinking";
+  return (
+    <span className="px-1 py-0.5 text-[12px] font-medium text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
+function AgentActivityDots({ state }: { state: AIState }) {
+  const label = state === "transcribing" ? "Agent is analyzing" : "Agent is typing";
   return (
     <div className="flex items-center px-1 py-1 text-muted-foreground">
       <span className="flex items-center gap-1" aria-hidden="true">
@@ -71,7 +81,7 @@ function ThinkingDots() {
           />
         ))}
       </span>
-      <span className="sr-only">Agent is typing</span>
+      <span className="sr-only">{label}</span>
     </div>
   );
 }
@@ -83,15 +93,13 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 function getStatePill(state: AIState) {
-  if (state === "thinking" || state === "transcribing")
-    return { label: "Thinking", dot: "bg-warning" };
+  if (state === "thinking") return { label: "Thinking" };
+  if (state === "transcribing") return { label: "Analyzing" };
   if (state === "listening" || state === "recording")
-    return { label: "Listening", dot: "bg-primary" };
-  if (state === "speaking")
-    return { label: "Speaking", dot: "bg-[hsl(var(--chart-3))]" };
-  if (state === "error")
-    return { label: "Offline", dot: "bg-destructive" };
-  return { label: "Online", dot: "bg-emerald-500" };
+    return { label: "Listening" };
+  if (state === "speaking") return { label: "Speaking" };
+  if (state === "error") return { label: "Offline" };
+  return { label: "Online" };
 }
 
 /** Big quick-action card used on the welcome screen. */
@@ -228,7 +236,7 @@ export function AIBubble() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const restoreComposerFocusRef = useRef(false);
   const store = useAgentStore();
-  const { open, messages, state, error, voiceMode, micLevel } = store;
+  const { open, messages, state, error, voiceMode, micLevel, aiSpeaking } = store;
 
   const role = useMemo(() => getRoleFromPath(pathname), [pathname]);
   const quickActions = useMemo(() => getQuickActions(role), [role]);
@@ -338,11 +346,12 @@ export function AIBubble() {
   }
 
   const lastMessages = messages.slice(-40);
-  const pill = getStatePill(state);
+  const displayState: AIState = aiSpeaking ? "speaking" : state;
+  const pill = getStatePill(displayState);
   const busy = state === "thinking";
-  const showAgentDots = state === "thinking" || state === "transcribing" || state === "speaking";
+  const showAgentActivity = state === "thinking" || state === "transcribing";
   const isListening = state === "listening" || state === "recording";
-  const isSpeaking = state === "speaking";
+  const isSpeaking = aiSpeaking || state === "speaking";
   const hasUserConversation = messages.some((m) => m.role === "user");
   const showWelcome = !hasUserConversation;
 
@@ -395,18 +404,7 @@ export function AIBubble() {
                     )}
                     title={pill.label}
                   >
-                    {showAgentDots ? (
-                      <ThinkingDots />
-                    ) : (
-                      <>
-                        <motion.span
-                          className={cn("h-1.5 w-1.5 rounded-full", pill.dot)}
-                          animate={{ opacity: [0.55, 1, 0.55] }}
-                          transition={{ duration: 1.8, repeat: Infinity }}
-                        />
-                        {pill.label}
-                      </>
-                    )}
+                    {pill.label}
                   </span>
                 </div>
                 <p className="mt-0.5 truncate text-[11.5px] leading-tight text-muted-foreground">
@@ -499,7 +497,7 @@ export function AIBubble() {
                 )}
 
                 <AnimatePresence>
-                  {showAgentDots && !showWelcome && (
+                  {showAgentActivity && !showWelcome && (
                       <motion.div
                         key="agent-typing"
                         initial={{ opacity: 0, y: 4 }}
@@ -511,7 +509,7 @@ export function AIBubble() {
                           <Sparkles className="h-3 w-3" />
                         </div>
                         <div className="rounded-2xl rounded-bl-md border border-border/50 bg-background/80 px-3 py-2">
-                          <ThinkingDots />
+                          <AgentActivityDots state={state} />
                         </div>
                       </motion.div>
                     )}
@@ -595,10 +593,12 @@ export function AIBubble() {
                   </div>
 
                   <div className="flex min-h-[18px] items-center justify-center text-[11.5px] text-muted-foreground">
-                    {showAgentDots ? (
-                      <ThinkingDots />
+                    {showAgentActivity ? (
+                      <AgentActivityText state={state} />
                     ) : isListening ? (
                       "Listening — speak naturally"
+                    ) : isSpeaking ? (
+                      "Speaking"
                     ) : (
                       "Tap the mic to end voice mode"
                     )}

@@ -77,7 +77,7 @@ export default function InvestorMarketplacePage() {
 
 function MarketplaceCard({ property, wallet }: { property: Property; wallet: string | null }) {
   const investable = propertyIsInvestable(property);
-  const rentReady = Boolean(property.rent_enabled && Number(property.monthly_rent_eth ?? 0) > 0);
+  const rentReady = Number(property.monthly_rent_eth ?? 0) > 0;
   const [detailOpen, setDetailOpen] = useState(false);
   const [investOpen, setInvestOpen] = useState(false);
 
