@@ -129,6 +129,11 @@ function focusChatInput() {
   window.setTimeout(focus, 220);
 }
 
+function notifyAIDataChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
+}
+
 function enterCreatePropertyChatOnlyMode() {
   if (typeof window === "undefined") return;
   clearPendingModalQueues(CREATE_PROPERTY_MODAL);
@@ -311,6 +316,10 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
     images: [] as string[],
   };
 
+  markPropertyCreationPending(undefined, payload.name);
+  let finalPropertyName = payload.name;
+  let completedPropertyId: number | string | null | undefined = null;
+
   try {
     const base = getApiBase();
     const token = getToken();
@@ -342,11 +351,10 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
 
     const decoder = new TextDecoder();
     let sseBuffer = "";
-    let finalPropertyName = payload.name;
-    let completedPropertyId: number | string | null | undefined = null;
     let finalError: string | null = null;
+    let streamComplete = false;
 
-    while (true) {
+    while (!streamComplete) {
       const { done, value } = await reader.read();
       if (done) break;
       sseBuffer += decoder.decode(value, { stream: true });
@@ -366,22 +374,32 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
               detail?: string;
             };
             const eventPropertyId = event.property?.id ?? event.property_id;
+            const eventPropertyName = event.property?.name ?? finalPropertyName;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
               completedPropertyId = eventPropertyId;
-              markPropertyCreationPending(eventPropertyId);
+              markPropertyCreationPending(eventPropertyId, eventPropertyName);
+              streamComplete = true;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              streamComplete = true;
             } else if (eventPropertyId) {
-              markPropertyCreationPending(eventPropertyId);
+              markPropertyCreationPending(eventPropertyId, eventPropertyName);
             }
           } catch {
             /* skip malformed SSE JSON */
           }
+          if (streamComplete) break;
         }
+        if (streamComplete) break;
       }
     }
 
+    if (streamComplete) {
+      await reader.cancel().catch(() => {
+        /* stream already closed */
+      });
+    }
     if (finalError) throw new Error(finalError);
     clearPendingModalActions(CREATE_PROPERTY_MODAL);
     emitCompletion({
@@ -391,10 +409,15 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
         ? `Property '${finalPropertyName}' created successfully.`
         : "Property created successfully.",
     });
-    window.setTimeout(() => markPropertyCreationComplete(completedPropertyId), 0);
+    window.setTimeout(() => {
+      markPropertyCreationComplete(completedPropertyId, finalPropertyName);
+      notifyAIDataChanged();
+    }, 900);
     focusChatInput();
     return true;
   } catch (err: any) {
+    markPropertyCreationComplete(completedPropertyId, finalPropertyName || payload.name);
+    notifyAIDataChanged();
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
       status: "error",
@@ -432,9 +455,7 @@ export async function executeAction(
       if (action.type === "SUBMIT_FORM") {
         enterCreatePropertyChatOnlyMode();
         await submitCreatePropertyFromChat();
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
-        }
+        notifyAIDataChanged();
         return;
       }
     }

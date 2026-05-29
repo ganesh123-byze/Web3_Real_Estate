@@ -333,7 +333,13 @@ export function AIBubble() {
     if (state === "thinking") return;
     restoreComposerFocusRef.current = true;
     focusComposer();
-    void store.send(action.prompt, router, { fromVoice: false });
+    const createPropertyPrompt =
+      "Start a fresh new property listing. Ignore any old create-property draft. Ask me step by step in this exact order: first property name, then location, then total property value in ETH, then token supply, then token symbol, then monthly rent.";
+    void store.send(action.prompt, router, {
+      fromVoice: false,
+      freshSession: action.id === "owner.create",
+      apiText: action.id === "owner.create" ? createPropertyPrompt : undefined,
+    });
   }
 
   async function handleVoiceClick() {
