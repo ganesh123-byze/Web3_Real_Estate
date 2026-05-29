@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
 from backend.ai.agent import AIDisabledError, resume_agent, run_agent, stream_agent
+from backend.ai.tools import prepare_copilot_turn, reset_workflow_sessions_for_thread
 from backend.ai.checkpointer import get_saver
 from backend.ai.config import get_settings
 from backend.ai.schemas import (
@@ -49,6 +50,18 @@ def ai_status(user: AuthUser = Depends(get_current_user)) -> VoiceStatusResponse
     )
 
 
+@router.post("/workflows/reset")
+def reset_workflow_sessions(
+    body: ChatRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, int | str]:
+    """Clear server-side copilot workflow drafts (create property, invest, pay rent, etc.)."""
+    _ = user
+    thread_id = _thread_id(user, body.client_session_id, body.thread_id)
+    cleared = reset_workflow_sessions_for_thread(thread_id)
+    return {"status": "ok", "cleared": cleared, "thread_id": thread_id}
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(
     body: ChatRequest,
@@ -60,6 +73,8 @@ async def ai_chat(
     try:
         checkpointer = await get_saver()
         thread_id = _thread_id(user, body.client_session_id, body.thread_id)
+        if body.reset_workflow_sessions:
+            prepare_copilot_turn(thread_id, body.messages, explicit_reset=True)
         return await run_agent(user, body.messages, db, thread_id=thread_id, checkpointer=checkpointer)
     except AIDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
@@ -109,6 +124,8 @@ async def ai_chat_stream(
         try:
             checkpointer = await get_saver()
             thread_id = _thread_id(user, body.client_session_id, body.thread_id)
+            if body.reset_workflow_sessions:
+                prepare_copilot_turn(thread_id, body.messages, explicit_reset=True)
             async for event in stream_agent(
                 user, body.messages, db, thread_id=thread_id, checkpointer=checkpointer
             ):

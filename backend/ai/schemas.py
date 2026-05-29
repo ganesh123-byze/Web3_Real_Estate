@@ -39,6 +39,8 @@ class ChatRequest(BaseModel):
     client_session_id: str | None = None
     # Optional thread id for resuming checkpointed conversations.
     thread_id: str | None = None
+    # When true, drop server-side workflow drafts (copilot refresh / new chat).
+    reset_workflow_sessions: bool = False
 
 
 class InterruptResponse(BaseModel):

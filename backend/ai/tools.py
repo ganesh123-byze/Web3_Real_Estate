@@ -140,9 +140,75 @@ def _clear_workflow_session(modal: str) -> None:
         _workflow_sessions.pop(key, None)
 
 
+def reset_workflow_sessions_for_thread(
+    thread_id: str | None,
+    *,
+    modal: str | None = None,
+) -> int:
+    """Drop in-memory workflow drafts for a copilot thread (e.g. after chat refresh)."""
+    if not thread_id:
+        return 0
+    if modal:
+        key = f"{thread_id}:{modal}"
+        if key in _workflow_sessions:
+            _workflow_sessions.pop(key, None)
+            return 1
+        return 0
+    prefix = f"{thread_id}:"
+    keys = [key for key in list(_workflow_sessions) if key.startswith(prefix)]
+    for key in keys:
+        _workflow_sessions.pop(key, None)
+    return len(keys)
+
+
+def _copilot_message_pairs(messages: list[Any]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for msg in messages or []:
+        role = _message_role(msg)
+        if role not in ("human", "user", "assistant", "ai"):
+            continue
+        content = _message_content(msg)
+        if content:
+            pairs.append((role, content))
+    return pairs
+
+
+def copilot_messages_indicate_ui_reset(messages: list[Any]) -> bool:
+    """True when the client cleared chat (welcome only, or welcome + one user line)."""
+    visible = _copilot_message_pairs(messages)
+    if not visible:
+        return True
+    if len(visible) <= 2 and visible[0][0] in ("assistant", "ai"):
+        return True
+    return False
+
+
+def prepare_copilot_turn(
+    thread_id: str | None,
+    messages: list[Any],
+    *,
+    explicit_reset: bool = False,
+) -> bool:
+    """Clear stale workflow caches before an agent turn when the UI started fresh."""
+    if explicit_reset or copilot_messages_indicate_ui_reset(messages):
+        cleared = reset_workflow_sessions_for_thread(thread_id)
+        if cleared:
+            LOGGER.info(
+                "Cleared %d workflow session(s) for thread %s (explicit_reset=%s)",
+                cleared,
+                thread_id,
+                explicit_reset,
+            )
+        return True
+    return False
+
+
 def _message_role(msg: Any) -> str:
     if isinstance(msg, dict):
         return (msg.get("type") or msg.get("role") or "").lower()
+    role = getattr(msg, "role", None)
+    if role is not None:
+        return str(role).lower()
     cls = type(msg).__name__.lower()
     if "human" in cls:
         return "human"
@@ -154,9 +220,10 @@ def _message_role(msg: Any) -> str:
 
 
 def _message_content(msg: Any) -> str:
-    content = getattr(msg, "content", None)
-    if content is None and isinstance(msg, dict):
+    if isinstance(msg, dict):
         content = msg.get("content")
+    else:
+        content = getattr(msg, "content", None)
     return (content or "").strip() if isinstance(content, str) else ""
 
 
@@ -1787,19 +1854,27 @@ def _create_property_session_needs_ui_bootstrap(session: dict[str, Any]) -> bool
     return not bool(session.get("in_progress"))
 
 
+def _human_requested_new_create_property_listing() -> bool:
+    """Detect a fresh 'create/add/list a property' intent in the latest user line."""
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("human", "user"):
+            continue
+        text = _message_content(msg)
+        if not text:
+            continue
+        if is_generic_create_property_intent(text):
+            return True
+        lowered = text.lower()
+        return "create" in lowered and "property" in lowered
+    return False
+
+
 async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
     modal = _CREATE_PROPERTY_MODAL
     required = _CREATE_PROPERTY_FIELDS[:5]
-    session = _get_workflow_session(modal)
-    # True restart after a completed submit, post-success boundary, or empty draft.
-    if (
-        session.get("awaiting_new_property")
-        or session.get("submitted")
-        or not session.get("filled")
-    ):
-        _clear_workflow_session(modal)
-        session = {}
-    filled = dict(session.get("filled") or {})
+    # Explicit start always opens a new draft (abandoned partial forms, chat refresh, etc.).
+    _clear_workflow_session(modal)
+    filled: dict[str, str] = {}
     missing = [f for f in required if f not in filled or not filled.get(f)]
     next_field = missing[0] if missing else None
     _set_workflow_session(
@@ -2366,6 +2441,19 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     force_ui_bootstrap = bool(args.pop("_force_create_property_bootstrap", False))
     LOGGER.info("[fill_create_property] args=%s", args)
     pre_session = _get_workflow_session(_CREATE_PROPERTY_MODAL)
+
+    # Abandoned draft + user asks to create again (often after copilot refresh) without
+    # passing new field values yet — drop the stale server session.
+    if (
+        _human_requested_new_create_property_listing()
+        and not _create_property_args_change_fields(args)
+        and pre_session.get("in_progress")
+        and not pre_session.get("submitted")
+        and not pre_session.get("awaiting_new_property")
+    ):
+        _clear_workflow_session(_CREATE_PROPERTY_MODAL)
+        pre_session = {}
+
     needs_ui_bootstrap = force_ui_bootstrap or _create_property_session_needs_ui_bootstrap(
         pre_session
     )

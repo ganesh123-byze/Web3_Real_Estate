@@ -33,6 +33,7 @@ from backend.ai.tools import (
     dispatch,
     invest_workflow_session,
     openai_tool_schemas,
+    prepare_copilot_turn,
     reset_current_messages,
     reset_current_thread_id,
     set_current_messages,
@@ -392,9 +393,12 @@ async def run_agent(
 
     effective_thread = thread_id or f"user:{user.wallet_address or user.id}"
     tid_token = set_current_thread_id(effective_thread)
+    msg_token = set_current_messages(history)
     try:
+        prepare_copilot_turn(effective_thread, history)
         final_state = await graph.ainvoke(AgentState(messages=messages, actions=[]), config=config or None)
     finally:
+        reset_current_messages(msg_token)
         reset_current_thread_id(tid_token)
 
     final_msg = final_state["messages"][-1]
@@ -527,7 +531,9 @@ async def stream_agent(
 
     effective_thread = thread_id or f"user:{user.wallet_address or user.id}"
     tid_token = set_current_thread_id(effective_thread)
+    msg_token = set_current_messages(history)
     try:
+        prepare_copilot_turn(effective_thread, history)
         async for event in graph.astream_events(
             AgentState(messages=messages, actions=[]),
             config=config or None,
@@ -575,4 +581,5 @@ async def stream_agent(
                     }
                 yield payload
     finally:
+        reset_current_messages(msg_token)
         reset_current_thread_id(tid_token)
