@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assess_high_value_create_property,
+    assess_monthly_rent_over_chatbot_limit,
     assistant_prompted_for_create_field,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
@@ -1957,12 +1958,18 @@ def _build_fill_workflow(
     if modal == _CREATE_PROPERTY_MODAL:
         prev = _get_workflow_session(modal) or {}
         session_payload["awaiting_new_property"] = False
-        session_payload.setdefault("awaiting_high_value_confirmation", False)
-        session_payload.setdefault("high_values_confirmed", False)
         if _create_property_args_change_fields(args):
+            # User edited a field — drop stale confirmation flags so lowered
+            # values are not blocked by an earlier high-value prompt.
             session_payload["property_create_cancelled"] = False
-        elif prev.get("property_create_cancelled"):
-            session_payload["property_create_cancelled"] = True
+            session_payload["awaiting_high_value_confirmation"] = False
+            session_payload["high_values_confirmed"] = False
+        else:
+            session_payload["awaiting_high_value_confirmation"] = bool(
+                prev.get("awaiting_high_value_confirmation")
+            )
+            session_payload["high_values_confirmed"] = bool(prev.get("high_values_confirmed"))
+            session_payload["property_create_cancelled"] = bool(prev.get("property_create_cancelled"))
     _set_workflow_session(modal, session_payload)
     return ToolResult(
         ok=True,
@@ -2084,6 +2091,43 @@ def _resolve_create_high_value_confirmation(
     return None
 
 
+def _gate_create_property_rent_limit(accumulated: dict[str, str]) -> ToolResult | None:
+    """Block create flow when monthly rent exceeds the admin chatbot cap (50 ETH)."""
+    check = assess_monthly_rent_over_chatbot_limit(accumulated)
+    if not check.get("over_limit"):
+        return None
+
+    cleaned = dict(accumulated)
+    cleaned.pop("monthly_rent_eth", None)
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": cleaned,
+            "next_field": "monthly_rent_eth",
+            "submitted": False,
+            "awaiting_high_value_confirmation": False,
+            "high_values_confirmed": False,
+            "property_create_cancelled": False,
+            "awaiting_new_property": False,
+        },
+    )
+    speak = str(check.get("speak_to_user") or "")
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": cleaned,
+            "missing": [],
+            "next_field": "monthly_rent_eth",
+            "submitted": False,
+            "rent_over_limit": True,
+            "speak_to_user": speak,
+            "instruction": str(check.get("instruction") or ""),
+        },
+        actions=[],
+    )
+
+
 def _gate_high_value_create_submit(
     accumulated: dict[str, str],
     args: dict,
@@ -2099,6 +2143,15 @@ def _gate_high_value_create_submit(
 
     assessment = assess_high_value_create_property(accumulated)
     if not assessment.get("is_high"):
+        if session.get("awaiting_high_value_confirmation") or session.get("high_values_confirmed"):
+            _set_workflow_session(
+                _CREATE_PROPERTY_MODAL,
+                {
+                    **session,
+                    "awaiting_high_value_confirmation": False,
+                    "high_values_confirmed": False,
+                },
+            )
         return None
 
     confirm = _resolve_create_high_value_confirmation(args, session)
@@ -2290,6 +2343,10 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     accumulated = normalize_create_property_accumulated(dict(data.get("filled") or {}))
     data["filled"] = accumulated
     submitted = bool(args.get("submit")) and not data.get("missing")
+
+    rent_gated = _gate_create_property_rent_limit(accumulated)
+    if rent_gated is not None:
+        return rent_gated
 
     if submitted or (not data.get("missing") and pre_session.get("awaiting_high_value_confirmation")):
         gate_session = {**pre_session, **(_get_workflow_session(_CREATE_PROPERTY_MODAL) or {})}

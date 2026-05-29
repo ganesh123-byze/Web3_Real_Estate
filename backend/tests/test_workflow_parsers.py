@@ -1,5 +1,7 @@
 """Tests for spoken workflow answer normalization."""
 from backend.ai.workflow_parsers import (
+    assess_high_value_create_property,
+    assess_monthly_rent_over_chatbot_limit,
     assistant_prompted_for_create_field,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
@@ -58,3 +60,14 @@ def test_accumulated_normalization():
     )
     assert out["token_supply"] == "100000"
     assert out["token_symbol"] == "USD"
+    assert out["monthly_rent_eth"] == "0.5"
+
+
+def test_rent_at_fifty_is_allowed():
+    assert assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "50"})["over_limit"] is False
+
+
+def test_rent_above_fifty_is_rejected():
+    blocked = assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "50.01"})
+    assert blocked["over_limit"] is True
+    assert "below 50" in blocked["speak_to_user"].lower()

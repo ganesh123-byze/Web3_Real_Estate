@@ -12,7 +12,11 @@ from backend.ai.tools import (
     set_current_messages,
     set_current_thread_id,
 )
-from backend.ai.workflow_parsers import assess_high_value_create_property, parse_yes_no_confirmation
+from backend.ai.workflow_parsers import (
+    assess_high_value_create_property,
+    assess_monthly_rent_over_chatbot_limit,
+    parse_yes_no_confirmation,
+)
 from backend.services.auth import AuthUser
 
 
@@ -39,6 +43,69 @@ def test_assess_high_value_when_token_supply_large():
     )
     assert out["is_high"] is True
     assert any("Token supply" in r for r in out["reasons"])
+
+
+def test_assess_not_high_for_typical_low_values():
+    out = assess_high_value_create_property(
+        {
+            "name": "Villa",
+            "location": "Miami",
+            "total_value": "10",
+            "token_supply": "10000",
+            "token_symbol": "VIL",
+            "monthly_rent_eth": "0.5",
+        }
+    )
+    assert out["is_high"] is False
+
+
+def test_high_rent_does_not_trigger_high_value_confirmation():
+    """Rent is capped separately; moderate rent must not add high-value reasons."""
+    out = assess_high_value_create_property(
+        {
+            "name": "Tower",
+            "location": "NYC",
+            "total_value": "10",
+            "token_supply": "10000",
+            "token_symbol": "TWR",
+            "monthly_rent_eth": "12",
+        }
+    )
+    assert out["is_high"] is False
+
+
+def test_rent_over_fifty_is_blocked():
+    out = assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "51"})
+    assert out["over_limit"] is True
+    assert "50" in str(out["speak_to_user"])
+    assert assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "49"})["over_limit"] is False
+
+
+def test_fill_create_blocks_rent_over_fifty():
+    token = set_current_thread_id("test:create:rent-cap")
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        res = asyncio.run(
+            _fill_create_property(
+                {
+                    "name": "Sky Tower",
+                    "location": "Dubai",
+                    "total_value": "10",
+                    "token_supply": "10000",
+                    "token_symbol": "SKY",
+                    "monthly_rent_eth": "55",
+                },
+                _owner(),
+                None,
+            )
+        )
+        assert res.ok
+        assert res.data.get("rent_over_limit") is True
+        assert "monthly_rent_eth" not in (res.data.get("filled") or {})
+        assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
 
 
 def test_parse_yes_no_confirmation():
