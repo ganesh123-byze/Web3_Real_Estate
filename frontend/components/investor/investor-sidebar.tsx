@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Building2, LayoutDashboard, Receipt, Wallet } from "lucide-react";
+import { SidebarWalletPanel } from "@/components/layout/sidebar-wallet-panel";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -96,6 +97,10 @@ export function InvestorSidebar() {
             );
           })}
         </nav>
+      </div>
+
+      <div className="px-4 pb-5">
+        <SidebarWalletPanel />
       </div>
     </aside>
   );

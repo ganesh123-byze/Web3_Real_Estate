@@ -9,6 +9,7 @@ import {
   Receipt,
   Users,
 } from "lucide-react";
+import { SidebarWalletPanel } from "@/components/layout/sidebar-wallet-panel";
 import { cn } from "@/lib/utils";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -62,6 +63,8 @@ export function AdminSidebar() {
           );
         })}
       </nav>
+
+      <SidebarWalletPanel />
     </aside>
   );
 }
