@@ -156,6 +156,24 @@ class UserRead(BaseModel):
     kyc_status: str
 
 
+class OwnerInvestorPositionRead(BaseModel):
+    property_id: int
+    property_name: str
+    token_symbol: Optional[str] = None
+    token_amount: Decimal
+    ownership_percentage: float
+
+
+class OwnerInvestorRead(BaseModel):
+    wallet_address: str
+    user_id: Optional[int] = None
+    email: Optional[str] = None
+    kyc_status: Optional[str] = None
+    positions: list[OwnerInvestorPositionRead]
+    properties_count: int
+    avg_ownership_pct: float
+
+
 class DashboardSummary(BaseModel):
     total_portfolio_value: Decimal
     total_token_holdings: Decimal

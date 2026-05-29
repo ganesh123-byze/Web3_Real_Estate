@@ -306,6 +306,24 @@ export type RentDistributionPreview = {
   }>;
 };
 
+export type OwnerInvestorPosition = {
+  property_id: number;
+  property_name: string;
+  token_symbol?: string | null;
+  token_amount: string | number;
+  ownership_percentage: number;
+};
+
+export type OwnerInvestor = {
+  wallet_address: string;
+  user_id?: number | null;
+  email?: string | null;
+  kyc_status?: string | null;
+  positions: OwnerInvestorPosition[];
+  properties_count: number;
+  avg_ownership_pct: number;
+};
+
 export type AutonomousIntelEvent = {
   id: number;
   agent: string;

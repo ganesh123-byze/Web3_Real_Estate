@@ -22,6 +22,7 @@ import type {
   UserRecord,
   WalletBalances,
   AutonomousIntelEvent,
+  OwnerInvestor,
 } from "./types";
 
 const POLL_MS = 12_000;
@@ -37,6 +38,7 @@ export const queryKeys = {
   rentDistributions: ["rent", "distributions"] as const,
   rentPayments: ["rent", "payments"] as const,
   rentActiveRentals: ["rent", "active-rentals"] as const,
+  ownerInvestors: ["owner", "investors"] as const,
   investorPortfolio: (wallet?: string | null) => ["investor", "portfolio", wallet] as const,
   investorWalletBalances: (wallet?: string | null) => ["investor", "wallet-balances", wallet] as const,
   investorTransactions: (wallet?: string | null) => ["investor", "transactions", wallet] as const,
@@ -140,6 +142,14 @@ export function useActiveRentals() {
   return useQuery({
     queryKey: queryKeys.rentActiveRentals,
     queryFn: () => api.get<unknown[]>("/owner/active-rentals"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useOwnerInvestors() {
+  return useQuery({
+    queryKey: queryKeys.ownerInvestors,
+    queryFn: () => api.get<OwnerInvestor[]>("/owner/investors"),
     refetchInterval: POLL_MS,
   });
 }

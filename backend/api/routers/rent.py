@@ -50,6 +50,7 @@ from backend.api.schemas import (
     RentPaymentRead,
     RewardClaimHistoryRead,
     SetMonthlyRentRequest,
+    OwnerInvestorRead,
 )
 from backend.services.blockchain import (
     calculate_rent_distribution,
@@ -273,6 +274,90 @@ def admin_rent_analytics(db=Depends(get_db)):
         )
     finally:
         cursor.close()
+
+
+@router.get(
+    "/owner/investors",
+    response_model=list[OwnerInvestorRead],
+    dependencies=[Depends(require_property_owner)],
+)
+def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_current_user)):
+    """Wallets with on-chain token holdings across the signed-in owner's properties."""
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT u.id AS user_id, u.wallet_address, u.email, u.kyc_status,
+                   p.id AS property_id, p.name AS property_name, p.token_symbol,
+                   p.token_supply, o.token_amount AS token_amount_base
+            FROM token_ownerships o
+            JOIN users u ON u.id = o.user_id
+            JOIN properties p ON p.id = o.property_id
+            WHERE LOWER(p.owner_wallet) = LOWER(%s) AND o.token_amount > 0
+            ORDER BY o.token_amount DESC, p.id DESC
+            """,
+            (user.wallet_address,),
+        )
+        rows = cursor.fetchall() or []
+    finally:
+        cursor.close()
+
+    by_wallet: dict[str, dict] = {}
+    for row in rows:
+        wallet = str(row["wallet_address"])
+        key = wallet.lower()
+        base = int(row.get("token_amount_base") or 0)
+        supply = int(row.get("token_supply") or 0)
+        whole = base // (10 ** 18) if base else 0
+        supply_whole = supply // (10 ** 18) if supply else 0
+        pct = round((whole / supply_whole) * 100, 2) if supply_whole else 0.0
+        bucket = by_wallet.setdefault(
+            key,
+            {
+                "wallet_address": wallet,
+                "user_id": row.get("user_id"),
+                "email": row.get("email"),
+                "kyc_status": row.get("kyc_status"),
+                "positions": [],
+            },
+        )
+        bucket["positions"].append(
+            {
+                "property_id": int(row["property_id"]),
+                "property_name": row["property_name"],
+                "token_symbol": row.get("token_symbol"),
+                "token_amount": Decimal(whole),
+                "ownership_percentage": pct,
+            }
+        )
+
+    investors: list[OwnerInvestorRead] = []
+    for bucket in by_wallet.values():
+        positions = bucket["positions"]
+        avg_pct = (
+            round(sum(p["ownership_percentage"] for p in positions) / len(positions), 2)
+            if positions
+            else 0.0
+        )
+        investors.append(
+            OwnerInvestorRead(
+                wallet_address=bucket["wallet_address"],
+                user_id=bucket.get("user_id"),
+                email=bucket.get("email"),
+                kyc_status=bucket.get("kyc_status"),
+                positions=positions,
+                properties_count=len(positions),
+                avg_ownership_pct=avg_pct,
+            )
+        )
+
+    investors.sort(
+        key=lambda inv: (
+            -sum(p.ownership_percentage for p in inv.positions),
+            inv.wallet_address.lower(),
+        )
+    )
+    return investors
 
 
 @router.get("/owner/distributions", response_model=list[RentDistributionRead], dependencies=[Depends(require_property_owner)])
