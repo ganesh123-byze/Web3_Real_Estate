@@ -307,7 +307,7 @@ export function PropertyDetailDialog({
                     />
                     <InfoRow label="Token standard" value={property.nft_token_id != null ? "ERC-721" : property.token_address ? "ERC-20" : "—"} />
                     <CopyRow
-                      label="Created by"
+                      label="Created by wallet"
                       value={creatorWallet}
                       fallback="Creator not recorded"
                       mono

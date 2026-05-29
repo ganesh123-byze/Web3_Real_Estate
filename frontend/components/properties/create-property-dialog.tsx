@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { PropertyImageUploader } from "@/components/properties/property-image-uploader";
 import {
   clearPendingWorkflowActions,
+  CREATE_PROPERTY_CHAT_ONLY_EVENT,
   emitWorkflowCompletion,
   focusWorkflowField,
   getWorkflowFormValues,
@@ -361,9 +362,12 @@ export function CreatePropertyDialog() {
     drain();
     const timers = [80, 240, 600, 1200].map((ms) => window.setTimeout(drain, ms));
     const unsubscribe = subscribeWorkflowAction(handleAction);
+    const closeForChatOnly = () => setOpen(false);
+    window.addEventListener(CREATE_PROPERTY_CHAT_ONLY_EVENT, closeForChatOnly);
     return () => {
       timers.forEach((t) => window.clearTimeout(t));
       unsubscribe();
+      window.removeEventListener(CREATE_PROPERTY_CHAT_ONLY_EVENT, closeForChatOnly);
     };
   }, []);
 

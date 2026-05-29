@@ -35,7 +35,7 @@ export function WalletPill({ className }: { className?: string }) {
       <Button asChild size="sm" variant="outline" className={cn("gap-2 px-3", className)}>
         <a href="/">
           <MetaMaskIcon size={16} />
-          Connect Wallet
+          Login with MetaMask
         </a>
       </Button>
     );
@@ -58,12 +58,12 @@ export function WalletPill({ className }: { className?: string }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Connected wallet</DropdownMenuLabel>
+        <DropdownMenuLabel>MetaMask wallet</DropdownMenuLabel>
         <div className="px-2 pb-2 font-mono text-[11px] text-muted-foreground break-all">{wallet}</div>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => logout()} className="text-destructive focus:text-destructive">
           <LogOut className="h-4 w-4" />
-          Disconnect
+          Logout with MetaMask
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

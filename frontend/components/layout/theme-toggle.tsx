@@ -11,30 +11,23 @@ export function ThemeToggle({ className }: { className?: string }) {
   useEffect(() => setMounted(true), []);
 
   const isDark = mounted ? resolvedTheme === "dark" : true;
+  const Icon = isDark ? Sun : Moon;
 
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={isDark}
-      aria-label="Toggle theme"
+      aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
       onClick={() => setTheme(isDark ? "light" : "dark")}
       className={cn(
-        "relative inline-flex h-8 w-14 items-center rounded-full border transition-colors",
+        "grid h-10 w-10 place-items-center rounded-2xl border shadow-sm transition-all",
         isDark
-          ? "border-primary/25 bg-primary/15 hover:bg-primary/20"
-          : "border-border bg-white hover:bg-white",
+          ? "border-white/15 bg-white text-slate-950 hover:bg-white/90"
+          : "border-slate-200 bg-slate-950 text-white hover:bg-slate-800",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         className,
       )}
     >
-      <Sun className={cn("absolute left-1.5 h-3.5 w-3.5", isDark ? "text-muted-foreground/60" : "text-warning")} />
-      <Moon className={cn("absolute right-1.5 h-3.5 w-3.5", isDark ? "text-primary" : "text-muted-foreground/60")} />
-      <span
-        className={cn(
-          "z-10 inline-block h-6 w-6 rounded-full bg-background shadow-md ring-1 ring-border transition-transform duration-200",
-          isDark ? "translate-x-[30px]" : "translate-x-[2px]",
-        )}
-      />
+      <Icon className="h-4 w-4" />
     </button>
   );
 }
