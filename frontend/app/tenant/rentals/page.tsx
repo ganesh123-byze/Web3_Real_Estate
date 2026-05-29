@@ -149,6 +149,7 @@ function RentalCard({
   const supply = Number(property.token_supply ?? 0);
   const soldPct = Number(property.sold_percentage ?? percent(sold, supply));
   const monthlyRent = Number(property.monthly_rent_eth ?? 0);
+  const rentReady = monthlyRent > 0;
   const [open, setOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -191,8 +192,8 @@ function RentalCard({
                 <MapPin className="h-3 w-3" /> {property.location}
               </div>
             </div>
-            <Badge variant={isActiveRental ? "success" : property.rent_enabled ? "success" : "warning"} className="h-5 shrink-0 rounded-md px-2 text-[10px]">
-              {isActiveRental ? "Renting" : property.rent_enabled ? "Rent ready" : "Rent not set"}
+            <Badge variant={isActiveRental ? "success" : rentReady ? "success" : "warning"} className="h-5 shrink-0 rounded-md px-2 text-[10px]">
+              {isActiveRental ? "Renting" : rentReady ? "Rent ready" : "Rent not set"}
             </Badge>
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs">
@@ -248,7 +249,7 @@ function RentalCard({
         property={property}
         open={detailOpen}
         onOpenChange={setDetailOpen}
-        statusLabel={isActiveRental ? "Renting" : property.rent_enabled ? "Rent ready" : "Rent not set"}
+        statusLabel={isActiveRental ? "Renting" : rentReady ? "Rent ready" : "Rent not set"}
         actionLabel={property.current_cycle_paid ? "Paid ✔" : "Rent Now"}
         actionDisabled={!wallet || !property.rent_enabled || property.current_cycle_paid}
         onAction={() => {

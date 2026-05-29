@@ -108,7 +108,7 @@ export function PropertyDetailDialog({
   const available = property ? availablePropertyTokens(property) : 0;
   const investable = property ? propertyIsInvestable(property) : false;
   const unitValue = propertyUnitValue(property);
-  const rentReady = Boolean(property?.rent_enabled && monthlyRent > 0);
+  const rentReady = monthlyRent > 0;
   const financials = property ? deriveFinancialOverview(property) : null;
   const creatorWallet = useMemo(() => {
     if (!property) return null;
