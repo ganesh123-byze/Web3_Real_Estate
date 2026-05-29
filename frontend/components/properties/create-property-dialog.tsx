@@ -103,6 +103,29 @@ const initial = {
 
 type FormState = typeof initial;
 
+function hasWorkflowDraft(cache: Record<string, string>, form: FormState): boolean {
+  return TEXT_FIELDS.some((k) => {
+    const cached = cache[k as keyof FormState];
+    if (cached !== undefined && cached !== "") return true;
+    const current = form[k as keyof FormState];
+    return typeof current === "string" && current.trim() !== "";
+  });
+}
+
+function formFromWorkflowCache(base: FormState, cache: Record<string, string>): FormState {
+  const pick = (k: Exclude<keyof FormState, "images">) =>
+    cache[k] !== undefined && cache[k] !== "" ? String(cache[k]) : base[k];
+  return {
+    name: pick("name"),
+    location: pick("location"),
+    total_value: pick("total_value"),
+    token_supply: pick("token_supply"),
+    token_symbol: pick("token_symbol"),
+    monthly_rent_eth: pick("monthly_rent_eth"),
+    images: base.images,
+  };
+}
+
 const TEXT_FIELDS: ReadonlyArray<keyof FormState> = [
   "name",
   "location",
@@ -265,8 +288,19 @@ export function CreatePropertyDialog() {
       if (!isWorkflowModalAction(action, "CREATE_PROPERTY")) return;
 
       if (action.type === "OPEN_MODAL") {
-        setForm(initial);
         setOpen(true);
+        const cache = getWorkflowFormValues("CREATE_PROPERTY");
+        // Re-opening the dialog must not wipe fields the copilot already
+        // collected — that broke multi-turn create flows and empty submits.
+        setForm((current) => {
+          if (hasWorkflowDraft(cache, current)) {
+            return formFromWorkflowCache(current, cache);
+          }
+          return { ...initial };
+        });
+        if (!hasWorkflowDraft(cache, initial)) {
+          setStepEvents([]);
+        }
         return;
       }
 
@@ -296,16 +330,30 @@ export function CreatePropertyDialog() {
         return;
       }
 
-      // SUBMIT_FORM intentionally NOT handled here — the action-
-      // executor clicks the visible Create button which triggers
-      // onSubmit above.
+      if (action.type === "SUBMIT_FORM") {
+        const trySubmit = (attemptsLeft: number) => {
+          window.setTimeout(() => {
+            if (formRef.current) {
+              formRef.current.requestSubmit();
+              return;
+            }
+            if (attemptsLeft > 0) trySubmit(attemptsLeft - 1);
+          }, 180);
+        };
+        trySubmit(24);
+      }
     };
 
     // Catch an OPEN_MODAL that arrived before mount (e.g. fired
     // during the NAVIGATE that landed us on this page).
     if (takePendingModalOpen("CREATE_PROPERTY")) {
-      setForm(initial);
       setOpen(true);
+      const cache = getWorkflowFormValues("CREATE_PROPERTY");
+      if (hasWorkflowDraft(cache, initial)) {
+        setForm(formFromWorkflowCache(initial, cache));
+      } else {
+        setForm(initial);
+      }
     }
     const drain = () => {
       for (const a of takePendingWorkflowActions("CREATE_PROPERTY")) handleAction(a);
@@ -338,8 +386,8 @@ export function CreatePropertyDialog() {
         // remains the authoritative input while the agent drives the form.
         onOpenAutoFocus={(e) => {
           if (typeof document === "undefined") return;
-          const chat = document.querySelector<HTMLInputElement>(
-            '[data-ai-chat-input]',
+          const chat = document.querySelector<HTMLTextAreaElement>(
+            "[data-ai-chat-input]",
           );
           if (chat && !chat.disabled) e.preventDefault();
         }}

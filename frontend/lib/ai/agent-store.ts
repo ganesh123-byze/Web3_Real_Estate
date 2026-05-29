@@ -260,24 +260,26 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
       if (streamError) throw new Error(streamError);
 
+      // Unblock the composer immediately so the admin can answer the next
+      // field question while the agent opens/fills the on-screen form.
+      if (get().state !== "error") set({ state: "idle" });
+
       if (actions.length) {
-        await executeActions(actions, router);
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
-        }
-        // After the agent navigates / opens dialogs / clicks Create, focus
-        // may have landed somewhere outside the chat textbox (the form
-        // input that Radix would have auto-focused, the submit button we
-        // clicked, etc.). Put it back so the user can keep typing their
-        // next message without first clicking back into the chat.
-        if (typeof document !== "undefined") {
-          const chatInput = document.querySelector<HTMLInputElement>(
-            "[data-ai-chat-input]",
-          );
-          if (chatInput && !chatInput.disabled) {
-            window.setTimeout(() => chatInput.focus(), 0);
+        void executeActions(actions, router).then(() => {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
           }
-        }
+          // After navigate / open / submit, refocus chat so the next
+          // answer lands in the copilot, not a form field.
+          if (typeof document !== "undefined") {
+            const chatInput = document.querySelector<HTMLTextAreaElement>(
+              "[data-ai-chat-input]",
+            );
+            if (chatInput && !chatInput.disabled) {
+              window.setTimeout(() => chatInput.focus(), 0);
+            }
+          }
+        });
       }
 
       const spokenText = finalReply || streamingText;

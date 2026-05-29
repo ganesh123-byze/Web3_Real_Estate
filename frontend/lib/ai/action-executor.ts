@@ -88,11 +88,17 @@ export function takePendingModalActions(modal: string): AIAction[] {
   return valid;
 }
 
-export function clearPendingModalActions(modal: string) {
+/** Drop queued modal events only — keeps accumulated FILL_FIELD values. */
+export function clearPendingModalQueues(modal: string) {
   if (window.__estatechainPendingModalActions) {
     delete window.__estatechainPendingModalActions[modal];
   }
   pendingModalOpens.delete(modal);
+}
+
+/** Full reset after submit / error — queues and cached field values. */
+export function clearPendingModalActions(modal: string) {
+  clearPendingModalQueues(modal);
   workflowFormValues.delete(modal);
 }
 
@@ -141,7 +147,7 @@ export function focusField(modal: string, field: string) {
   // conversation their next keystroke must land in chat, not in the
   // form the agent is filling out. (Voice mode renders no chat input,
   // so this guard naturally no-ops there and we focus normally.)
-  const chatInput = document.querySelector<HTMLInputElement>(
+  const chatInput = document.querySelector<HTMLTextAreaElement>(
     "[data-ai-chat-input]",
   );
   if (chatInput && !chatInput.disabled) return;
@@ -261,8 +267,9 @@ export async function executeAction(action: AIAction, router: { push: (href: str
   }
   if (action.type === "OPEN_MODAL" && action.modal) {
     console.log("[AI Action] Opening modal:", action.modal);
-    workflowFormValues.delete(action.modal);
-    clearPendingModalActions(action.modal);
+    // Do not wipe workflowFormValues — OPEN_MODAL often precedes FILL_FIELD
+    // in the same turn; clearing here caused empty submits on repeat opens.
+    clearPendingModalQueues(action.modal);
     const opened = await openWorkflowModal(action.modal);
     // Always emit the OPEN_MODAL event so listeners that mount later (after
     // a navigation) can pick it up via takePendingModalOpen.
