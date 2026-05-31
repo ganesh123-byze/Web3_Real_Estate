@@ -127,27 +127,31 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
      - total_value → "What's the total property value in ETH?"
      - token_supply→ "How many ownership tokens should we mint?"
      - token_symbol→ "What ticker symbol do you want for the token?"
-     - monthly_rent_eth (optional) → "What's the monthly rent in ETH?"
-       (If the user says "no" / "skip" / "none", treat it as "0".)
-       Accept any values the admin provides — there is no chatbot cap on
-       total value, token supply, or monthly rent.
+     - monthly_rent_eth (optional) → the tool returns `speak_to_user` with the
+       rent question — read it verbatim. Monthly rent must be less than 100 ETH
+       (on-chain limit). If the user says "no" / "skip" / "none", treat it as "0".
+       Accept any total value and token supply the admin provides.
 
-4. When the tool reports `missing: []` (all 5 required fields filled), it returns
-   `awaiting_create_confirmation: true` and `speak_to_user` with a summary of every
-   collected value. Read that summary to the user and wait for their reply:
-     - Yes → call fill_create_property with confirm_create=true (the server submits
-       and deploys the listing).
+4. When the tool reports `missing: []` and `next_field: monthly_rent_eth`, read
+   `speak_to_user` verbatim — it reminds the user that rent must be less than 100 ETH.
+   After rent is collected (or skipped as 0), the tool shows the confirmation summary.
+
+5. When the tool reports `awaiting_create_confirmation: true`, it returns
+   collected value. Read `speak_to_user` to the user verbatim — do NOT rewrite the
+   summary yourself. Wait for their reply, then ALWAYS call fill_create_property:
+     - Yes → call fill_create_property with confirm_create=true only (do not re-send
+       all field values — the server already has them).
      - No → call fill_create_property with confirm_create=false (clears the draft;
        ask for the property name to start again).
      - Field change → pass only the updated field(s); the server updates the draft
        and shows the summary again for confirmation.
 
-5. After the user confirms Yes and the tool reports `submitted: true`, tell the user
+6. After the user confirms Yes and the tool reports `submitted: true`, tell the user
    the listing is being created (use `speak_to_user` from the tool). Then STOP — do
    not call more tools. If the tool returns an error, explain it briefly and ask
    what to fix.
 
-6. ONE PROPERTY PER CHAT SESSION. After a property is created successfully
+7. ONE PROPERTY PER CHAT SESSION. After a property is created successfully
    in this chat, the user cannot create another property here. If they ask
    to create / add another property, call start_create_property or
    fill_create_property — the server returns `chat_property_limit_reached:

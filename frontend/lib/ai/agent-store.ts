@@ -460,12 +460,23 @@ if (typeof window !== "undefined") {
     useAgentStore.setState({ aiSpeaking: speaking });
   });
 
-  // Globally subscribe to workflow completion events so every successful
-  // agent-initiated workflow (create property, invest, pay rent, claim
-  // yield, edit / delete / set rent) ends with a clear confirmation
-  // message in chat (and TTS in voice mode).
+  // Globally subscribe to workflow completion events so every agent-initiated
+  // workflow ends with a clear confirmation (or error) message in chat.
   subscribeCompletion((event) => {
-    if (event.status !== "success") return;
-    useAgentStore.getState().notifyWorkflowSuccess(event);
+    if (event.status === "success") {
+      useAgentStore.getState().notifyWorkflowSuccess(event);
+      return;
+    }
+    const message = event.message?.trim();
+    if (!message) return;
+    const existing = useAgentStore.getState().messages;
+    const duplicate = existing.slice(-2).some(
+      (m) => m.role === "assistant" && m.content.trim() === message,
+    );
+    if (duplicate) return;
+    useAgentStore.setState({
+      error: message,
+      messages: [...existing, msg("assistant", message)],
+    });
   });
 }

@@ -242,6 +242,38 @@ def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[s
     return out
 
 
+CREATE_PROPERTY_MAX_MONTHLY_RENT_ETH = Decimal("100")
+
+
+def create_property_monthly_rent_collection_prompt() -> str:
+    """Shown before collecting optional monthly rent during create-property."""
+    return (
+        "Monthly rent must be less than 100 ETH (on-chain limit). "
+        "What's the monthly rent in ETH? Say 0 or skip if you don't want rent yet."
+    )
+
+
+def create_property_monthly_rent_is_skip(value: str) -> bool:
+    return (value or "").strip().lower() in {"0", "skip", "none", "no", "n/a"}
+
+
+def create_property_monthly_rent_over_limit(value: str) -> bool:
+    """True when rent exceeds the create-property chatbot / on-chain cap."""
+    if create_property_monthly_rent_is_skip(value):
+        return False
+    try:
+        return Decimal(str(value).strip()) >= CREATE_PROPERTY_MAX_MONTHLY_RENT_ETH
+    except (InvalidOperation, ValueError, TypeError):
+        return False
+
+
+def create_property_monthly_rent_rejection_message(value: str) -> str:
+    return (
+        f"{value} ETH is too high — monthly rent must be less than 100 ETH. "
+        f"{create_property_monthly_rent_collection_prompt()}"
+    )
+
+
 _CREATE_PROPERTY_CONFIRMATION_ORDER: tuple[tuple[str, str], ...] = (
     ("name", "Name"),
     ("location", "Location"),

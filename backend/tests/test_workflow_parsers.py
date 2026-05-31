@@ -1,6 +1,8 @@
 """Tests for spoken workflow answer normalization."""
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    create_property_monthly_rent_collection_prompt,
+    create_property_monthly_rent_over_limit,
     format_create_property_confirmation_summary,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
@@ -61,6 +63,20 @@ def test_accumulated_normalization():
     assert out["token_supply"] == "100000"
     assert out["token_symbol"] == "USD"
     assert out["monthly_rent_eth"] == "0.5"
+
+
+def test_create_property_monthly_rent_collection_prompt():
+    prompt = create_property_monthly_rent_collection_prompt()
+    assert "100 ETH" in prompt
+    assert "less than" in prompt.lower()
+
+
+def test_create_property_monthly_rent_over_limit():
+    assert create_property_monthly_rent_over_limit("100") is True
+    assert create_property_monthly_rent_over_limit("99.9") is False
+    assert create_property_monthly_rent_over_limit("1000") is True
+    assert create_property_monthly_rent_over_limit("0") is False
+    assert create_property_monthly_rent_over_limit("skip") is False
 
 
 def test_format_create_property_confirmation_summary():

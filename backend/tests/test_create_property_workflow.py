@@ -233,7 +233,14 @@ def test_submit_create_active_session_keeps_fill_and_submit_actions():
         _ = asyncio.run(_fill_create_property({"location": "Abu Dhabi"}, _dummy_owner(), None))
         _ = asyncio.run(_fill_create_property({"total_value": "20"}, _dummy_owner(), None))
         _ = asyncio.run(_fill_create_property({"token_supply": "20000"}, _dummy_owner(), None))
-        summary = asyncio.run(_fill_create_property({"token_symbol": "NOVA"}, _dummy_owner(), None))
+        rent_prompt = asyncio.run(_fill_create_property({"token_symbol": "NOVA"}, _dummy_owner(), None))
+        assert rent_prompt.ok
+        assert rent_prompt.data.get("next_field") == "monthly_rent_eth"
+        assert "100 ETH" in str(rent_prompt.data.get("speak_to_user"))
+
+        summary = asyncio.run(
+            _fill_create_property({"monthly_rent_eth": "12"}, _dummy_owner(), None)
+        )
         assert summary.ok
         assert summary.data.get("awaiting_create_confirmation") is True
         assert not any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in summary.actions)
