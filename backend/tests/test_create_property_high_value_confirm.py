@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
+
+import pytest
 
 import backend.ai.tools as tools
 from backend.ai.tools import (
@@ -14,6 +17,13 @@ from backend.ai.tools import (
 )
 from backend.ai.workflow_parsers import format_create_property_confirmation_summary
 from backend.services.auth import AuthUser
+from backend.tests._create_property_limits_test_utils import patch_generous_create_property_limits
+
+
+@pytest.fixture(autouse=True)
+def _generous_create_property_limits():
+    with patch_generous_create_property_limits():
+        yield
 
 
 def _owner() -> AuthUser:
@@ -46,6 +56,55 @@ def test_confirmation_summary_lists_all_fields():
     assert "Reply Yes" in summary
 
 
+def test_total_value_collection_prompt():
+    from backend.services.property_create_limits import (
+        CreatePropertyLimits,
+        total_value_collection_prompt,
+    )
+
+    limits = CreatePropertyLimits(
+        owner_wallet="0x1",
+        owner_balance_eth=Decimal("2.5"),
+        deployer_balance_eth=Decimal("1"),
+        max_monthly_rent_eth=Decimal("2.498"),
+        max_total_value_eth=Decimal("125000"),
+        min_owner_balance_eth=Decimal("0.001"),
+        min_deployer_balance_eth=Decimal("0.05"),
+        platform_deploy_ready=True,
+        owner_balance_sufficient=True,
+        deployer_warning=None,
+        deployment_block_reason=None,
+        owner_block_reason=None,
+    )
+    prompt = total_value_collection_prompt(limits)
+    assert "2.5" in prompt
+    assert "125000" in prompt
+    assert "total property value" in prompt.lower()
+
+
+def test_fill_create_prompts_total_value_cap_before_total_value():
+    token = set_current_thread_id("test:create:total-value-prompt")
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        res = asyncio.run(
+            _fill_create_property(
+                {
+                    "name": "Brightwave",
+                    "location": "USA",
+                },
+                _owner(),
+                None,
+            )
+        )
+        assert res.ok
+        assert res.data.get("next_field") == "total_value"
+        assert "wallet balance" in str(res.data.get("speak_to_user")).lower()
+        assert res.data.get("value_caps") is not None
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
+
+
 def test_fill_create_prompts_rent_limit_before_monthly_rent():
     token = set_current_thread_id("test:create:rent-prompt")
     try:
@@ -66,6 +125,7 @@ def test_fill_create_prompts_rent_limit_before_monthly_rent():
         assert res.ok
         assert res.data.get("next_field") == "monthly_rent_eth"
         assert "100 ETH" in str(res.data.get("speak_to_user"))
+        assert res.data.get("value_caps") is not None
         assert res.data.get("awaiting_create_confirmation") is not True
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
@@ -271,6 +331,63 @@ def test_fill_create_yes_from_client_history_only():
             },
         )
         res = asyncio.run(_fill_create_property({}, _owner(), None))
+        assert res.ok
+        assert res.data.get("submitted") is True
+        assert any(a.type == "SUBMIT_FORM" for a in res.actions)
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_fill_create_restores_draft_after_failure_message():
+    token = set_current_thread_id("test:create:restore-after-failure")
+    msg_token = set_current_messages(
+        [
+            {
+                "type": "assistant",
+                "content": "Failed to create property: Property was saved but setup failed.",
+            },
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        tools._set_workflow_session(
+            "CREATE_PROPERTY",
+            {
+                "submitting": True,
+                "filled": _complete_filled(),
+            },
+        )
+        res = asyncio.run(_fill_create_property({}, _owner(), None))
+        assert res.ok
+        assert res.data.get("awaiting_create_confirmation") is True
+        assert (res.data.get("filled") or {}).get("name") == "Mega Estate"
+        assert "did not succeed" in str(res.data.get("speak_to_user")).lower()
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_fill_create_retries_submit_after_failure_without_recollecting():
+    token = set_current_thread_id("test:create:retry-after-failure")
+    msg_token = set_current_messages(
+        [
+            {"type": "assistant", "content": "Failed to create property: setup failed."},
+            {"type": "human", "content": "yes"},
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        tools._set_workflow_session(
+            "CREATE_PROPERTY",
+            {
+                "submitting": True,
+                "filled": _complete_filled(),
+            },
+        )
+        res = asyncio.run(_fill_create_property({"confirm_create": True}, _owner(), None))
         assert res.ok
         assert res.data.get("submitted") is True
         assert any(a.type == "SUBMIT_FORM" for a in res.actions)

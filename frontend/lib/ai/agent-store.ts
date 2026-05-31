@@ -291,12 +291,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       if (get().state !== "error") set({ state: "idle" });
 
       if (actions.length) {
-        void executeActions(actions, router).then(() => {
+        try {
+          await executeActions(actions, router);
           if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
           }
-          // After navigate / open / submit, refocus chat so the next
-          // answer lands in the copilot, not a form field.
           if (typeof document !== "undefined") {
             const chatInput = document.querySelector<HTMLTextAreaElement>(
               "[data-ai-chat-input]",
@@ -305,7 +304,13 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               window.setTimeout(() => chatInput.focus(), 0);
             }
           }
-        });
+        } catch (actionErr: any) {
+          const message = actionErr?.message || "Workflow action failed.";
+          set({
+            error: message,
+            messages: [...get().messages, msg("assistant", message)],
+          });
+        }
       }
 
       const spokenText = finalReply || streamingText;
@@ -367,11 +372,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       onActions: (actions) => {
         set({ actions: actions as AIAction[] });
         if (actions?.length) {
-          void executeActions(actions as AIAction[], router).then(() => {
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
-            }
-          });
+          void executeActions(actions as AIAction[], router)
+            .then(() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
+              }
+            })
+            .catch((err: any) => {
+              const message = err?.message || "Workflow action failed.";
+              set({ error: message, state: "error" });
+            });
         }
       },
       onError: (errMsg) => {
