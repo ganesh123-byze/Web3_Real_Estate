@@ -145,6 +145,8 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
    - Do NOT call submit or open MetaMask until they answer.
    - Yes → fill_create_property with confirm_high_values=true and submit=true.
    - No → fill_create_property with confirm_high_values=false (do not submit).
+   - Do NOT call start_create_property while waiting for Yes/No — it would
+     discard the draft. Only fill_create_property handles the confirmation.
    - If they already canceled and later say Yes, the tool will say the
      listing was canceled — repeat that; do not submit again.
    - Normal/low values must NOT trigger this — only when the tool sets
