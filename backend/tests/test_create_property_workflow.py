@@ -8,6 +8,7 @@ from backend.ai.tools import (
     _fill_create_property,
     _get_workflow_session,
     _mark_create_property_completed,
+    _start_create_property,
     reset_current_messages,
     reset_current_thread_id,
     set_current_messages,
@@ -132,24 +133,28 @@ def test_fill_create_active_session_emits_no_navigate_or_open():
         reset_current_thread_id(token)
 
 
-def test_second_property_after_success_session_opens_modal_on_first_fill():
+def test_second_property_after_success_is_blocked_on_first_fill():
     token = set_current_thread_id("test:create:post-success-session")
     try:
         _clear_workflow_session("CREATE_PROPERTY")
         _mark_create_property_completed("chatgpt")
         session = _get_workflow_session("CREATE_PROPERTY")
-        assert session.get("awaiting_new_property") is True
+        assert session.get("chat_property_limit_reached") is True
 
         res = asyncio.run(_fill_create_property({"name": "Second Tower"}, _dummy_owner(), None))
         assert res.ok
-        assert any(a.type == "OPEN_MODAL" and a.modal == "CREATE_PROPERTY" for a in res.actions)
-        assert any(a.type == "NAVIGATE" and a.route == "/property_owner/properties" for a in res.actions)
+        assert res.data.get("blocked") is True
+        assert res.data.get("chat_property_limit_reached") is True
+        assert "refresh" in (res.data.get("speak_to_user") or "").lower()
+        assert res.data.get("filled") == {}
+        assert not any(a.type == "OPEN_MODAL" for a in res.actions)
+        assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_thread_id(token)
 
 
-def test_second_property_after_success_session_bootstraps_on_auto_submit():
+def test_second_property_after_success_is_blocked_on_full_payload():
     token = set_current_thread_id("test:create:post-success-submit")
     try:
         _clear_workflow_session("CREATE_PROPERTY")
@@ -168,13 +173,55 @@ def test_second_property_after_success_session_bootstraps_on_auto_submit():
             )
         )
         assert final.ok
-        assert any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in final.actions)
-        assert any(a.type == "OPEN_MODAL" and a.modal == "CREATE_PROPERTY" for a in final.actions)
-        assert any(a.type == "NAVIGATE" and a.route == "/property_owner/properties" for a in final.actions)
+        assert final.data.get("blocked") is True
+        assert "refresh" in (final.data.get("speak_to_user") or "").lower()
+        assert not any(a.type == "SUBMIT_FORM" for a in final.actions)
         after = _get_workflow_session("CREATE_PROPERTY")
-        assert after.get("awaiting_new_property") is True
+        assert after.get("chat_property_limit_reached") is True
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
+
+
+def test_start_create_property_blocked_after_first_success():
+    token = set_current_thread_id("test:create:start-blocked")
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        _mark_create_property_completed("Alpha One")
+        res = asyncio.run(_start_create_property({}, _dummy_owner(), None))
+        assert res.ok
+        assert res.data.get("blocked") is True
+        assert "refresh" in (res.data.get("speak_to_user") or "").lower()
+        assert not res.actions
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
+
+
+def test_repeated_second_create_attempts_return_same_refresh_message():
+    token = set_current_thread_id("test:create:repeat-block")
+    msg_token = set_current_messages(
+        [
+            {"type": "human", "content": "Create another property called Sky Tower in NYC"},
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        _mark_create_property_completed("First Property")
+        first = asyncio.run(_fill_create_property({}, _dummy_owner(), None))
+        second = asyncio.run(
+            _fill_create_property(
+                {"name": "Sky Tower", "location": "NYC", "total_value": "10"},
+                _dummy_owner(),
+                None,
+            )
+        )
+        assert first.data.get("speak_to_user") == second.data.get("speak_to_user")
+        assert second.data.get("filled") == {}
+        assert not second.actions
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
         reset_current_thread_id(token)
 
 
