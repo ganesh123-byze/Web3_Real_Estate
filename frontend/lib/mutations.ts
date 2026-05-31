@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, clearSession, getApiBase, getToken } from "./api";
-import { markPropertyCreationComplete, markPropertyCreationPending } from "./properties/visibility";
+import { handleCreatePropertyStreamEvent } from "./properties/list-sync";
 import { queryKeys } from "./queries";
 import type { Property } from "./types";
 
@@ -117,16 +117,7 @@ export function useCreatePropertyStream() {
               continue;
             }
             onProgress?.(event);
-            const eventPropertyId = event.property?.id ?? event.property_id;
-            if (event.step === "done") {
-              markPropertyCreationComplete(eventPropertyId);
-              qc.invalidateQueries({ queryKey: queryKeys.properties });
-              qc.invalidateQueries({ queryKey: ["tenant"] });
-            } else if (eventPropertyId && event.step !== "error") {
-              markPropertyCreationPending(eventPropertyId);
-              qc.invalidateQueries({ queryKey: queryKeys.properties });
-              qc.invalidateQueries({ queryKey: ["tenant"] });
-            }
+            handleCreatePropertyStreamEvent(qc, event);
             if (event.step === "done" && event.property) {
               finalProperty = event.property;
             } else if (event.step === "error") {
