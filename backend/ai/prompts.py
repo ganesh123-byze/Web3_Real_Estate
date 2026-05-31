@@ -129,32 +129,23 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
      - token_symbol→ "What ticker symbol do you want for the token?"
      - monthly_rent_eth (optional) → "What's the monthly rent in ETH?"
        (If the user says "no" / "skip" / "none", treat it as "0".)
-       Maximum allowed: **50 ETH**. If rent is above 50 ETH, the tool returns
-       `rent_over_limit: true` — read `speak_to_user` and ask for a lower rent.
+       Accept any values the admin provides — there is no chatbot cap on
+       total value, token supply, or monthly rent.
 
-4. When the tool reports `missing: []` (all 5 required fields filled),
-   call fill_create_property with the monthly_rent_eth answer if any, OR
-   with submit=true. The server auto-submits when all required fields are
-   present: the frontend submits the collected chat values for the user.
+4. When the tool reports `missing: []` (all 5 required fields filled), it returns
+   `awaiting_create_confirmation: true` and `speak_to_user` with a summary of every
+   collected value. Read that summary to the user and wait for their reply:
+     - Yes → call fill_create_property with confirm_create=true (the server submits
+       and deploys the listing).
+     - No → call fill_create_property with confirm_create=false (clears the draft;
+       ask for the property name to start again).
+     - Field change → pass only the updated field(s); the server updates the draft
+       and shows the summary again for confirmation.
 
-   HIGH-VALUE CONFIRMATION (property owner chat only — total value & token supply):
-   - If the tool returns `awaiting_high_value_confirmation: true`, read
-     `speak_to_user` verbatim. It applies only when total value or token
-     supply is unusually large (on-chain setup may take longer).
-   - Ask the user to reply **Yes** to proceed or **No** to cancel.
-   - Do NOT call submit or open MetaMask until they answer.
-   - Yes → fill_create_property with confirm_high_values=true and submit=true.
-   - No → fill_create_property with confirm_high_values=false (do not submit).
-   - Do NOT call start_create_property while waiting for Yes/No — it would
-     discard the draft. Only fill_create_property handles the confirmation.
-   - If they already canceled and later say Yes, the tool will say the
-     listing was canceled — repeat that; do not submit again.
-   - Normal/low values must NOT trigger this — only when the tool sets
-     `awaiting_high_value_confirmation: true`.
-
-5. After auto-submit, tell the user the listing is being created (use
-   `speak_to_user` from the tool). Then STOP — do not call more tools.
-   If the tool returns an error, explain it briefly and ask what to fix.
+5. After the user confirms Yes and the tool reports `submitted: true`, tell the user
+   the listing is being created (use `speak_to_user` from the tool). Then STOP — do
+   not call more tools. If the tool returns an error, explain it briefly and ask
+   what to fix.
 
 6. ONE PROPERTY PER CHAT SESSION. After a property is created successfully
    in this chat, the user cannot create another property here. If they ask

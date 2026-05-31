@@ -242,121 +242,40 @@ def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[s
     return out
 
 
-# Thresholds for chatbot confirmation before on-chain create (deploy + mint + rent sync).
-# Monthly rent uses a separate hard cap — see CREATE_MAX_MONTHLY_RENT_ETH.
-CREATE_HIGH_TOTAL_VALUE_ETH = Decimal("25")
-CREATE_HIGH_TOKEN_SUPPLY = 50_000
-
-# Admin chatbot hard limit — above this the user must enter a lower rent (no Yes/No gate).
-CREATE_MAX_MONTHLY_RENT_ETH = Decimal("50")
-
-
-def _decimal_field_value(raw: str) -> Decimal | None:
-    text = _strip_noise(raw)
-    if not text:
-        return None
-    parsed = _parse_decimal_amount(text)
-    if parsed is None:
-        return None
-    try:
-        return Decimal(parsed)
-    except (InvalidOperation, ValueError):
-        return None
+_CREATE_PROPERTY_CONFIRMATION_ORDER: tuple[tuple[str, str], ...] = (
+    ("name", "Name"),
+    ("location", "Location"),
+    ("total_value", "Total value (ETH)"),
+    ("token_supply", "Token supply"),
+    ("token_symbol", "Token symbol"),
+    ("monthly_rent_eth", "Monthly rent (ETH)"),
+)
 
 
-def _integer_field_value(raw: str) -> int | None:
-    text = _strip_noise(raw)
-    if not text:
-        return None
-    spoken = _parse_spoken_integer(text)
-    if spoken is not None:
-        return spoken
-    digits = re.sub(r"[^\d]", "", text)
-    if not digits:
-        return None
-    try:
-        return int(digits)
-    except ValueError:
-        return None
-
-
-def assess_high_value_create_property(accumulated: dict[str, str]) -> dict[str, object]:
-    """Return whether create-property values warrant a Yes/No confirmation in chat.
-
-    Only total property value and token supply are considered here. Monthly rent
-    is validated separately via ``assess_monthly_rent_over_chatbot_limit``.
-    """
-    reasons: list[str] = []
-    total = _decimal_field_value(str(accumulated.get("total_value") or ""))
-    if total is not None and total > CREATE_HIGH_TOTAL_VALUE_ETH:
-        reasons.append(
-            f"Total property value is {total} ETH (above {CREATE_HIGH_TOTAL_VALUE_ETH} ETH)."
-        )
-
-    supply = _integer_field_value(str(accumulated.get("token_supply") or ""))
-    if supply is not None and supply > CREATE_HIGH_TOKEN_SUPPLY:
-        reasons.append(
-            f"Token supply is {supply:,} (above {CREATE_HIGH_TOKEN_SUPPLY:,} tokens)."
-        )
-
-    if not reasons:
-        return {
-            "is_high": False,
-            "reasons": [],
-            "speak_to_user": "",
-            "instruction": "",
-        }
-
-    summary = " ".join(reasons)
-    speak = (
-        "These property values are on the high side, so on-chain setup "
-        "(token deploy, minting the full supply, and rent sync) can take several "
-        f"minutes. {summary} "
-        "Do you want to proceed? Reply **Yes** to continue or **No** to cancel."
+def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
+    """Human-readable summary shown before the admin confirms create-property submit."""
+    lines: list[str] = []
+    for key, label in _CREATE_PROPERTY_CONFIRMATION_ORDER:
+        raw = filled.get(key)
+        if key == "monthly_rent_eth":
+            display = str(raw).strip() if raw not in (None, "") else "0"
+        elif raw in (None, ""):
+            continue
+        else:
+            display = str(raw).strip()
+        lines.append(f"- {label}: {display}")
+    body = "\n".join(lines)
+    return (
+        "Here are the property details I have:\n"
+        f"{body}\n\n"
+        "Reply Yes to create and deploy the listing, or No to cancel and clear these "
+        "details. You can also tell me which field to change (for example, "
+        "\"change location to Dubai\")."
     )
-    instruction = (
-        "Read `speak_to_user` to the user verbatim. Do NOT submit the form yet. "
-        "When they answer Yes, call fill_create_property with confirm_high_values=true "
-        "(and submit=true). When they answer No, call fill_create_property with "
-        "confirm_high_values=false. Do not call other tools until they choose."
-    )
-    return {
-        "is_high": True,
-        "reasons": reasons,
-        "speak_to_user": speak,
-        "instruction": instruction,
-    }
-
-
-def assess_monthly_rent_over_chatbot_limit(accumulated: dict[str, str]) -> dict[str, object]:
-    """True when optional monthly rent exceeds the admin chatbot cap (50 ETH)."""
-    rent_raw = str(accumulated.get("monthly_rent_eth") or "").strip().lower()
-    if not rent_raw or rent_raw in {"0", "skip", "none", "no", "n/a"}:
-        return {"over_limit": False, "speak_to_user": "", "instruction": ""}
-
-    rent = _decimal_field_value(rent_raw)
-    if rent is None or rent <= CREATE_MAX_MONTHLY_RENT_ETH:
-        return {"over_limit": False, "speak_to_user": "", "instruction": ""}
-
-    speak = (
-        f"Monthly rent of {rent} ETH is too high. "
-        f"Please set monthly rent below {CREATE_MAX_MONTHLY_RENT_ETH} ETH."
-    )
-    instruction = (
-        "Tell the user rent must be below 50 ETH. Ask for a lower monthly rent, "
-        "then call fill_create_property with only monthly_rent_eth."
-    )
-    return {
-        "over_limit": True,
-        "rent_eth": str(rent),
-        "max_rent_eth": str(CREATE_MAX_MONTHLY_RENT_ETH),
-        "speak_to_user": speak,
-        "instruction": instruction,
-    }
 
 
 def parse_yes_no_confirmation(text: str) -> bool | None:
-    """Parse explicit yes/no answers for high-value create confirmation."""
+    """Parse explicit yes/no answers (e.g. skip accidental yes/no as field values)."""
     t = _strip_noise(text).lower()
     if not t:
         return None

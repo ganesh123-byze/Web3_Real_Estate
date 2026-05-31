@@ -233,9 +233,16 @@ def test_submit_create_active_session_keeps_fill_and_submit_actions():
         _ = asyncio.run(_fill_create_property({"location": "Abu Dhabi"}, _dummy_owner(), None))
         _ = asyncio.run(_fill_create_property({"total_value": "20"}, _dummy_owner(), None))
         _ = asyncio.run(_fill_create_property({"token_supply": "20000"}, _dummy_owner(), None))
-        final = asyncio.run(_fill_create_property({"token_symbol": "NOVA"}, _dummy_owner(), None))
+        summary = asyncio.run(_fill_create_property({"token_symbol": "NOVA"}, _dummy_owner(), None))
+        assert summary.ok
+        assert summary.data.get("awaiting_create_confirmation") is True
+        assert not any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in summary.actions)
+
+        final = asyncio.run(
+            _fill_create_property({"confirm_create": True}, _dummy_owner(), None)
+        )
         assert final.ok
-        # Auto-submit path should include form filling and submit.
+        # Confirmed submit should include form filling and submit.
         assert any(a.type == "FILL_FIELD" and a.field == "name" and a.value == "Nova Plaza" for a in final.actions)
         assert any(a.type == "FILL_FIELD" and a.field == "token_symbol" and a.value == "NOVA" for a in final.actions)
         assert any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in final.actions)
