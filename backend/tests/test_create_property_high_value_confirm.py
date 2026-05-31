@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
-
-import pytest
 
 import backend.ai.tools as tools
 from backend.ai.tools import (
@@ -17,13 +14,6 @@ from backend.ai.tools import (
 )
 from backend.ai.workflow_parsers import format_create_property_confirmation_summary
 from backend.services.auth import AuthUser
-from backend.tests._create_property_limits_test_utils import patch_generous_create_property_limits
-
-
-@pytest.fixture(autouse=True)
-def _generous_create_property_limits():
-    with patch_generous_create_property_limits():
-        yield
 
 
 def _owner() -> AuthUser:
@@ -54,32 +44,6 @@ def test_confirmation_summary_lists_all_fields():
     assert "Dubai" in summary
     assert "100" in summary
     assert "Reply Yes" in summary
-
-
-def test_total_value_collection_prompt():
-    from backend.services.property_create_limits import (
-        CreatePropertyLimits,
-        total_value_collection_prompt,
-    )
-
-    limits = CreatePropertyLimits(
-        owner_wallet="0x1",
-        owner_balance_eth=Decimal("2.5"),
-        deployer_balance_eth=Decimal("1"),
-        max_monthly_rent_eth=Decimal("2.498"),
-        max_total_value_eth=Decimal("125000"),
-        min_owner_balance_eth=Decimal("0.001"),
-        min_deployer_balance_eth=Decimal("0.05"),
-        platform_deploy_ready=True,
-        owner_balance_sufficient=True,
-        deployer_warning=None,
-        deployment_block_reason=None,
-        owner_block_reason=None,
-    )
-    prompt = total_value_collection_prompt(limits)
-    assert "2.5" in prompt
-    assert "125000" in prompt
-    assert "total property value" in prompt.lower()
 
 
 def test_parse_yes_no_strips_trailing_punctuation():
@@ -125,62 +89,6 @@ def test_backfill_recovers_fields_when_llm_skipped_tool_calls():
         reset_current_thread_id(token)
 
 
-def test_fill_create_blocks_confirmation_when_total_value_exceeds_cap():
-    token = set_current_thread_id("test:create:confirm-cap-block")
-    msg_token = set_current_messages(
-        [
-            {"type": "ai", "content": "What's the name of the property?"},
-            {"type": "human", "content": "brightwave"},
-            {"type": "ai", "content": "Where is it located?"},
-            {"type": "human", "content": "usa"},
-            {"type": "ai", "content": "What's the total property value in ETH?"},
-            {"type": "human", "content": "1000"},
-            {"type": "ai", "content": "How many ownership tokens should we mint?"},
-            {"type": "human", "content": "1000"},
-            {"type": "ai", "content": "What ticker symbol do you want?"},
-            {"type": "human", "content": "eth"},
-            {"type": "ai", "content": "What's the monthly rent in ETH?"},
-            {"type": "human", "content": "99"},
-        ]
-    )
-    try:
-        _clear_workflow_session("CREATE_PROPERTY")
-        with patch_generous_create_property_limits(owner_balance_eth=Decimal("0.0002")):
-            res = asyncio.run(_fill_create_property({}, _owner(), None))
-        assert res.ok
-        assert res.data.get("total_value_over_limit") is True or res.data.get(
-            "submit_blocked"
-        )
-        assert not res.data.get("awaiting_create_confirmation")
-    finally:
-        _clear_workflow_session("CREATE_PROPERTY")
-        reset_current_messages(msg_token)
-        reset_current_thread_id(token)
-
-
-def test_fill_create_prompts_total_value_cap_before_total_value():
-    token = set_current_thread_id("test:create:total-value-prompt")
-    try:
-        _clear_workflow_session("CREATE_PROPERTY")
-        res = asyncio.run(
-            _fill_create_property(
-                {
-                    "name": "Brightwave",
-                    "location": "USA",
-                },
-                _owner(),
-                None,
-            )
-        )
-        assert res.ok
-        assert res.data.get("next_field") == "total_value"
-        assert "wallet balance" in str(res.data.get("speak_to_user")).lower()
-        assert res.data.get("value_caps") is not None
-    finally:
-        _clear_workflow_session("CREATE_PROPERTY")
-        reset_current_thread_id(token)
-
-
 def test_fill_create_prompts_rent_limit_before_monthly_rent():
     token = set_current_thread_id("test:create:rent-prompt")
     try:
@@ -201,7 +109,6 @@ def test_fill_create_prompts_rent_limit_before_monthly_rent():
         assert res.ok
         assert res.data.get("next_field") == "monthly_rent_eth"
         assert "100 ETH" in str(res.data.get("speak_to_user"))
-        assert res.data.get("value_caps") is not None
         assert res.data.get("awaiting_create_confirmation") is not True
     finally:
         _clear_workflow_session("CREATE_PROPERTY")

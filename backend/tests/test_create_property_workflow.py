@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from backend.ai.tools import (
     _clear_workflow_session,
     _fill_create_property,
@@ -17,13 +15,6 @@ from backend.ai.tools import (
     set_current_thread_id,
 )
 from backend.services.auth import AuthUser
-from backend.tests._create_property_limits_test_utils import patch_generous_create_property_limits
-
-
-@pytest.fixture(autouse=True)
-def _generous_create_property_limits():
-    with patch_generous_create_property_limits():
-        yield
 
 
 def _dummy_owner() -> AuthUser:

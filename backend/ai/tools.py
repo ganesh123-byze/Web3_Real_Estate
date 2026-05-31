@@ -24,6 +24,10 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    create_property_monthly_rent_collection_prompt,
+    create_property_monthly_rent_is_skip,
+    create_property_monthly_rent_over_limit,
+    create_property_monthly_rent_rejection_message,
     format_create_property_confirmation_summary,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
@@ -55,18 +59,6 @@ from backend.api.schemas import PropertyCreate
 from backend.api.rent_cycle import (
     compute_rent_period_status,
     get_last_confirmed_rent_payment_by_wallet,
-)
-from backend.services.property_create_limits import (
-    CreatePropertyLimits,
-    assess_create_property_limits,
-    monthly_rent_collection_prompt,
-    monthly_rent_exceeds_cap,
-    monthly_rent_rejection_message,
-    monthly_rent_skip_value,
-    total_value_collection_prompt,
-    total_value_exceeds_cap,
-    total_value_rejection_message,
-    validate_create_property_values,
 )
 from backend.services.tenant_catalog import (
     fetch_tenant_rental_properties,
@@ -360,7 +352,7 @@ def _backfill_create_property_filled_from_history(
             continue
         if pending_field == "name" and is_generic_create_property_intent(text):
             continue
-        if pending_field == "monthly_rent_eth" and monthly_rent_skip_value(text):
+        if pending_field == "monthly_rent_eth" and create_property_monthly_rent_is_skip(text):
             out[pending_field] = "0"
             pending_field = None
             continue
@@ -385,39 +377,9 @@ def _persist_create_property_filled(filled: dict[str, str], **extra: Any) -> Non
     )
 
 
-def _create_property_validate_accumulated(
-    accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
-    *,
-    data: dict[str, Any],
-    actions: list[AgentAction],
-) -> tuple[dict[str, str], ToolResult | None]:
-    """Block confirmation/submit when accumulated values exceed wallet or chain caps."""
-    acc = dict(accumulated)
-    if total_value_exceeds_cap(
-        str(acc.get("total_value") or ""),
-        limits.max_total_value_eth,
-    ):
-        return acc, _gate_create_property_total_value(
-            acc, limits, data=data, actions=actions
-        )
-    rent_raw = acc.get("monthly_rent_eth")
-    if rent_raw not in (None, "") and monthly_rent_exceeds_cap(
-        str(rent_raw),
-        limits.max_monthly_rent_eth,
-    ):
-        return acc, _gate_create_property_monthly_rent_value(
-            acc, limits, data=data, actions=actions
-        )
-    err = validate_create_property_values(
-        limits,
-        total_value=acc.get("total_value"),
-        monthly_rent_eth=acc.get("monthly_rent_eth"),
-    )
-    if err:
-        blocked = _create_property_pre_submit_block(acc, limits)
-        return acc, blocked
-    return acc, None
+# ---------------------------------------------------------------------------
+# Tool metadata + dispatch
+# ---------------------------------------------------------------------------
 
 ToolHandler = Callable[[dict, AuthUser, Any], Awaitable[ToolResult]]
 
@@ -2139,16 +2101,11 @@ def _human_requested_new_create_property_listing() -> bool:
     return False
 
 
-async def _start_create_property(_args: dict, user: AuthUser, _db: Any) -> ToolResult:
+async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
     _sync_create_property_limit_from_success_announcement()
     blocked = _block_create_property_when_chat_limit_reached()
     if blocked is not None:
         return blocked
-
-    limits = _create_property_limits_for_user(user)
-    limits_block = _create_property_limits_block_result(limits)
-    if limits_block is not None:
-        return limits_block
 
     pre_session = _reconcile_create_property_session_after_outcome(
         _get_workflow_session(_CREATE_PROPERTY_MODAL)
@@ -2160,7 +2117,6 @@ async def _start_create_property(_args: dict, user: AuthUser, _db: Any) -> ToolR
         if _create_property_required_fields_present(filled):
             return _create_property_confirmation_prompt(
                 filled,
-                limits,
                 actions=[],
                 data={"filled": filled},
                 bootstrap_for_turn=True,
@@ -2188,8 +2144,7 @@ async def _start_create_property(_args: dict, user: AuthUser, _db: Any) -> ToolR
     focus_field = next_field or "name"
     return ToolResult(
         ok=True,
-        data=_attach_value_caps(
-            {
+        data={
             "message": "Starting chat-only property creation.",
             "filled": filled,
             "missing": missing,
@@ -2198,14 +2153,9 @@ async def _start_create_property(_args: dict, user: AuthUser, _db: Any) -> ToolR
                 f"Form already has: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
                 f"Ask about {next_field or 'name'} only — do NOT re-ask for fields in filled."
                 if filled
-                else (
-                    "Ask: What's the name of the property? "
-                    "Do not mention value caps yet — limits are announced before total value and monthly rent."
-                )
+                else "Ask: What's the name of the property?"
             ),
-            },
-            limits,
-        ),
+        },
         actions=[
             AgentAction(type="NAVIGATE", route="/property_owner/properties"),
             AgentAction(type="OPEN_MODAL", modal="CREATE_PROPERTY"),
@@ -2470,37 +2420,6 @@ def _create_property_success_message(name: str) -> str:
     return "Property created successfully."
 
 
-def _create_property_limits_for_user(user: AuthUser) -> CreatePropertyLimits:
-    return assess_create_property_limits(user.wallet_address or "")
-
-
-def _create_property_limits_block_result(
-    limits: CreatePropertyLimits,
-    *,
-    data: dict[str, Any] | None = None,
-) -> ToolResult | None:
-    if limits.can_deploy:
-        return None
-    reason = limits.owner_block_reason or limits.deployment_block_reason or (
-        "Property creation is not available right now."
-    )
-    payload = dict(data or {})
-    payload.update(
-        {
-            "value_caps": limits.as_tool_payload(),
-            "speak_to_user": reason,
-            "instruction": "Read speak_to_user verbatim. Do not collect property fields until resolved.",
-        }
-    )
-    return ToolResult(ok=True, data=payload, actions=[])
-
-
-def _attach_value_caps(data: dict[str, Any], limits: CreatePropertyLimits) -> dict[str, Any]:
-    out = dict(data)
-    out["value_caps"] = limits.as_tool_payload()
-    return out
-
-
 def _create_property_args_change_fields(
     args: dict,
     session_filled: dict[str, Any] | None = None,
@@ -2529,48 +2448,53 @@ def _create_property_confirmation_reply(args: dict) -> bool | None:
     return _latest_human_yes_no_reply()
 
 
-def _create_property_pre_submit_block(
-    accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
-) -> ToolResult | None:
-    """Block SUBMIT_FORM when values or platform readiness cannot succeed on-chain."""
-    err = validate_create_property_values(
-        limits,
-        total_value=accumulated.get("total_value"),
-        monthly_rent_eth=accumulated.get("monthly_rent_eth"),
-    )
-    if not err:
+def _create_property_pre_submit_block(accumulated: dict[str, str]) -> ToolResult | None:
+    """Block SUBMIT_FORM when values cannot succeed on-chain; keep confirmation open."""
+    monthly_raw = (accumulated.get("monthly_rent_eth") or "").strip().lower()
+    if not monthly_raw or monthly_raw in {"0", "skip", "none", "no", "n/a"}:
         return None
-    summary = format_create_property_confirmation_summary(accumulated)
-    _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
-        {
-            "in_progress": True,
-            "filled": accumulated,
-            "next_field": None,
-            "submitted": False,
-            "awaiting_create_confirmation": True,
-        },
-    )
-    return ToolResult(
-        ok=True,
-        data=_attach_value_caps(
+    from backend.services.blockchain import to_wei
+
+    try:
+        rent_wei = to_wei(Decimal(str(accumulated["monthly_rent_eth"])))
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    if rent_wei <= 0:
+        return None
+    try:
+        validate_monthly_rent_for_chain(rent_wei)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        summary = format_create_property_confirmation_summary(accumulated)
+        _set_workflow_session(
+            _CREATE_PROPERTY_MODAL,
             {
+                "in_progress": True,
+                "filled": accumulated,
+                "next_field": None,
+                "submitted": False,
+                "awaiting_create_confirmation": True,
+            },
+        )
+        return ToolResult(
+            ok=True,
+            data={
                 "filled": accumulated,
                 "missing": [],
                 "submitted": False,
                 "awaiting_create_confirmation": True,
                 "submit_blocked": True,
+                "on_chain_limit": "monthly_rent",
                 "confirmation_summary": summary,
                 "speak_to_user": (
-                    f"{err} Update the values, say No to cancel, or confirm again after fixing them."
+                    f"{detail} Update the monthly rent, say No to cancel, or confirm "
+                    "again after lowering rent to 100 ETH or less."
                 ),
                 "instruction": _create_property_confirmation_instruction(),
             },
-            limits,
-        ),
-        actions=[],
-    )
+            actions=[],
+        )
+    return None
 
 
 def _create_property_required_fields_present(filled: dict[str, str]) -> bool:
@@ -2585,53 +2509,13 @@ def _create_property_needs_monthly_rent_collection(filled: dict[str, str]) -> bo
     return "monthly_rent_eth" not in filled
 
 
-def _create_property_prompt_for_total_value(
-    accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
-    *,
-    data: dict[str, Any],
-    actions: list[AgentAction],
-) -> ToolResult:
-    prompt = total_value_collection_prompt(limits)
-    _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
-        {
-            "in_progress": True,
-            "filled": accumulated,
-            "next_field": "total_value",
-            "submitted": False,
-            "awaiting_create_confirmation": False,
-        },
-    )
-    max_value = limits.as_tool_payload().get("max_total_value_eth", "0")
-    out_data = _attach_value_caps(
-        {
-            **data,
-            "filled": accumulated,
-            "missing": data.get("missing") or ["total_value"],
-            "next_field": "total_value",
-            "submitted": False,
-            "awaiting_create_confirmation": False,
-            "speak_to_user": prompt,
-            "instruction": (
-                "Read speak_to_user verbatim, then wait for the user's total value answer. "
-                f"Total value must be at most {max_value} ETH (see value_caps). "
-                "Do not ask for total value in your own words."
-            ),
-        },
-        limits,
-    )
-    return ToolResult(ok=True, data=out_data, actions=actions)
-
-
 def _create_property_prompt_for_monthly_rent(
     accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
     *,
     data: dict[str, Any],
     actions: list[AgentAction],
 ) -> ToolResult:
-    prompt = monthly_rent_collection_prompt(limits)
+    prompt = create_property_monthly_rent_collection_prompt()
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
@@ -2642,77 +2526,24 @@ def _create_property_prompt_for_monthly_rent(
             "awaiting_create_confirmation": False,
         },
     )
-    max_rent = limits.as_tool_payload().get("max_monthly_rent_eth", "0")
-    out_data = _attach_value_caps(
-        {
-            **data,
-            "filled": accumulated,
-            "missing": [],
-            "next_field": "monthly_rent_eth",
-            "submitted": False,
-            "awaiting_create_confirmation": False,
-            "speak_to_user": prompt,
-            "instruction": (
-                "Read speak_to_user verbatim, then wait for the user's monthly rent answer. "
-                f"Monthly rent must be at most {max_rent} ETH (see value_caps). "
-                "Say 0 or skip for no rent."
-            ),
-        },
-        limits,
-    )
-    return ToolResult(ok=True, data=out_data, actions=actions)
-
-
-def _gate_create_property_total_value(
-    accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
-    *,
-    data: dict[str, Any],
-    actions: list[AgentAction],
-) -> ToolResult | None:
-    raw = accumulated.get("total_value")
-    if raw in (None, ""):
-        return None
-    if not total_value_exceeds_cap(str(raw), limits.max_total_value_eth):
-        return None
-    accumulated.pop("total_value", None)
-    prompt = total_value_rejection_message(str(raw), limits)
-    required = _CREATE_PROPERTY_FIELDS[:5]
-    missing = [f for f in required if not accumulated.get(f)]
-    _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
-        {
-            "in_progress": True,
-            "filled": accumulated,
-            "next_field": "total_value",
-            "submitted": False,
-            "awaiting_create_confirmation": False,
-        },
-    )
-    return ToolResult(
-        ok=True,
-        data=_attach_value_caps(
-            {
-                **data,
-                "filled": accumulated,
-                "missing": missing,
-                "next_field": "total_value",
-                "total_value_over_limit": True,
-                "speak_to_user": prompt,
-                "instruction": (
-                    "Total value exceeds the wallet-based cap in value_caps. "
-                    "Read speak_to_user and wait for a lower amount."
-                ),
-            },
-            limits,
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": [],
+        "next_field": "monthly_rent_eth",
+        "submitted": False,
+        "awaiting_create_confirmation": False,
+        "speak_to_user": prompt,
+        "instruction": (
+            "Read speak_to_user verbatim, then wait for the user's monthly rent answer. "
+            "Monthly rent must be less than 100 ETH (say 0 or skip for no rent)."
         ),
-        actions=[a for a in actions if a.field != "total_value"],
-    )
+    }
+    return ToolResult(ok=True, data=out_data, actions=actions)
 
 
 def _gate_create_property_monthly_rent_value(
     accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
     *,
     data: dict[str, Any],
     actions: list[AgentAction],
@@ -2720,13 +2551,13 @@ def _gate_create_property_monthly_rent_value(
     raw = accumulated.get("monthly_rent_eth")
     if raw in (None, ""):
         return None
-    if monthly_rent_skip_value(str(raw)):
+    if create_property_monthly_rent_is_skip(str(raw)):
         accumulated["monthly_rent_eth"] = "0"
         return None
-    if not monthly_rent_exceeds_cap(str(raw), limits.max_monthly_rent_eth):
+    if not create_property_monthly_rent_over_limit(str(raw)):
         return None
     accumulated.pop("monthly_rent_eth", None)
-    prompt = monthly_rent_rejection_message(str(raw), limits)
+    prompt = create_property_monthly_rent_rejection_message(str(raw))
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
@@ -2739,21 +2570,18 @@ def _gate_create_property_monthly_rent_value(
     )
     return ToolResult(
         ok=True,
-        data=_attach_value_caps(
-            {
-                **data,
-                "filled": accumulated,
-                "missing": [],
-                "next_field": "monthly_rent_eth",
-                "rent_over_limit": True,
-                "speak_to_user": prompt,
-                "instruction": (
-                    "Monthly rent exceeds value_caps.max_monthly_rent_eth. "
-                    "Read speak_to_user and wait for a lower amount, 0, or skip."
-                ),
-            },
-            limits,
-        ),
+        data={
+            **data,
+            "filled": accumulated,
+            "missing": [],
+            "next_field": "monthly_rent_eth",
+            "rent_over_limit": True,
+            "speak_to_user": prompt,
+            "instruction": (
+                "The rent value exceeds the 100 ETH limit. Read speak_to_user and "
+                "wait for a lower amount, 0, or skip."
+            ),
+        },
         actions=[a for a in actions if a.field != "monthly_rent_eth"],
     )
 
@@ -2778,7 +2606,6 @@ def _create_property_failure_retry_prefix(session: dict[str, Any]) -> str:
 
 def _create_property_confirmation_prompt(
     accumulated: dict[str, str],
-    limits: CreatePropertyLimits,
     *,
     actions: list[AgentAction],
     data: dict[str, Any],
@@ -2787,12 +2614,6 @@ def _create_property_confirmation_prompt(
     had_active_session: bool,
     pre_session: dict[str, Any] | None = None,
 ) -> ToolResult:
-    acc, blocked = _create_property_validate_accumulated(
-        accumulated, limits, data=data, actions=actions
-    )
-    if blocked is not None:
-        return blocked
-    accumulated = acc
     summary = format_create_property_confirmation_summary(accumulated)
     session = dict(pre_session or {})
     prefix = _create_property_failure_retry_prefix(session) if session.get("submit_failed") else ""
@@ -2821,7 +2642,6 @@ def _create_property_confirmation_prompt(
         "speak_to_user": speak,
         "instruction": _create_property_confirmation_instruction(),
     }
-    out_data = _attach_value_caps(out_data, limits)
     final_actions = list(actions)
     if needs_ui_bootstrap or bootstrap_for_turn or not had_active_session:
         final_actions = [
@@ -2886,7 +2706,6 @@ def _create_property_submit_in_flight_block(pre_session: dict[str, Any]) -> Tool
 def _create_property_submit_result(
     accumulated: dict[str, str],
     data: dict[str, Any],
-    limits: CreatePropertyLimits,
     *,
     bootstrap_for_turn: bool,
     needs_ui_bootstrap: bool,
@@ -2898,33 +2717,30 @@ def _create_property_submit_result(
     if in_flight is not None:
         return in_flight
 
-    blocked = _create_property_pre_submit_block(accumulated, limits)
+    blocked = _create_property_pre_submit_block(accumulated)
     if blocked is not None:
         return blocked
 
     property_name = str(accumulated.get("name") or "property")
-    out_data = _attach_value_caps(
-        {
-            **data,
-            "filled": accumulated,
-            "missing": [],
-            "submitted": True,
-            "submitting": True,
-            "awaiting_create_confirmation": False,
-            "awaiting_ui_confirmation": True,
-            "auto_submit": True,
-            "speak_to_user": (
-                f"Submitting {property_name} now — I will create the listing from this chat."
-            ),
-            "instruction": (
-                "Tell the user the property is submitting from chat. Do not call more tools "
-                "until they see success or an error. Only one property may be created per chat "
-                "session after success; if they ask to create another property later, the tools "
-                "will tell them to refresh for a new chat."
-            ),
-        },
-        limits,
-    )
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": [],
+        "submitted": True,
+        "submitting": True,
+        "awaiting_create_confirmation": False,
+        "awaiting_ui_confirmation": True,
+        "auto_submit": True,
+        "speak_to_user": (
+            f"Submitting {property_name} now — I will create the listing from this chat."
+        ),
+        "instruction": (
+            "Tell the user the property is submitting from chat. Do not call more tools "
+            "until they see success or an error. Only one property may be created per chat "
+            "session after success; if they ask to create another property later, the tools "
+            "will tell them to refresh for a new chat."
+        ),
+    }
     submit_bootstrap = bootstrap_for_turn or needs_ui_bootstrap or not had_active_session
     actions = _create_property_ui_submit_actions(
         accumulated, bootstrap_ui=submit_bootstrap
@@ -2979,7 +2795,6 @@ def _handle_create_property_confirmation_turn(
         return None
 
     confirm = _create_property_confirmation_reply(args)
-    limits = _create_property_limits_for_user(user)
     if confirm is True and complete:
         in_flight = _create_property_submit_in_flight_block(pre_session)
         if in_flight is not None:
@@ -2987,7 +2802,6 @@ def _handle_create_property_confirmation_turn(
         return _create_property_submit_result(
             filled,
             {"filled": filled},
-            limits,
             bootstrap_for_turn=bootstrap_for_turn,
             needs_ui_bootstrap=needs_ui_bootstrap,
             had_active_session=had_active_session,
@@ -3103,7 +2917,6 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and not _create_property_chat_limit_reached(pre_session)
     )
     bootstrap_for_turn = needs_ui_bootstrap
-    limits = _create_property_limits_for_user(user)
 
     confirmation_turn = _handle_create_property_confirmation_turn(
         args,
@@ -3146,26 +2959,9 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         submitted=False,
         awaiting_create_confirmation=False,
     )
-    data = _attach_value_caps(data, limits)
-
-    next_field = data.get("next_field")
-    if (
-        next_field == "total_value"
-        and not args.get("total_value")
-        and not accumulated.get("total_value")
-    ):
-        return _create_property_prompt_for_total_value(
-            accumulated, limits, data=data, actions=actions
-        )
-
-    total_gated = _gate_create_property_total_value(
-        accumulated, limits, data=data, actions=actions
-    )
-    if total_gated is not None:
-        return total_gated
 
     rent_gated = _gate_create_property_monthly_rent_value(
-        accumulated, limits, data=data, actions=actions
+        accumulated, data=data, actions=actions
     )
     if rent_gated is not None:
         return rent_gated
@@ -3174,7 +2970,7 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         "monthly_rent_eth"
     ):
         return _create_property_prompt_for_monthly_rent(
-            accumulated, limits, data=data, actions=actions
+            accumulated, data=data, actions=actions
         )
 
     confirm = _create_property_confirmation_reply(args)
@@ -3187,22 +2983,14 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         return _create_property_submit_result(
             accumulated,
             data,
-            limits,
             bootstrap_for_turn=bootstrap_for_turn,
             needs_ui_bootstrap=needs_ui_bootstrap,
             had_active_session=had_active_session,
         )
 
     if not missing:
-        acc, blocked = _create_property_validate_accumulated(
-            accumulated, limits, data=data, actions=actions
-        )
-        if blocked is not None:
-            return blocked
-        accumulated = acc
         return _create_property_confirmation_prompt(
             accumulated,
-            limits,
             actions=actions,
             data=data,
             bootstrap_for_turn=bootstrap_for_turn,

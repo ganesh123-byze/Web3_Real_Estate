@@ -30,10 +30,6 @@ from backend.api._helpers import (
 
 LOGGER = logging.getLogger(__name__)
 from backend.api.deps import get_db, get_optional_user, require_property_owner
-from backend.services.property_create_limits import (
-    assess_create_property_limits,
-    validate_create_property_values,
-)
 from backend.api.schemas import (
     IssueTokensRequest,
     MintNFTRequest,
@@ -164,23 +160,6 @@ def _property_has_activity(cursor, property_item: dict) -> bool:
     return False
 
 
-def _validate_create_property_limits_for_user(
-    user: AuthUser,
-    payload: PropertyCreate,
-) -> None:
-    owner_wallet = normalize_address(user.wallet_address)
-    limits = assess_create_property_limits(owner_wallet)
-    limit_err = validate_create_property_values(
-        limits,
-        total_value=str(payload.total_value),
-        monthly_rent_eth=(
-            str(payload.monthly_rent_eth) if payload.monthly_rent_eth is not None else None
-        ),
-    )
-    if limit_err:
-        raise HTTPException(status_code=409, detail=limit_err)
-
-
 def _assert_owner(user: AuthUser, property_item: dict) -> None:
     owner = normalize_address(property_item.get("owner_wallet") or "")
     if not owner:
@@ -200,7 +179,6 @@ def create_property(
     After the DB row is inserted, ``_finalize_new_property`` deploys the SecurityToken,
     repairs sale inventory, and syncs rent chain state when monthly rent is set.
     """
-    _validate_create_property_limits_for_user(user, payload)
     try:
         return create_property_record(db, user, payload)
     except ValueError as exc:
@@ -264,8 +242,6 @@ async def create_property_stream(
     # bad input.
     if payload.token_supply <= 0:
         raise HTTPException(status_code=400, detail="token_supply must be > 0")
-
-    _validate_create_property_limits_for_user(user, payload)
 
     token_price_wei = str(to_wei(_token_sale_price_eth(payload)))
     monthly_rent_wei = (
