@@ -31,6 +31,8 @@ class AgentAction(BaseModel):
     field: str | None = None
     value: str | None = None
     property_id: int | str | None = None
+    # Full form payload for chat-only SUBMIT_FORM (avoids stale/partial UI state).
+    form_values: dict[str, str] | None = None
 
 
 class ChatRequest(BaseModel):

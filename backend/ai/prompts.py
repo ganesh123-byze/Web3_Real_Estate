@@ -113,12 +113,17 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
 
 2. After EACH user answer, call fill_create_property with ONLY the new
    value the user just gave (pass it under the matching field name).
+   NEVER collect property fields only in free text — caps, confirmation,
+   and submit are enforced only through tool results.
    You don't need to repeat earlier values — the server merges them.
    The tool's result returns:
      - filled         → every value collected so far
      - missing        → required fields still empty
      - next_field     → exactly which field to ask about next
-   ALWAYS read `next_field` and ask the user that specific question.
+     - speak_to_user  → when present, read verbatim (wallet caps + question)
+   ALWAYS use `next_field` and `speak_to_user` from the tool. NEVER write your
+   own property summary or cap wording — only `speak_to_user` and
+   `confirmation_summary` from the tool are authoritative.
    Never re-ask for any field that already appears in `filled`.
 
 3. Field order (use `next_field` from the tool result; phrasing below):

@@ -297,8 +297,11 @@ function calculateTokenPriceEth(totalValue: string | undefined, tokenSupply: str
   return String(total / supply);
 }
 
-async function submitCreatePropertyFromChat(): Promise<boolean> {
-  const values = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+async function submitCreatePropertyFromChat(
+  formValuesOverride?: Record<string, string>,
+): Promise<boolean> {
+  const stored = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+  const values = { ...stored, ...(formValuesOverride ?? {}) };
   const required = ["name", "location", "total_value", "token_supply", "token_symbol"] as const;
   const missing = required.filter((field) => !String(values[field] ?? "").trim());
   if (missing.length) {
@@ -321,6 +324,15 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
     monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
     images: [] as string[],
   };
+  workflowFormValues.set(CREATE_PROPERTY_MODAL, {
+    ...stored,
+    name: payload.name,
+    location: payload.location,
+    total_value: payload.total_value,
+    token_supply: payload.token_supply,
+    token_symbol: payload.token_symbol,
+    ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
+  });
 
   const queryClient = getRegisteredQueryClient();
   markPropertyCreationStarted(queryClient, payload.name);
@@ -462,7 +474,7 @@ export async function executeAction(
       }
       if (action.type === "SUBMIT_FORM") {
         enterCreatePropertyChatOnlyMode();
-        await submitCreatePropertyFromChat();
+        await submitCreatePropertyFromChat(action.form_values ?? undefined);
         notifyAIDataChanged();
         return;
       }

@@ -5,6 +5,7 @@ export type AIAction = {
   field?: string | null;
   value?: string | null;
   property_id?: number | string | null;
+  form_values?: Record<string, string> | null;
 };
 
 export type AIMessage = {

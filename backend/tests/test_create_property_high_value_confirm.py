@@ -82,6 +82,82 @@ def test_total_value_collection_prompt():
     assert "total property value" in prompt.lower()
 
 
+def test_parse_yes_no_strips_trailing_punctuation():
+    from backend.ai.workflow_parsers import parse_yes_no_confirmation
+
+    assert parse_yes_no_confirmation("yes'") is True
+    assert parse_yes_no_confirmation("Yes.") is True
+
+
+def test_backfill_recovers_fields_when_llm_skipped_tool_calls():
+    from backend.ai.tools import (
+        _backfill_create_property_filled_from_history,
+        _clear_workflow_session,
+        reset_current_messages,
+        reset_current_thread_id,
+        set_current_messages,
+        set_current_thread_id,
+    )
+
+    token = set_current_thread_id("test:create:backfill")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "What's the name of the property?"},
+            {"type": "human", "content": "brightwave"},
+            {"type": "ai", "content": "Where is it located?"},
+            {"type": "human", "content": "usa"},
+            {
+                "type": "ai",
+                "content": "Your wallet can support a total property value of up to 10 ETH. What's the total value?",
+            },
+            {"type": "human", "content": "1000"},
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        filled = _backfill_create_property_filled_from_history({})
+        assert filled.get("name") == "brightwave"
+        assert filled.get("location") == "usa"
+        assert filled.get("total_value") == "1000"
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_fill_create_blocks_confirmation_when_total_value_exceeds_cap():
+    token = set_current_thread_id("test:create:confirm-cap-block")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "What's the name of the property?"},
+            {"type": "human", "content": "brightwave"},
+            {"type": "ai", "content": "Where is it located?"},
+            {"type": "human", "content": "usa"},
+            {"type": "ai", "content": "What's the total property value in ETH?"},
+            {"type": "human", "content": "1000"},
+            {"type": "ai", "content": "How many ownership tokens should we mint?"},
+            {"type": "human", "content": "1000"},
+            {"type": "ai", "content": "What ticker symbol do you want?"},
+            {"type": "human", "content": "eth"},
+            {"type": "ai", "content": "What's the monthly rent in ETH?"},
+            {"type": "human", "content": "99"},
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        with patch_generous_create_property_limits(owner_balance_eth=Decimal("0.0002")):
+            res = asyncio.run(_fill_create_property({}, _owner(), None))
+        assert res.ok
+        assert res.data.get("total_value_over_limit") is True or res.data.get(
+            "submit_blocked"
+        )
+        assert not res.data.get("awaiting_create_confirmation")
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
 def test_fill_create_prompts_total_value_cap_before_total_value():
     token = set_current_thread_id("test:create:total-value-prompt")
     try:

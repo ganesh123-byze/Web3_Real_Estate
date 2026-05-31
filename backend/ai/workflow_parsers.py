@@ -158,6 +158,9 @@ def assistant_prompted_for_create_field(assistant_text: str, field: str) -> bool
             "total property value",
             "total value",
             "value in eth",
+            "wallet can support",
+            "up to",
+            "maximum",
         ),
         "token_supply": (
             "how many ownership tokens",
@@ -173,6 +176,8 @@ def assistant_prompted_for_create_field(assistant_text: str, field: str) -> bool
         "monthly_rent_eth": (
             "monthly rent",
             "rent in eth",
+            "open the rent",
+            "no rent yet",
         ),
     }
     return any(phrase in t for phrase in prompts.get(field, ()))
@@ -308,7 +313,7 @@ def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
 
 def parse_yes_no_confirmation(text: str) -> bool | None:
     """Parse explicit yes/no answers (e.g. skip accidental yes/no as field values)."""
-    t = _strip_noise(text).lower()
+    t = _strip_noise(text).lower().strip("'\".,!? ")
     if not t:
         return None
     if t in {
