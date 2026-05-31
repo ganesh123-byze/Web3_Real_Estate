@@ -227,6 +227,40 @@ def _message_content(msg: Any) -> str:
     return (content or "").strip() if isinstance(content, str) else ""
 
 
+def _create_property_session_preserves_filled(session: dict[str, Any] | None) -> bool:
+    """True when server-side CREATE_PROPERTY draft must survive history recovery."""
+    if not session:
+        return False
+    if session.get("awaiting_high_value_confirmation") or session.get("high_values_confirmed"):
+        return True
+    return bool(session.get("in_progress") and session.get("filled"))
+
+
+def _latest_human_yes_no_reply() -> bool | None:
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("human", "user"):
+            continue
+        text = _message_content(msg)
+        if not text:
+            continue
+        return parse_yes_no_confirmation(text)
+    return None
+
+
+def _fill_create_property_should_handle_high_value_turn(
+    args: dict, session: dict[str, Any]
+) -> bool:
+    if not session.get("awaiting_high_value_confirmation"):
+        return False
+    if _create_property_args_change_fields(args):
+        return False
+    if "confirm_high_values" in args and args.get("confirm_high_values") is not None:
+        return True
+    if bool(args.get("submit")):
+        return True
+    return _latest_human_yes_no_reply() is not None
+
+
 def _merge_last_user_utterance(
     accumulated: dict[str, str],
     modal: str,
@@ -235,6 +269,11 @@ def _merge_last_user_utterance(
 ) -> dict[str, str]:
     """If the LLM omitted the field the user just answered, use the last human line."""
     session = _get_workflow_session(modal)
+    if modal == _CREATE_PROPERTY_MODAL:
+        if session.get("awaiting_high_value_confirmation"):
+            return accumulated
+        if _latest_human_yes_no_reply() is not None:
+            return accumulated
     next_field = session.get("next_field")
     missing = [f for f in required if f not in accumulated or not accumulated.get(f)]
     if not next_field and missing:
@@ -1918,6 +1957,26 @@ async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
         return blocked
 
     modal = _CREATE_PROPERTY_MODAL
+    pending = _get_workflow_session(modal)
+    if pending.get("awaiting_high_value_confirmation") and (pending.get("filled") or {}):
+        return ToolResult(
+            ok=True,
+            data={
+                "awaiting_high_value_confirmation": True,
+                "filled": dict(pending.get("filled") or {}),
+                "speak_to_user": (
+                    "This listing is waiting for your answer on the high-value confirmation. "
+                    "Reply **Yes** to continue or **No** to cancel — do not start a new property yet."
+                ),
+                "instruction": (
+                    "Do NOT call start_create_property. Call fill_create_property with "
+                    "confirm_high_values=true and submit=true when the user said Yes, "
+                    "or confirm_high_values=false when they said No."
+                ),
+            },
+            actions=[],
+        )
+
     required = _CREATE_PROPERTY_FIELDS[:5]
     # Explicit start always opens a new draft (abandoned partial forms, chat refresh, etc.).
     _clear_workflow_session(modal)
@@ -2009,7 +2068,7 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
 
     accumulated: dict[str, str] = {}
     session = _get_workflow_session(modal)
-    session_filled = session.get("filled") or {}
+    session_filled = dict(session.get("filled") or {})
     if modal == _CREATE_PROPERTY_MODAL and _create_property_chat_limit_reached(session):
         session_filled = {}
     if isinstance(session_filled, dict):
@@ -2054,6 +2113,10 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
             for k, v in prior_filled.items():
                 if k in fields and v not in (None, ""):
                     accumulated[k] = str(v)
+    if modal == _CREATE_PROPERTY_MODAL and _create_property_session_preserves_filled(session):
+        for k, v in session_filled.items():
+            if k in fields and v not in (None, ""):
+                accumulated[k] = str(v)
     return accumulated
 
 
@@ -2125,22 +2188,25 @@ def _build_fill_workflow(
         )
 
     if submit and not missing:
-        actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
-        _set_workflow_session(
-            modal,
-            {"in_progress": False, "filled": accumulated, "next_field": None, "submitted": True},
-        )
-        return ToolResult(
-            ok=True,
-            data={
-                "filled": accumulated,
-                "missing": [],
-                "submitted": True,
-                "next_field": None,
-                "instruction": instruction,
-            },
-            actions=actions,
-        )
+        # CREATE_PROPERTY submit runs through fill_create_property so high-value
+        # confirmation and chat limits apply before SUBMIT_FORM is emitted.
+        if modal != _CREATE_PROPERTY_MODAL:
+            actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
+            _set_workflow_session(
+                modal,
+                {"in_progress": False, "filled": accumulated, "next_field": None, "submitted": True},
+            )
+            return ToolResult(
+                ok=True,
+                data={
+                    "filled": accumulated,
+                    "missing": [],
+                    "submitted": True,
+                    "next_field": None,
+                    "instruction": instruction,
+                },
+                actions=actions,
+            )
 
     if submit and missing:
         # The LLM asked to submit but we don't have everything — keep filling
@@ -2474,6 +2540,60 @@ def _create_property_ui_submit_actions(
     return actions
 
 
+async def _handle_create_property_high_value_confirmation_turn(
+    args: dict,
+    pre_session: dict[str, Any],
+    *,
+    needs_ui_bootstrap: bool,
+    had_active_session: bool,
+    bootstrap_for_turn: bool,
+) -> ToolResult | None:
+    """Dedicated yes/no turn — submit from session draft without re-collecting fields."""
+    if not _fill_create_property_should_handle_high_value_turn(args, pre_session):
+        return None
+
+    filled = normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    missing = [
+        field
+        for field in _CREATE_PROPERTY_FIELDS[:5]
+        if field not in filled or not filled.get(field)
+    ]
+    if missing:
+        LOGGER.warning(
+            "[fill_create_property] high-value confirm turn missing fields: %s", missing
+        )
+        return None
+
+    gated = _gate_high_value_create_submit(filled, args, pre_session)
+    if gated is not None:
+        return gated
+
+    property_name = str(filled.get("name") or "property")
+    submit_bootstrap = bootstrap_for_turn or needs_ui_bootstrap or not had_active_session
+    actions = _create_property_ui_submit_actions(filled, bootstrap_ui=submit_bootstrap)
+    _mark_create_property_completed(property_name)
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": filled,
+            "missing": [],
+            "submitted": True,
+            "submitting": True,
+            "awaiting_ui_confirmation": True,
+            "auto_submit": True,
+            "high_values_confirmed": True,
+            "speak_to_user": (
+                f"Submitting {property_name} now — I will create the listing from this chat."
+            ),
+            "instruction": (
+                "Tell the user the property is submitting from chat. Do not call more tools "
+                "until they see success."
+            ),
+        },
+        actions=actions,
+    )
+
+
 async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     """Drive the Create Property workflow and create the listing on submit.
 
@@ -2498,6 +2618,7 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and not _create_property_args_change_fields(args)
         and pre_session.get("in_progress")
         and not pre_session.get("submitted")
+        and not pre_session.get("awaiting_high_value_confirmation")
         and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
@@ -2531,13 +2652,23 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     had_active_session = bool(
         pre_session.get("in_progress") and not _create_property_chat_limit_reached(pre_session)
     )
+    bootstrap_for_turn = needs_ui_bootstrap
 
     cancelled_retry = _block_retry_after_create_cancel(args, pre_session)
     if cancelled_retry is not None:
         return cancelled_retry
 
+    confirmation_turn = await _handle_create_property_high_value_confirmation_turn(
+        args,
+        pre_session,
+        needs_ui_bootstrap=needs_ui_bootstrap,
+        had_active_session=had_active_session,
+        bootstrap_for_turn=bootstrap_for_turn,
+    )
+    if confirmation_turn is not None:
+        return confirmation_turn
+
     # When every required field is present, auto-submit — do not wait for a second LLM turn.
-    bootstrap_for_turn = needs_ui_bootstrap
     if not bool(args.get("submit")):
         preview = _build_fill_workflow(
             args,
