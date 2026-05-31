@@ -1821,6 +1821,49 @@ _CREATE_PROPERTY_FIELDS = (
     "monthly_rent_eth",
 )
 _CREATE_PROPERTY_MODAL = "CREATE_PROPERTY"
+_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE = (
+    "Please refresh the page to start a new chat before creating another property."
+)
+
+
+def _create_property_chat_limit_reached(session: dict[str, Any] | None) -> bool:
+    """True after one successful create-property submission in this copilot thread."""
+    return bool((session or {}).get("chat_property_limit_reached"))
+
+
+def _block_create_property_when_chat_limit_reached() -> ToolResult | None:
+    """One property per chat session — block further create attempts without processing input."""
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    if not _create_property_chat_limit_reached(session):
+        return None
+    last_name = str(session.get("last_created_name") or "").strip()
+    if last_name:
+        speak = (
+            f"Property '{last_name}' was created successfully in this chat. "
+            f"{_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE}"
+        )
+    else:
+        speak = (
+            "A property was already created successfully in this chat. "
+            f"{_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE}"
+        )
+    return ToolResult(
+        ok=True,
+        data={
+            "blocked": True,
+            "chat_property_limit_reached": True,
+            "submitted": True,
+            "filled": {},
+            "missing": [],
+            "speak_to_user": speak,
+            "instruction": (
+                "Tell the user exactly what speak_to_user says. Do NOT call "
+                "start_create_property or fill_create_property. Do NOT ask for "
+                "property fields or accept their latest input for a new listing."
+            ),
+        },
+        actions=[],
+    )
 
 
 def _assistant_announced_property_created(text: str) -> bool:
@@ -1830,15 +1873,15 @@ def _assistant_announced_property_created(text: str) -> bool:
 
 
 def _mark_create_property_completed(property_name: str = "") -> None:
-    """Start a fresh post-success session so the next property in the same chat bootstraps UI."""
+    """Mark this chat thread as having used its one allowed create-property submission."""
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
             "in_progress": False,
             "submitted": True,
-            "awaiting_new_property": True,
+            "chat_property_limit_reached": True,
             "filled": {},
-            "next_field": "name",
+            "next_field": None,
             "last_created_name": (property_name or "").strip(),
             "awaiting_high_value_confirmation": False,
             "high_values_confirmed": False,
@@ -1849,8 +1892,8 @@ def _mark_create_property_completed(property_name: str = "") -> None:
 
 def _create_property_session_needs_ui_bootstrap(session: dict[str, Any]) -> bool:
     """True when the Create dialog must be navigated/opened before fill/submit."""
-    if session.get("awaiting_new_property"):
-        return True
+    if _create_property_chat_limit_reached(session):
+        return False
     return not bool(session.get("in_progress"))
 
 
@@ -1870,6 +1913,10 @@ def _human_requested_new_create_property_listing() -> bool:
 
 
 async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
+    blocked = _block_create_property_when_chat_limit_reached()
+    if blocked is not None:
+        return blocked
+
     modal = _CREATE_PROPERTY_MODAL
     required = _CREATE_PROPERTY_FIELDS[:5]
     # Explicit start always opens a new draft (abandoned partial forms, chat refresh, etc.).
@@ -1920,7 +1967,9 @@ register(ToolSpec(
         "focus in the copilot textbox and does not show the Create Property "
         "dialog behind the chat. After calling this tool, your spoken "
         "reply MUST end with the very next question to ask: \"What's the name "
-        "of the property?\""
+        "of the property?\" Only one property may be created per chat session; "
+        "after a successful create, this tool returns speak_to_user telling the "
+        "user to refresh for a new chat."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
@@ -1961,7 +2010,7 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
     accumulated: dict[str, str] = {}
     session = _get_workflow_session(modal)
     session_filled = session.get("filled") or {}
-    if modal == _CREATE_PROPERTY_MODAL and session.get("awaiting_new_property"):
+    if modal == _CREATE_PROPERTY_MODAL and _create_property_chat_limit_reached(session):
         session_filled = {}
     if isinstance(session_filled, dict):
         for k, v in session_filled.items():
@@ -2122,7 +2171,6 @@ def _build_fill_workflow(
     }
     if modal == _CREATE_PROPERTY_MODAL:
         prev = _get_workflow_session(modal) or {}
-        session_payload["awaiting_new_property"] = False
         if _create_property_args_change_fields(args):
             # User edited a field — drop stale confirmation flags so lowered
             # values are not blocked by an earlier high-value prompt.
@@ -2274,7 +2322,6 @@ def _gate_create_property_rent_limit(accumulated: dict[str, str]) -> ToolResult 
             "awaiting_high_value_confirmation": False,
             "high_values_confirmed": False,
             "property_create_cancelled": False,
-            "awaiting_new_property": False,
         },
     )
     speak = str(check.get("speak_to_user") or "")
@@ -2332,7 +2379,6 @@ def _gate_high_value_create_submit(
                 "awaiting_high_value_confirmation": False,
                 "high_values_confirmed": False,
                 "property_create_cancelled": True,
-                "awaiting_new_property": False,
             },
         )
         speak = (
@@ -2369,7 +2415,6 @@ def _gate_high_value_create_submit(
                 "submitted": False,
                 "awaiting_high_value_confirmation": False,
                 "high_values_confirmed": True,
-                "awaiting_new_property": False,
             },
         )
         return None
@@ -2383,7 +2428,6 @@ def _gate_high_value_create_submit(
             "submitted": False,
             "awaiting_high_value_confirmation": True,
             "high_values_confirmed": False,
-            "awaiting_new_property": False,
         },
     )
     return ToolResult(
@@ -2440,6 +2484,11 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     """
     force_ui_bootstrap = bool(args.pop("_force_create_property_bootstrap", False))
     LOGGER.info("[fill_create_property] args=%s", args)
+
+    blocked = _block_create_property_when_chat_limit_reached()
+    if blocked is not None:
+        return blocked
+
     pre_session = _get_workflow_session(_CREATE_PROPERTY_MODAL)
 
     # Abandoned draft + user asks to create again (often after copilot refresh) without
@@ -2449,7 +2498,7 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and not _create_property_args_change_fields(args)
         and pre_session.get("in_progress")
         and not pre_session.get("submitted")
-        and not pre_session.get("awaiting_new_property")
+        and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
         pre_session = {}
@@ -2474,13 +2523,13 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and session_name
         and incoming_name.lower() != session_name.lower()
         and pre_session.get("in_progress")
-        and not pre_session.get("awaiting_new_property")
+        and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
         pre_session = {}
         needs_ui_bootstrap = True
     had_active_session = bool(
-        pre_session.get("in_progress") and not pre_session.get("awaiting_new_property")
+        pre_session.get("in_progress") and not _create_property_chat_limit_reached(pre_session)
     )
 
     cancelled_retry = _block_retry_after_create_cancel(args, pre_session)
@@ -2562,12 +2611,11 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
             submit_bootstrap,
         )
         _mark_create_property_completed(property_name)
-        data["new_property_session"] = True
         data["instruction"] = (
             "Tell the user the property is submitting from chat. Do not call more tools "
-            "until they see success. After you confirm success (e.g. "
-            "'Property created successfully'), the next property in this chat "
-            "must call start_create_property again."
+            "until they see success. Only one property may be created per chat session; "
+            "if they ask to create another property later, the tools will tell them to "
+            "refresh for a new chat."
         )
         return ToolResult(ok=True, data=data, actions=actions)
 
@@ -2579,13 +2627,9 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         submitted,
         len(actions),
     )
-    # If the model skipped start_create_property (common after a previous
-    # successful create in the same chat), bootstrap the UI once so subsequent
-    # FILL_FIELD actions have a mounted form target. We do this even if the
-    # current fill call carried no field payload.
-    #
-    # During an active workflow we avoid OPEN_MODAL because the dialog listener
-    # resets form state on open. After a prior successful create, always bootstrap.
+    # If the model skipped start_create_property, bootstrap the UI once so subsequent
+    # FILL_FIELD actions have a mounted form target. During an active workflow we avoid
+    # OPEN_MODAL because the dialog listener resets form state on open.
     if needs_ui_bootstrap or not had_active_session:
         actions = [
             AgentAction(type="NAVIGATE", route="/property_owner/properties"),
@@ -2607,7 +2651,9 @@ register(ToolSpec(
         "`missing` is empty the frontend submits the chat-collected values "
         "(you may pass submit=true explicitly). Pass spoken numbers as-is "
         "(e.g. 'one lakh tokens', 'USD symbol') — the server normalizes them. "
-        "Do not call more tools after a successful auto-submit."
+        "Do not call more tools after a successful auto-submit. Only one property "
+        "may be created per chat session; after success, further calls return "
+        "speak_to_user telling the user to refresh for a new chat."
     ),
     parameters={
         "type": "object",
