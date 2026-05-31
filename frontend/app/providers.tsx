@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import { useTheme } from "next-themes";
 import { clearSession, getSession } from "@/lib/api";
+import { registerQueryClient } from "@/lib/query-client-holder";
 
 function ToasterWithTheme() {
   const { resolvedTheme } = useTheme();
@@ -17,6 +18,13 @@ function ToasterWithTheme() {
       theme={resolvedTheme === "dark" ? "dark" : "light"}
     />
   );
+}
+
+function QueryClientRegistry({ client }: { client: QueryClient }) {
+  useEffect(() => {
+    registerQueryClient(client);
+  }, [client]);
+  return null;
 }
 
 function AiDataChangeListener({ client }: { client: QueryClient }) {
@@ -87,6 +95,7 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
       <QueryClientProvider client={client}>
+        <QueryClientRegistry client={client} />
         <MetaMaskListeners />
         <AiDataChangeListener client={client} />
         {children}

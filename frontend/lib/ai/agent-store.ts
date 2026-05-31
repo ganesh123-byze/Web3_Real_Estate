@@ -367,10 +367,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       onActions: (actions) => {
         set({ actions: actions as AIAction[] });
         if (actions?.length) {
-          executeActions(actions as AIAction[], router);
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
-          }
+          void executeActions(actions as AIAction[], router).then(() => {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
+            }
+          });
         }
       },
       onError: (errMsg) => {

@@ -2,7 +2,13 @@
 
 import type { AIAction } from "./types";
 import { clearSession, getApiBase, getToken } from "@/lib/api";
-import { markPropertyCreationComplete, markPropertyCreationPending } from "@/lib/properties/visibility";
+import {
+  markPropertyCreationFailed,
+  markPropertyCreationStarted,
+  syncCreatePropertyStreamEvent,
+} from "@/lib/properties/list-sync";
+import { getRegisteredQueryClient } from "@/lib/query-client-holder";
+import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -316,7 +322,8 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
     images: [] as string[],
   };
 
-  markPropertyCreationPending(undefined, payload.name);
+  const queryClient = getRegisteredQueryClient();
+  markPropertyCreationStarted(queryClient, payload.name);
   let finalPropertyName = payload.name;
   let completedPropertyId: number | string | null | undefined = null;
 
@@ -369,22 +376,22 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
           try {
             const event = JSON.parse(raw) as {
               step?: string;
-              property?: { id?: number; name?: string };
+              property?: Property;
               property_id?: number;
               detail?: string;
             };
             const eventPropertyId = event.property?.id ?? event.property_id;
-            const eventPropertyName = event.property?.name ?? finalPropertyName;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
               completedPropertyId = eventPropertyId;
-              markPropertyCreationPending(eventPropertyId, eventPropertyName);
+              syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (eventPropertyId) {
-              markPropertyCreationPending(eventPropertyId, eventPropertyName);
+              syncCreatePropertyStreamEvent(queryClient, event);
             }
           } catch {
             /* skip malformed SSE JSON */
@@ -409,14 +416,15 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
         ? `Property '${finalPropertyName}' created successfully.`
         : "Property created successfully.",
     });
-    window.setTimeout(() => {
-      markPropertyCreationComplete(completedPropertyId, finalPropertyName);
-      notifyAIDataChanged();
-    }, 900);
+    notifyAIDataChanged();
     focusChatInput();
     return true;
   } catch (err: any) {
-    markPropertyCreationComplete(completedPropertyId, finalPropertyName || payload.name);
+    markPropertyCreationFailed(
+      queryClient,
+      completedPropertyId,
+      finalPropertyName || payload.name,
+    );
     notifyAIDataChanged();
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
