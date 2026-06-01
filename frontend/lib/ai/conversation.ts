@@ -46,10 +46,19 @@ type SessionState =
   | "speaking"
   | "error";
 
+type VoiceCompletePayload = {
+  reply?: string;
+  actions?: unknown[];
+};
+
 type Callbacks = {
   onStateChange: (state: SessionState) => void;
   onToken: (token: string) => void;
   onTranscript: (text: string) => void;
+  /** Verbatim / final assistant text when the turn completes (not streamed as tokens). */
+  onComplete?: (payload: VoiceCompletePayload) => void;
+  /** Drop partial LLM text before tool output replaces the turn. */
+  onStreamReset?: () => void;
   onActions?: (actions: any[]) => void;
   onLevel?: (level: number) => void;
   onError?: (msg: string) => void;
@@ -232,8 +241,11 @@ export class VoiceSessionManager {
         case "ready":
           if (typeof data.sample_rate === "number") this.ttsSampleRate = data.sample_rate;
           break;
+        case "stream_reset":
+          this.callbacks.onStreamReset?.();
+          break;
         case "token":
-          this.callbacks.onToken(data.text || "");
+          this.callbacks.onToken(data.text || data.content || "");
           break;
         case "audio":
           this.schedulePcmChunk(data.chunk || "", data.sample_rate || this.ttsSampleRate);
@@ -242,12 +254,18 @@ export class VoiceSessionManager {
           // Flush any remaining prebuffer if the backend finished before we hit 300 ms.
           this.flushPrebufferEarly();
           break;
-        case "complete":
+        case "complete": {
+          const reply = typeof data.reply === "string" ? data.reply : "";
+          this.callbacks.onComplete?.({
+            reply,
+            actions: data.actions,
+          });
           if (data.actions && this.callbacks.onActions) {
             this.callbacks.onActions(data.actions);
           }
           if (!this.aiPlaying && !this.sttInFlight) this.setState("listening");
           break;
+        }
         case "interrupted":
           this.stopPlayback();
           this.setState("listening");

@@ -310,7 +310,9 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
                     checkpointer=checkpointer,
                     cancel=cancel,
                 ):
-                    if event.get("type") == "token":
+                    if event.get("type") == "stream_reset":
+                        await _safe_send({"type": "stream_reset"})
+                    elif event.get("type") == "token":
                         delta = event.get("content") or ""
                         if delta:
                             full_text += delta
@@ -325,14 +327,18 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
                         })
                     elif event.get("type") == "complete":
                         actions = event.get("actions") or []
-                        reply = event.get("reply") or full_text
+                        reply = (event.get("reply") or full_text or "").strip()
                         partial_reply = reply or full_text
                         tail = chunker.flush()
                         if tail:
                             await text_q.put(tail + " ")
-                        elif not full_text and reply:
-                            await text_q.put(reply)
                         if reply:
+                            prior = full_text.strip()
+                            if reply != prior:
+                                await _safe_send({"type": "token", "text": reply})
+                                await text_q.put(reply)
+                            elif not prior:
+                                await text_q.put(reply)
                             history.append(ChatMessage(role="assistant", content=reply))
                             cur_assistant_replied = True
                         await _safe_send({

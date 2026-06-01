@@ -158,6 +158,28 @@ function appendOrUpdateAssistant(messages: AIMessage[], delta: string): AIMessag
   return next;
 }
 
+/** Drop a partial assistant bubble before tool output replaces the turn. */
+function resetTrailingAssistant(messages: AIMessage[]): AIMessage[] {
+  if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+    return messages.slice(0, -1);
+  }
+  return messages;
+}
+
+/** Set the final assistant text (verbatim tool replies, confirmations, success). */
+function finalizeAssistantMessage(messages: AIMessage[], reply: string): AIMessage[] {
+  const text = reply.trim();
+  if (!text) return messages;
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant") {
+    if (last.content.trim() === text) return messages;
+    const next = messages.slice();
+    next[next.length - 1] = { ...last, content: text };
+    return next;
+  }
+  return [...messages, msg("assistant", text)];
+}
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
   open: false,
   state: "idle",
@@ -373,6 +395,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       onToken: (delta) => {
         set({ messages: appendOrUpdateAssistant(get().messages, delta) });
       },
+      onStreamReset: () => {
+        set({ messages: resetTrailingAssistant(get().messages) });
+      },
+      onComplete: ({ reply }) => {
+        const text = (reply || "").trim();
+        if (!text) return;
+        set({ messages: finalizeAssistantMessage(get().messages, text) });
+      },
       onActions: (actions) => {
         set({ actions: actions as AIAction[] });
         if (actions?.length) {
@@ -384,7 +414,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             })
             .catch((err: any) => {
               const message = err?.message || "Workflow action failed.";
-              set({ error: message, state: "error" });
+              set({
+                error: message,
+                state: "error",
+                messages: [
+                  ...get().messages,
+                  msg("assistant", message),
+                ],
+              });
             });
         }
       },
