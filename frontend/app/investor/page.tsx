@@ -42,12 +42,19 @@ export default function InvestorDashboardPage() {
     () => new Map((properties.data ?? []).map((p) => [Number(p.id), p])),
     [properties.data],
   );
+  const holdings = useMemo(
+    () =>
+      (portfolio.data?.holdings ?? []).filter((holding) => {
+        const property = propertyMap.get(Number(holding.property_id));
+        return !!property && property.is_active !== false;
+      }),
+    [portfolio.data?.holdings, propertyMap],
+  );
   const metrics = useMemo(
-    () => buildInvestorMetrics(portfolio.data?.holdings ?? [], properties.data ?? []),
-    [portfolio.data?.holdings, properties.data],
+    () => buildInvestorMetrics(holdings, properties.data ?? []),
+    [holdings, properties.data],
   );
   const loading = properties.isLoading || portfolio.isLoading;
-  const holdings = portfolio.data?.holdings ?? [];
   const claimableProperties = claimable.data?.properties ?? [];
   const nextClaim = claimableProperties[0];
   const [selectedClaim, setSelectedClaim] = useState<ClaimableRewardProperty | null>(null);
