@@ -61,6 +61,42 @@ def get_last_confirmed_rent_payment_by_wallet(
     return dict(row) if row else None
 
 
+def get_last_confirmed_rent_payment_for_property(
+    cursor, property_id: int
+) -> dict | None:
+    """Latest confirmed rent for the property (any tenant).
+
+    Rent is billed per property per cycle — once any tenant pays, the
+    property is covered until the next anniversary; other tenants must not
+    pay again for the same cycle.
+    """
+    cursor.execute(
+        "SELECT id, payment_date, amount_wei, rent_month, rent_year, tenant_id "
+        "FROM rent_payments "
+        "WHERE property_id = %s AND payment_status = 'confirmed' "
+        "ORDER BY payment_date DESC LIMIT 1",
+        (property_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def property_rent_period_status(
+    cursor, property_id: int, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Whether this property's current rent cycle is already satisfied."""
+    last = get_last_confirmed_rent_payment_for_property(cursor, property_id)
+    return compute_rent_period_status(last, now=now)
+
+
+def tenant_rent_period_status(
+    cursor, tenant_wallet: str, property_id: int, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Whether the given tenant wallet paid in the current cycle (UI only)."""
+    last = get_last_confirmed_rent_payment_by_wallet(cursor, tenant_wallet, property_id)
+    return compute_rent_period_status(last, now=now)
+
+
 def compute_rent_period_status(
     last_payment: dict | None,
     *,

@@ -32,6 +32,7 @@ export type Property = {
   sold_percentage: string | number;
   rent_enabled?: boolean;
   current_cycle_paid?: boolean;
+  tenant_paid_current_cycle?: boolean;
   can_pay_rent?: boolean;
   rent_cycle_label?: string;
   next_rent_due_at?: string | null;
