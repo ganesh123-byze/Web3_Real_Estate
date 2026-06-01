@@ -2857,6 +2857,77 @@ def _create_property_ui_submit_actions(
     return actions
 
 
+def _create_property_workflow_active(
+    session: dict[str, Any], filled: dict[str, str]
+) -> bool:
+    if session.get("in_progress") or session.get("awaiting_create_confirmation"):
+        return True
+    if filled:
+        return True
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        text = _message_content(msg).lower()
+        if "here are the property details i have" in text:
+            return True
+        if "what's the name of the property" in text:
+            return True
+        if "monthly rent" in text and "100 eth" in text:
+            return True
+    return False
+
+
+async def try_server_create_property_confirmation(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Emit the canonical confirmation summary without waiting for the LLM to paraphrase it.
+
+    When every field is collected (including monthly rent) but the model replies in
+    free text instead of calling fill_create_property, this keeps Edit/Delete in chat.
+    """
+    if canonical_role(user.role) != "property_owner":
+        return None
+    if _latest_human_yes_no_reply() is not None:
+        return None
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("chat_property_limit_reached"):
+        return None
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return None
+    if pre_session.get("awaiting_create_confirmation"):
+        return None
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    if not _create_property_workflow_active(pre_session, filled):
+        return None
+    if not _create_property_required_fields_present(filled):
+        return None
+
+    probe = _merge_last_user_utterance(
+        dict(filled),
+        _CREATE_PROPERTY_MODAL,
+        _CREATE_PROPERTY_FIELDS,
+        _CREATE_PROPERTY_FIELDS[:5],
+    )
+    probe = normalize_create_property_accumulated(probe)
+    if _create_property_needs_monthly_rent_collection(probe):
+        return None
+
+    result = await _fill_create_property({}, user, db)
+    data = result.data or {}
+    if not data.get("awaiting_create_confirmation"):
+        return None
+    speak = str(data.get("speak_to_user") or "").strip()
+    if not speak:
+        return None
+    return result
+
+
 async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     """Drive the Create Property workflow and create the listing on submit.
 

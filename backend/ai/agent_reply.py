@@ -39,3 +39,33 @@ def pick_verbatim_speak_to_user(
         if speak:
             chosen = speak
     return chosen
+
+
+def extract_final_reply_from_state(state: dict[str, Any] | None) -> str:
+    """Best reply text from a completed agent graph state."""
+    if not state:
+        return ""
+    verbatim = str(state.get("verbatim_reply") or "").strip()
+    if verbatim:
+        return verbatim
+    messages = state.get("messages") or []
+    for item in reversed(messages):
+        if isinstance(item, dict):
+            role = (item.get("type") or item.get("role") or "").lower()
+            if role not in ("ai", "assistant"):
+                continue
+            content = str(item.get("content") or "").strip()
+            if content and not item.get("tool_calls"):
+                return content
+            continue
+        content = getattr(item, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            continue
+        tool_calls = getattr(item, "tool_calls", None) or []
+        if not tool_calls:
+            return content.strip()
+    last = messages[-1] if messages else None
+    if isinstance(last, dict):
+        return str(last.get("content") or "").strip()
+    content = getattr(last, "content", None)
+    return content.strip() if isinstance(content, str) else ""
