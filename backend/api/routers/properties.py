@@ -29,6 +29,11 @@ from backend.api._helpers import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# SecurityToken.invest: requiredWei = salePricePerTokenWei * tokenAmount (whole tokens, max 1M)
+_MAX_INVEST_WHOLE_TOKENS = 1_000_000
+_UINT256_MAX = 2**256 - 1
+
 from backend.api.deps import get_db, get_optional_user, require_property_owner
 from backend.api.schemas import (
     IssueTokensRequest,
@@ -66,19 +71,91 @@ def _token_sale_price_eth(payload: PropertyCreate) -> Decimal:
     return price
 
 
+def _log_create_property_economics(
+    *,
+    source: str,
+    payload: PropertyCreate,
+    token_price_wei: str,
+    monthly_rent_wei: str | None,
+    owner_wallet: str,
+    property_id: int | None = None,
+    extra: str | None = None,
+) -> None:
+    """Structured logs for diagnosing deploy failures (filter logs: create_property)."""
+    try:
+        sale_eth = _token_sale_price_eth(payload)
+    except Exception as exc:
+        sale_eth = f"<invalid: {exc}>"
+    overflow_risk = False
+    wei_parse_error: str | None = None
+    try:
+        wei_int = int(token_price_wei)
+        if wei_int > 0:
+            overflow_risk = wei_int * _MAX_INVEST_WHOLE_TOKENS > _UINT256_MAX
+    except (TypeError, ValueError) as exc:
+        wei_parse_error = str(exc)
+    LOGGER.info(
+        "[create_property:%s] property_id=%s name=%r total_value=%s token_supply=%s "
+        "sale_price_eth=%s token_price_wei=%s monthly_rent_wei=%s owner=%s "
+        "invest_uint256_overflow_risk=%s wei_parse_error=%s %s",
+        source,
+        property_id,
+        payload.name,
+        payload.total_value,
+        payload.token_supply,
+        sale_eth,
+        token_price_wei,
+        monthly_rent_wei,
+        (owner_wallet[:12] + "...") if owner_wallet else "",
+        overflow_risk,
+        wei_parse_error,
+        extra or "",
+    )
+    if overflow_risk:
+        LOGGER.warning(
+            "[create_property:%s] sale_price_per_token_wei is very large — "
+            "SecurityToken.invest() may revert with uint256 overflow when buying tokens",
+            source,
+        )
+
+
 def _finalize_step_deploy_token(db, property_id: int) -> None:
     cursor = db.cursor(dictionary=True)
     try:
         prop = lock_property(cursor, property_id)
         if not prop:
             raise HTTPException(status_code=404, detail="Property not found")
+        LOGGER.info(
+            "[create_property:deploy_token] start property_id=%s name=%r "
+            "token_price_base=%s token_supply=%s symbol=%s existing_token=%s",
+            property_id,
+            prop.get("name"),
+            prop.get("token_price_base"),
+            prop.get("token_supply"),
+            prop.get("token_symbol"),
+            prop.get("token_address"),
+        )
         deploy_property_token(cursor, prop, property_id)
         db.commit()
-    except HTTPException:
+        LOGGER.info(
+            "[create_property:deploy_token] success property_id=%s token_address=%s",
+            property_id,
+            prop.get("token_address"),
+        )
+    except HTTPException as exc:
         db.rollback()
+        LOGGER.error(
+            "[create_property:deploy_token] HTTP error property_id=%s detail=%s",
+            property_id,
+            exc.detail,
+        )
         raise
     except Exception as exc:
         db.rollback()
+        LOGGER.exception(
+            "[create_property:deploy_token] failed property_id=%s",
+            property_id,
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Property was saved but setup failed while deploying token: {exc}",
@@ -259,6 +336,14 @@ async def create_property_stream(
         if rent_wei_for_create > 0:
             validate_monthly_rent_for_chain(rent_wei_for_create)
 
+    _log_create_property_economics(
+        source="stream_start",
+        payload=payload,
+        token_price_wei=token_price_wei,
+        monthly_rent_wei=monthly_rent_wei,
+        owner_wallet=owner_wallet or "",
+    )
+
     async def gen() -> AsyncIterator[str]:
         property_id: int | None = None
         cursor = db.cursor(dictionary=True)
@@ -294,11 +379,22 @@ async def create_property_stream(
             )
             property_id = int(cursor.fetchone()["id"])
             db.commit()
+            _log_create_property_economics(
+                source="stream_db_inserted",
+                payload=payload,
+                token_price_wei=token_price_wei,
+                monthly_rent_wei=monthly_rent_wei,
+                owner_wallet=owner_wallet or "",
+                property_id=property_id,
+            )
             # Withhold property_id until the listing is dashboard-ready on ``done``.
             yield _sse({"step": "created"})
         except Exception as exc:  # noqa: BLE001
             db.rollback()
-            LOGGER.exception("create_property_stream insert failed")
+            LOGGER.exception(
+                "[create_property:stream] DB insert failed name=%r",
+                payload.name,
+            )
             detail = exc.detail if isinstance(exc, HTTPException) else str(exc)[:300]
             yield _sse({"step": "error", "detail": str(detail)})
             return
@@ -329,24 +425,52 @@ async def create_property_stream(
             *,
             allow_rent_sync_skip: bool = False,
         ):
-            yield _sse({"step": intent})
+            yield _sse({"step": intent, "property_id": property_id})
+            LOGGER.info(
+                "[create_property:stream] stage_start property_id=%s step=%s",
+                property_id,
+                intent,
+            )
             try:
                 await asyncio.to_thread(work)
             except HTTPException as exc:
                 skip_msg = _rent_sync_skippable(exc) if allow_rent_sync_skip else None
                 if skip_msg:
-                    LOGGER.warning("create_property_stream stage %s skipped: %s", intent, skip_msg)
+                    LOGGER.warning(
+                        "[create_property:stream] stage_skipped property_id=%s step=%s detail=%s",
+                        property_id,
+                        intent,
+                        skip_msg,
+                    )
                     yield _sse({"step": "rent_sync_skipped", "detail": skip_msg})
                     yield _sse({"step": "rent_synced"})
                     return
-                LOGGER.warning("create_property_stream stage %s failed: %s", intent, exc.detail)
-                yield _sse({"step": "error", "detail": str(exc.detail)})
+                LOGGER.error(
+                    "[create_property:stream] stage_failed property_id=%s step=%s http_detail=%s",
+                    property_id,
+                    intent,
+                    exc.detail,
+                )
+                yield _sse({"step": "error", "detail": str(exc.detail), "failed_step": intent})
                 raise
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("create_property_stream stage %s failed", intent)
-                yield _sse({"step": "error", "detail": str(exc)[:300]})
+                LOGGER.exception(
+                    "[create_property:stream] stage_failed property_id=%s step=%s",
+                    property_id,
+                    intent,
+                )
+                yield _sse({
+                    "step": "error",
+                    "detail": str(exc)[:300],
+                    "failed_step": intent,
+                })
                 raise
-            yield _sse({"step": completed})
+            LOGGER.info(
+                "[create_property:stream] stage_done property_id=%s step=%s",
+                property_id,
+                completed,
+            )
+            yield _sse({"step": completed, "property_id": property_id})
 
         try:
             async for ev in run_stage("deploying_token", "token_deployed",
@@ -396,6 +520,14 @@ async def create_property_stream(
         finally:
             cursor.close()
 
+        LOGGER.info(
+            "[create_property:stream] done property_id=%s name=%r token_address=%s "
+            "dashboard_listable=%s",
+            property_id,
+            final.get("name"),
+            final.get("token_address"),
+            property_is_dashboard_listable(final),
+        )
         yield _sse(_property_stream_done_event(property_id, final))
 
     return StreamingResponse(

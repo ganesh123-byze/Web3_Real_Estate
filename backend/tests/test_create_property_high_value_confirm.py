@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import backend.ai.tools as tools
 from backend.ai.tools import (
@@ -171,12 +172,21 @@ def test_fill_create_submits_after_user_confirms_yes():
         assert gate.data.get("awaiting_create_confirmation") is True
 
         msg_token = set_current_messages([{"type": "human", "content": "yes"}])
-        proceed = asyncio.run(
-            _fill_create_property({"confirm_create": True}, _owner(), None)
-        )
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={
+                "id": 99,
+                "name": "Mega Estate",
+                "token_address": "0xabc",
+            },
+        ):
+            proceed = asyncio.run(
+                _fill_create_property({"confirm_create": True}, _owner(), None)
+            )
         assert proceed.ok
         assert proceed.data.get("submitted") is True
-        assert any(a.type == "SUBMIT_FORM" for a in proceed.actions)
+        assert proceed.data.get("success_message")
+        assert not any(a.type == "SUBMIT_FORM" for a in proceed.actions)
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         if msg_token is not None:
@@ -198,12 +208,19 @@ def test_fill_create_yes_with_redundant_field_args_submits():
                 "awaiting_create_confirmation": True,
             },
         )
-        res = asyncio.run(
-            _fill_create_property({**_complete_filled(), "confirm_create": True}, _owner(), None)
-        )
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={"id": 100, "name": "Mega Estate", "token_address": "0xabc"},
+        ):
+            res = asyncio.run(
+                _fill_create_property(
+                    {**_complete_filled(), "confirm_create": True}, _owner(), None
+                )
+            )
         assert res.ok
         assert res.data.get("submitted") is True
-        assert any(a.type == "SUBMIT_FORM" for a in res.actions)
+        assert res.data.get("success_message")
+        assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_messages(msg_token)
@@ -315,10 +332,14 @@ def test_fill_create_yes_from_client_history_only():
                 "awaiting_create_confirmation": True,
             },
         )
-        res = asyncio.run(_fill_create_property({}, _owner(), None))
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={"id": 102, "name": "villa", "token_address": "0xabc"},
+        ):
+            res = asyncio.run(_fill_create_property({}, _owner(), None))
         assert res.ok
         assert res.data.get("submitted") is True
-        assert any(a.type == "SUBMIT_FORM" for a in res.actions)
+        assert res.data.get("success_message")
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_messages(msg_token)
@@ -368,14 +389,22 @@ def test_fill_create_retries_submit_after_failure_without_recollecting():
         tools._set_workflow_session(
             "CREATE_PROPERTY",
             {
-                "submitting": True,
+                "submit_failed": True,
+                "last_submit_error": "setup failed",
                 "filled": _complete_filled(),
+                "awaiting_create_confirmation": True,
             },
         )
-        res = asyncio.run(_fill_create_property({"confirm_create": True}, _owner(), None))
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={"id": 101, "name": "Mega Estate", "token_address": "0xabc"},
+        ):
+            res = asyncio.run(
+                _fill_create_property({"confirm_create": True}, _owner(), None)
+            )
         assert res.ok
         assert res.data.get("submitted") is True
-        assert any(a.type == "SUBMIT_FORM" for a in res.actions)
+        assert res.data.get("success_message")
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_messages(msg_token)

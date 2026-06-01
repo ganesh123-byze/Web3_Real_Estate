@@ -376,9 +376,17 @@ def property_needs_token_deployment(property_item: dict) -> bool:
 
 def deploy_property_token(cursor, property_item: dict, property_id: int) -> dict:
     """Explicit, admin-initiated SecurityToken deployment for a property."""
+    import logging
+
+    log = logging.getLogger(__name__)
     if property_item.get("token_address") and is_investable_token_contract(
         property_item["token_address"]
     ):
+        log.info(
+            "[create_property:deploy_token] skip — already deployed property_id=%s address=%s",
+            property_id,
+            property_item.get("token_address"),
+        )
         ensure_security_token_sale_inventory(property_item)
         return property_item
 
@@ -387,22 +395,60 @@ def deploy_property_token(cursor, property_item: dict, property_id: int) -> dict
         sale_price_wei = (
             int(sale_price_wei_raw) if sale_price_wei_raw not in (None, "", "0") else 0
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log.error(
+            "[create_property:deploy_token] invalid token_price_base property_id=%s raw=%r err=%s",
+            property_id,
+            sale_price_wei_raw,
+            exc,
+        )
         sale_price_wei = 0
     if sale_price_wei <= 0:
+        log.error(
+            "[create_property:deploy_token] sale_price_wei<=0 property_id=%s raw=%r",
+            property_id,
+            sale_price_wei_raw,
+        )
         raise HTTPException(
             status_code=400,
             detail="Cannot deploy token: token_sale_price_eth must be > 0 for this property.",
         )
 
     token_name = f"{property_item['name']} Token"
-    token_address, _ = deploy_security_token(
-        property_id, token_name, property_item["token_symbol"], sale_price_wei
+    log.info(
+        "[create_property:deploy_token] deploying SecurityToken property_id=%s "
+        "sale_price_wei=%s supply=%s symbol=%r",
+        property_id,
+        sale_price_wei,
+        property_item.get("token_supply"),
+        property_item.get("token_symbol"),
     )
-    # Mint the entire supply to the token contract so invest() can transfer out.
-    mint_security_tokens(
-        token_address, token_address, Decimal(property_item["token_supply"])
-    )
+    try:
+        token_address, deploy_receipt = deploy_security_token(
+            property_id, token_name, property_item["token_symbol"], sale_price_wei
+        )
+        log.info(
+            "[create_property:deploy_token] SecurityToken deployed property_id=%s "
+            "address=%s tx_status=%s",
+            property_id,
+            token_address,
+            deploy_receipt.get("status") if isinstance(deploy_receipt, dict) else deploy_receipt,
+        )
+        mint_security_tokens(
+            token_address, token_address, Decimal(property_item["token_supply"])
+        )
+        log.info(
+            "[create_property:deploy_token] minted supply to contract property_id=%s amount=%s",
+            property_id,
+            property_item.get("token_supply"),
+        )
+    except Exception:
+        log.exception(
+            "[create_property:deploy_token] on-chain setup failed property_id=%s sale_price_wei=%s",
+            property_id,
+            sale_price_wei,
+        )
+        raise
 
     cursor.execute(
         "UPDATE properties SET token_address = %s WHERE id = %s",

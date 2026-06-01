@@ -34,9 +34,15 @@ import {
   takePendingWorkflowActions,
 } from "@/lib/ai/action-executor";
 import {
+  logCreatePropertyFailure,
+  logCreatePropertyPayload,
+  logCreatePropertyStreamEvent,
+} from "@/lib/properties/create-property-debug";
+import {
   PropertyFormField,
   calculateTokenPriceEth,
   formatTokenPriceEth,
+  tokenSalePriceEthForPayload,
   propertyDialogBodyClass,
   propertyDialogContentClass,
   propertyDialogFooterClass,
@@ -207,19 +213,23 @@ export function CreatePropertyDialog() {
     // See `resolveSubmitValues` for why the cache wins (it's untouched
     // by render races and is exactly what the agent intended to submit).
     const values = resolveSubmitValues(stateValues);
-    console.log("[CreateProperty] submitting payload:", {
+    const tokenSalePriceEth = tokenSalePriceEthForPayload(
+      values.total_value,
+      values.token_supply,
+    );
+    logCreatePropertyPayload("dialog", {
       name: values.name,
       location: values.location,
       total_value: values.total_value,
       token_supply: values.token_supply,
       token_symbol: values.token_symbol,
+      token_sale_price_eth: tokenSalePriceEth,
       monthly_rent_eth: values.monthly_rent_eth,
     });
     // Mirror the live values back into React state so the visible
     // fields, the progress card, and the form-reset paths all agree.
     setForm(values);
     try {
-      const price = calculateTokenPriceEth(values.total_value, values.token_supply);
       await create.mutateAsync({
         payload: {
           name: values.name.trim(),
@@ -227,12 +237,12 @@ export function CreatePropertyDialog() {
           total_value: values.total_value,
           token_supply: values.token_supply,
           token_symbol: values.token_symbol.trim(),
-          token_sale_price_eth: price > 0 ? price : "",
+          token_sale_price_eth: tokenSalePriceEth,
           monthly_rent_eth: values.monthly_rent_eth ? values.monthly_rent_eth : null,
           images: values.images,
         },
         onProgress: (event: CreatePropertyEvent) => {
-          // Append the step so the derived status updates in real time.
+          logCreatePropertyStreamEvent(event);
           setStepEvents((prev) => (prev[prev.length - 1] === event.step ? prev : [...prev, event.step]));
         },
       });
@@ -258,6 +268,7 @@ export function CreatePropertyDialog() {
         create.reset();
       }, 650);
     } catch (err: any) {
+      logCreatePropertyFailure("dialog", err, { name: values.name.trim() });
       clearPendingWorkflowActions("CREATE_PROPERTY");
       const errMsg = err?.message || "Failed to create property.";
       toast.error(errMsg);

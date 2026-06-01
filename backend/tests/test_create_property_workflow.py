@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 from backend.ai.tools import (
     _clear_workflow_session,
@@ -245,17 +246,22 @@ def test_submit_create_active_session_keeps_fill_and_submit_actions():
         assert summary.data.get("awaiting_create_confirmation") is True
         assert not any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in summary.actions)
 
-        final = asyncio.run(
-            _fill_create_property({"confirm_create": True}, _dummy_owner(), None)
-        )
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={
+                "id": 50,
+                "name": "Nova Plaza",
+                "token_address": "0xdeployed",
+            },
+        ):
+            final = asyncio.run(
+                _fill_create_property({"confirm_create": True}, _dummy_owner(), None)
+            )
         assert final.ok
-        # Confirmed submit should include form filling and submit.
-        assert any(a.type == "FILL_FIELD" and a.field == "name" and a.value == "Nova Plaza" for a in final.actions)
-        assert any(a.type == "FILL_FIELD" and a.field == "token_symbol" and a.value == "NOVA" for a in final.actions)
-        assert any(a.type == "SUBMIT_FORM" and a.modal == "CREATE_PROPERTY" for a in final.actions)
-        # Active-flow submit should not re-bootstrap route/modal.
-        assert not any(a.type == "NAVIGATE" for a in final.actions)
-        assert not any(a.type == "OPEN_MODAL" and a.modal == "CREATE_PROPERTY" for a in final.actions)
+        assert final.data.get("submitted") is True
+        assert final.data.get("success_message")
+        assert any(a.type == "NAVIGATE" for a in final.actions)
+        assert not any(a.type == "SUBMIT_FORM" for a in final.actions)
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_thread_id(token)
