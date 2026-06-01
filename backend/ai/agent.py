@@ -587,6 +587,8 @@ async def stream_agent(
         preflight = await try_server_create_property_confirmation(user, db)
         if preflight is not None:
             reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
+            if reply:
+                yield {"type": "token", "content": reply}
             yield {
                 "type": "complete",
                 "reply": reply,
@@ -595,6 +597,7 @@ async def stream_agent(
             return
 
         suppress_tokens = False
+        streamed_reply_chars = 0
         async for event in graph.astream_events(
             AgentState(messages=messages, actions=[]),
             config=config or None,
@@ -612,15 +615,24 @@ async def stream_agent(
                     continue
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and chunk.content:
+                    streamed_reply_chars += len(chunk.content)
                     yield {"type": "token", "content": chunk.content}
             elif kind == "on_tool_start":
                 suppress_tokens = True
                 yield {"type": "stream_reset"}
-            elif kind == "on_tool_start":
+                name = event.get("name", "")
+                tool_input = (event.get("data") or {}).get("input") or {}
+                if name == "fill_create_property" and tool_input.get("confirm_create"):
+                    status = (
+                        "Creating your property now — deploying the token and setting up "
+                        "rent on-chain. This may take a minute…"
+                    )
+                    streamed_reply_chars += len(status)
+                    yield {"type": "token", "content": status}
                 yield {
                     "type": "tool_start",
-                    "name": event.get("name", ""),
-                    "input": event.get("data", {}).get("input"),
+                    "name": name,
+                    "input": tool_input,
                 }
             elif kind == "on_tool_end":
                 yield {
@@ -640,6 +652,8 @@ async def stream_agent(
                         "didn't generate a response after tool execution"
                     )
                 LOGGER.info("[stream_agent] Final actions count: %d, actions: %s", len(actions), actions)
+                if reply and streamed_reply_chars == 0:
+                    yield {"type": "token", "content": reply}
                 payload: dict[str, Any] = {
                     "type": "complete",
                     "reply": reply,
