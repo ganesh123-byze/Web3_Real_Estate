@@ -10,6 +10,7 @@ import { PropertyImageGallery } from "@/components/properties/property-image-gal
 import { availablePropertyTokens, propertyUnitValue } from "@/components/investor/investor-utils";
 import { addressExplorerUrl, RUNTIME_CONFIG } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { cn, formatCurrency, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 const CHAIN_LABELS: Record<number, string> = {
@@ -133,6 +134,13 @@ function PropertyInfoGrid({
   const tokenStandard =
     property.nft_token_id != null ? "ERC-721" : property.token_address ? "ERC-20" : "—";
   const monthlyRent = Number(property.monthly_rent_eth ?? 0);
+  const sessionIdentity = currentSessionIdentity();
+  const creatorLabel =
+    property.owner_wallet && sessionIdentity?.wallet_address?.toLowerCase() === property.owner_wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, property.owner_wallet)
+      : property.owner_wallet
+        ? shortAddress(property.owner_wallet, 6, 4)
+        : undefined;
 
   return (
     <div className="grid gap-2 sm:grid-cols-2">
@@ -180,7 +188,7 @@ function PropertyInfoGrid({
           label="Created by"
           value={property.owner_wallet}
           fallback="—"
-          mono
+          displayValue={creatorLabel}
           explorer={property.owner_wallet ? addressExplorerUrl(property.owner_wallet) : undefined}
           linkStyle
         />
@@ -212,10 +220,17 @@ export function InvestorPropertyDetailFooter({
   disabled?: boolean;
   onInvest: () => void;
 }) {
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : wallet
+        ? shortAddress(wallet, 6, 4)
+        : "Wallet not connected";
   return (
     <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border bg-card px-4 py-2">
-      <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-        {wallet ? shortAddress(wallet, 6, 4) : "Wallet not connected"}
+      <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+        {walletLabel}
       </span>
       <Button
         type="button"
@@ -295,6 +310,7 @@ function CopyField({
   copyValue,
   fullText,
   linkStyle,
+  displayValue,
 }: {
   label: string;
   value?: string | null;
@@ -304,11 +320,14 @@ function CopyField({
   copyValue?: string | null;
   fullText?: boolean;
   linkStyle?: boolean;
+  displayValue?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const raw = copyValue ?? value;
   const display = !raw
     ? fallback || "—"
+    : displayValue
+      ? displayValue
     : fullText
       ? String(raw)
       : shortAddress(String(raw), 6, 4);

@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { Building2, Coins, Receipt, Wallet } from "lucide-react";
 import { AdminTopbar } from "@/components/layout/topbar";
-import { useDashboardSummary, useProperties, useRentAnalytics, useTransactions } from "@/lib/queries";
+import { useDashboardSummary, useOwnerInvestors, useProperties, useRentAnalytics, useTransactions } from "@/lib/queries";
 import { PropertiesOverviewTable } from "@/components/dashboard/properties-overview-table";
 import { InvestorShareChart } from "@/components/dashboard/investor-share-chart";
 import { GradientStatCard } from "@/components/dashboard/gradient-stat-card";
@@ -22,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { Property } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
 import { formatCurrency, formatEth, formatNumber } from "@/lib/utils";
+import { propertyOwnershipFor } from "@/lib/ownership";
 
 type DonutHover = {
   key: string;
@@ -37,6 +38,7 @@ export default function DashboardPage() {
   const transactions = useTransactions();
   const rent = useRentAnalytics();
   const summary = useDashboardSummary();
+  const ownerInvestors = useOwnerInvestors();
 
   const [selected, setSelected] = useState<Property | null>(null);
   useEffect(() => {
@@ -66,6 +68,7 @@ export default function DashboardPage() {
   const selectedProperty = selected
     ? allProperties.find((property) => property.id === selected.id) ?? selected
     : null;
+  const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty?.id);
   const propertyPerf = allProperties
     .map((property) => ({
       id: property.id,
@@ -94,7 +97,7 @@ export default function DashboardPage() {
         subtitle="Properties, analytics, investor ownership, and transaction intelligence"
       />
       <main className="flex-1 space-y-4 p-4 lg:p-5">
-        <section className="grid auto-rows-fr grid-cols-2 gap-3 xl:grid-cols-4">
+        <section className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <GradientStatCard
             title="Total Portfolio Value"
             value={formatCurrency(totalPortfolio)}
@@ -140,9 +143,15 @@ export default function DashboardPage() {
               loading={properties.isLoading}
               selectedId={selected?.id ?? null}
               onSelectProperty={(property) => setSelected(property)}
+              ownerInvestors={ownerInvestors.data ?? []}
+              investorsLoading={ownerInvestors.isLoading}
             />
           </div>
-          <InvestorShareChart property={selectedProperty} />
+          <InvestorShareChart
+            property={selectedProperty}
+            ownership={selectedOwnership}
+            loading={ownerInvestors.isLoading}
+          />
         </section>
 
         <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">

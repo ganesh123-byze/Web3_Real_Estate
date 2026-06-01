@@ -29,6 +29,7 @@ import type { PayRentPrepareResponse, Property } from "@/lib/types";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
 import { sendPayRentTx } from "@/components/investor/contract-actions";
 import { useTenantDistributionPreview } from "@/lib/queries";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import {
   clearPendingWorkflowActions,
   emitWorkflowCompletion,
@@ -273,6 +274,11 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
   const formRef = useRef<HTMLFormElement | null>(null);
   const [step, setStep] = useState<"idle" | "prepare" | "wallet" | "mine" | "confirm">("idle");
   const [busy, setBusy] = useState(false);
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : shortAddress(wallet, 6, 4);
   const monthlyRentEth = Number(property.monthly_rent_eth ?? 0);
 
   async function onSubmit(event: React.FormEvent) {
@@ -369,7 +375,7 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
           <input data-workflow-field="PAY_RENT.confirm" type="hidden" value="ready" readOnly />
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
             <Fact label="Monthly rent" value={`${monthlyRentEth.toFixed(4)} ETH`} />
-            <Fact label="Wallet" value={shortAddress(wallet, 6, 4)} />
+            <Fact label="Wallet" value={walletLabel} />
             <Fact label="Property ID" value={`#${property.id}`} />
             <Fact label="Location" value={property.location} />
           </div>
@@ -385,7 +391,7 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
                 ) : (
                   preview.data.breakdown.map((b, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
-                      <span className="font-mono text-[11px]">{shortAddress(b.investor, 6, 4)}</span>
+                      <span className="text-[11px]">{shortAddress(b.investor, 6, 4)}</span>
                       <span className="tabular-nums">{b.payout_eth} ETH ({b.ownership_pct}%)</span>
                     </div>
                   ))
