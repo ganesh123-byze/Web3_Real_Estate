@@ -16,6 +16,16 @@ export function formatTokenPriceEth(priceEth: number, digits = 6): string {
   return formatEth(priceEth, { digits });
 }
 
+/** Per-token sale price string for API payloads, debug logs, and SSE (empty when invalid). */
+export function tokenSalePriceEthForPayload(
+  totalValueEth: string | undefined,
+  tokenSupply: string | undefined,
+): string {
+  return formatTokenPriceEth(
+    calculateTokenPriceEth(String(totalValueEth ?? ""), String(tokenSupply ?? "")),
+  );
+}
+
 export const propertyDialogContentClass =
   "flex max-h-[calc(100vh-3rem)] w-[min(100vw-2rem,28rem)] max-w-[min(100vw-2rem,28rem)] flex-col gap-3 overflow-hidden p-0 sm:max-w-md";
 

@@ -74,11 +74,12 @@ export function useCreatePropertyStream() {
       logCreatePropertyPayload("stream", {
         name: payload.name,
         location: payload.location,
-        total_value: payload.total_value,
-        token_supply: payload.token_supply,
+        total_value: String(payload.total_value),
+        token_supply: String(payload.token_supply),
         token_symbol: payload.token_symbol,
-        token_sale_price_eth: payload.token_sale_price_eth,
-        monthly_rent_eth: payload.monthly_rent_eth,
+        token_sale_price_eth: String(payload.token_sale_price_eth ?? ""),
+        monthly_rent_eth:
+          payload.monthly_rent_eth != null ? String(payload.monthly_rent_eth) : null,
       });
       const base = getApiBase();
       const token = getToken();

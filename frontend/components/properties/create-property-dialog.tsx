@@ -42,6 +42,7 @@ import {
   PropertyFormField,
   calculateTokenPriceEth,
   formatTokenPriceEth,
+  tokenSalePriceEthForPayload,
   propertyDialogBodyClass,
   propertyDialogContentClass,
   propertyDialogFooterClass,
@@ -212,14 +213,17 @@ export function CreatePropertyDialog() {
     // See `resolveSubmitValues` for why the cache wins (it's untouched
     // by render races and is exactly what the agent intended to submit).
     const values = resolveSubmitValues(stateValues);
-    const price = calculateTokenPriceEth(values.total_value, values.token_supply);
+    const tokenSalePriceEth = tokenSalePriceEthForPayload(
+      values.total_value,
+      values.token_supply,
+    );
     logCreatePropertyPayload("dialog", {
       name: values.name,
       location: values.location,
       total_value: values.total_value,
       token_supply: values.token_supply,
       token_symbol: values.token_symbol,
-      token_sale_price_eth: price > 0 ? price : "",
+      token_sale_price_eth: tokenSalePriceEth,
       monthly_rent_eth: values.monthly_rent_eth,
     });
     // Mirror the live values back into React state so the visible
@@ -233,7 +237,7 @@ export function CreatePropertyDialog() {
           total_value: values.total_value,
           token_supply: values.token_supply,
           token_symbol: values.token_symbol.trim(),
-          token_sale_price_eth: price > 0 ? price : "",
+          token_sale_price_eth: tokenSalePriceEth,
           monthly_rent_eth: values.monthly_rent_eth ? values.monthly_rent_eth : null,
           images: values.images,
         },

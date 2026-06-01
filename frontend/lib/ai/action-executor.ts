@@ -14,6 +14,7 @@ import {
   logCreatePropertyStreamEvent,
 } from "@/lib/properties/create-property-debug";
 import { queryKeys } from "@/lib/queries";
+import { tokenSalePriceEthForPayload } from "@/components/properties/property-form-shared";
 import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -308,13 +309,6 @@ async function clickWorkflowSubmitVisibly(modal: string): Promise<boolean> {
   return true;
 }
 
-function calculateTokenPriceEth(totalValue: string | undefined, tokenSupply: string | undefined): string {
-  const total = Number(totalValue ?? 0);
-  const supply = Number(tokenSupply ?? 0);
-  if (!Number.isFinite(total) || !Number.isFinite(supply) || total <= 0 || supply <= 0) return "";
-  return String(total / supply);
-}
-
 async function submitCreatePropertyFromChat(
   formValuesOverride?: Record<string, string>,
 ): Promise<boolean> {
@@ -338,7 +332,7 @@ async function submitCreatePropertyFromChat(
     total_value: String(values.total_value).trim(),
     token_supply: String(values.token_supply).trim(),
     token_symbol: String(values.token_symbol).trim(),
-    token_sale_price_eth: calculateTokenPriceEth(values.total_value, values.token_supply),
+    token_sale_price_eth: tokenSalePriceEthForPayload(values.total_value, values.token_supply),
     monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
     images: [] as string[],
   };
@@ -544,8 +538,8 @@ async function submitEditPropertyFromChat(
     const totalValue = valueFromEditField(values, "total_value", property.total_value);
     const tokenSupply = valueFromEditField(values, "token_supply", property.token_supply);
     const tokenSalePrice = property.token_address
-      ? property.token_sale_price_eth ?? ""
-      : calculateTokenPriceEth(totalValue, tokenSupply);
+      ? String(property.token_sale_price_eth ?? "")
+      : tokenSalePriceEthForPayload(String(totalValue), String(tokenSupply));
     const payload = {
       name: valueFromEditField(values, "name", property.name),
       location: valueFromEditField(values, "location", property.location),

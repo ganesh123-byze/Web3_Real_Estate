@@ -18,6 +18,7 @@ import { PropertyImageUploader } from "@/components/properties/property-image-up
 import {
   PropertyFormField,
   calculateTokenPriceEth,
+  tokenSalePriceEthForPayload,
   formatTokenPriceEth,
   propertyDialogBodyClass,
   propertyDialogContentClass,
@@ -91,7 +92,9 @@ function EditPropertyDialog({ property, onClose }: { property: Property; onClose
         total_value: form.total_value,
         token_supply: form.token_supply,
         token_symbol: form.token_symbol.trim(),
-        token_sale_price_eth: tokenPriceEth > 0 ? tokenPriceEth : "",
+        token_sale_price_eth: property.token_address
+          ? String(property.token_sale_price_eth ?? "")
+          : tokenSalePriceEthForPayload(form.total_value, form.token_supply),
         monthly_rent_eth: form.monthly_rent_eth || null,
         images: form.images,
       });
