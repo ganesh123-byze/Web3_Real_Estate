@@ -2644,6 +2644,7 @@ def _create_property_confirmation_prompt(
         "awaiting_create_confirmation": True,
         "confirmation_summary": summary,
         "speak_to_user": speak,
+        "speak_verbatim": True,
         "instruction": _create_property_confirmation_instruction(),
     }
     final_actions = list(actions)
