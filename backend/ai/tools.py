@@ -56,10 +56,7 @@ from backend.api._helpers import (
     validate_monthly_rent_for_chain,
 )
 from backend.api.schemas import PropertyCreate
-from backend.api.rent_cycle import (
-    compute_rent_period_status,
-    get_last_confirmed_rent_payment_by_wallet,
-)
+from backend.api.rent_cycle import property_rent_period_status
 from backend.services.tenant_catalog import (
     fetch_tenant_rental_properties,
     filter_tenant_dashboard_available,
@@ -506,6 +503,7 @@ def _serialize_tenant_property(row: dict) -> dict:
     base = _serialize_property(row)
     base["current_cycle_paid"] = bool(row.get("current_cycle_paid"))
     base["can_pay_rent"] = bool(row.get("can_pay_rent", not base["current_cycle_paid"]))
+    base["tenant_paid_current_cycle"] = bool(row.get("tenant_paid_current_cycle"))
     base["rent_cycle_label"] = row.get("rent_cycle_label")
     base["active_rental"] = bool(row.get("active_rental"))
     base["has_investors"] = bool(row.get("has_investors"))
@@ -3873,15 +3871,7 @@ async def _execute_pay_rent_ui(property_id: int, user: AuthUser, db: Any) -> Too
         if rent_err:
             return ToolResult(ok=False, error=rent_err)
 
-        last_payment = None
-        if user and user.wallet_address:
-            try:
-                last_payment = get_last_confirmed_rent_payment_by_wallet(
-                    cursor, user.wallet_address, pid
-                )
-            except Exception:  # noqa: BLE001
-                last_payment = None
-        period = compute_rent_period_status(last_payment)
+        period = property_rent_period_status(cursor, pid)
         if period.get("current_cycle_paid"):
             return _rent_period_already_paid_result(serialized, period)
 

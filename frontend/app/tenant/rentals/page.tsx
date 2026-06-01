@@ -58,7 +58,12 @@ export default function TenantRentalsPage() {
   }, [properties.data, search]);
 
   const myRentals = useMemo(
-    () => filtered.filter((property) => activeRentalIds.has(property.id) || property.current_cycle_paid),
+    () =>
+      filtered.filter(
+        (property) =>
+          activeRentalIds.has(property.id) ||
+          Boolean((property as Property & { tenant_paid_current_cycle?: boolean }).tenant_paid_current_cycle),
+      ),
     [activeRentalIds, filtered],
   );
   const availableRentals = useMemo(

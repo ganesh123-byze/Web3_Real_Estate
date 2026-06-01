@@ -6,9 +6,9 @@ from typing import Any
 
 from backend.api._helpers import enrich_property_with_supply
 from backend.api.rent_cycle import (
-    get_last_confirmed_rent_payment_by_wallet,
+    property_rent_period_status,
     serialize_period_fields,
-    compute_rent_period_status,
+    tenant_rent_period_status,
 )
 
 
@@ -57,14 +57,13 @@ def fetch_tenant_rental_properties(
         enriched = enrich_property_with_supply(cursor, row)
         rent_wei = enriched.get("monthly_rent_wei") or "0"
         enriched["rent_enabled"] = rent_wei not in (None, "", "0")
+        property_id = int(enriched["id"])
+        enriched.update(serialize_period_fields(property_rent_period_status(cursor, property_id)))
         if tenant_wallet:
-            last_payment = get_last_confirmed_rent_payment_by_wallet(
-                cursor, tenant_wallet, int(enriched["id"])
-            )
-            period = compute_rent_period_status(last_payment)
-            enriched.update(serialize_period_fields(period))
+            tenant_period = tenant_rent_period_status(cursor, tenant_wallet, property_id)
+            enriched["tenant_paid_current_cycle"] = bool(tenant_period.get("current_cycle_paid"))
         else:
-            enriched.update(serialize_period_fields(compute_rent_period_status(None)))
+            enriched["tenant_paid_current_cycle"] = False
         enriched["has_investors"] = Decimal(enriched.get("tokens_sold") or 0) > 0
         enriched["active_rental"] = int(enriched["id"]) in active_rental_ids
         result.append(enriched)
