@@ -1,11 +1,19 @@
 "use client";
 
+import { useMemo } from "react";
 import { AdminTopbar } from "@/components/layout/topbar";
 import { InvestorsTable } from "@/components/investors/investors-table";
-import { useOwnerInvestors } from "@/lib/queries";
+import { useOwnerInvestors, useProperties, useTransactions } from "@/lib/queries";
+import { ownerInvestorsWithTransactionFallback } from "@/lib/ownership";
 
 export default function InvestorsPage() {
   const investors = useOwnerInvestors();
+  const properties = useProperties();
+  const transactions = useTransactions();
+  const visibleInvestors = useMemo(
+    () => ownerInvestorsWithTransactionFallback(investors.data, properties.data, transactions.data),
+    [investors.data, properties.data, transactions.data],
+  );
   return (
     <>
       <AdminTopbar
@@ -14,8 +22,8 @@ export default function InvestorsPage() {
       />
       <main className="flex-1 space-y-4 p-4 lg:p-6">
         <InvestorsTable
-          investors={investors.data ?? []}
-          loading={investors.isLoading}
+          investors={visibleInvestors}
+          loading={investors.isLoading || properties.isLoading || transactions.isLoading}
         />
       </main>
     </>
