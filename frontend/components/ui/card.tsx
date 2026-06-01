@@ -7,10 +7,10 @@ const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElemen
       ref={ref}
       className={cn(
         "relative overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] text-card-foreground",
-        "shadow-[0_1px_2px_hsl(220_40%_10%/0.04),0_0_0_1px_hsl(var(--foreground)/0.04),0_18px_50px_-28px_hsl(220_60%_10%/0.25)]",
+        "shadow-[0_1px_1px_hsl(220_40%_10%/0.02),0_0_0_1px_hsl(var(--foreground)/0.025),0_9px_25px_-18px_hsl(220_60%_10%/0.16)]",
         "backdrop-blur-2xl backdrop-saturate-150",
         "transition-[transform,box-shadow] duration-200 ease-out",
-        "hover:shadow-[0_2px_4px_hsl(220_40%_10%/0.05),0_0_0_1px_hsl(var(--foreground)/0.06),0_26px_70px_-34px_hsl(220_60%_10%/0.28)]",
+        "hover:shadow-[0_2px_4px_hsl(220_40%_10%/0.05),0_0_0_1px_hsl(var(--foreground)/0.06),0_22px_56px_-30px_hsl(220_60%_10%/0.26)]",
         className,
       )}
       {...props}

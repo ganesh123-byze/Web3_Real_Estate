@@ -3,6 +3,7 @@
 import { ReactNode, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { RoleGate } from "@/components/auth/role-gate";
+import { MobileSidebarDrawer } from "@/components/layout/mobile-sidebar-drawer";
 import { InvestorSidebar } from "@/components/investor/investor-sidebar";
 import { InvestorAiRuntime } from "@/components/investor/ai/investor-ai-runtime";
 
@@ -26,6 +27,9 @@ export default function InvestorLayout({ children }: { children: ReactNode }) {
           aria-hidden
         />
         <InvestorSidebar />
+        <MobileSidebarDrawer>
+          {(close) => <InvestorSidebar mobile onNavigate={close} />}
+        </MobileSidebarDrawer>
         <div className="relative flex min-w-0 flex-1 flex-col bg-[#F4F5FB] dark:bg-transparent">
           {children}
         </div>

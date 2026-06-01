@@ -13,19 +13,20 @@ const NAV = [
   { href: "/investor/transactions", label: "Transactions", icon: Receipt },
 ] as const;
 
-export function InvestorSidebar() {
+export function InvestorSidebar({ mobile = false, onNavigate }: { mobile?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
     <aside
       className={cn(
-        "sticky top-0 hidden h-screen w-[260px] shrink-0 flex-col border-r lg:flex",
+        "flex h-full w-[260px] shrink-0 flex-col border-r shadow-none",
         "border-[#e8ecf4] bg-[#F9FAFF]",
         "dark:border-white/[0.06] dark:bg-[#0b1120]",
+        mobile ? "relative w-full max-w-full" : "sticky top-0 hidden h-screen lg:flex",
       )}
     >
       <div className="px-4 pb-4 pt-5">
-        <Link href="/investor" className="flex items-center gap-3">
+        <Link href="/investor" onClick={onNavigate} className="flex items-center gap-3">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#1e3a8a] text-sm font-bold text-white shadow-sm dark:bg-[#2563eb]">
             E
           </div>
@@ -57,6 +58,7 @@ export function InvestorSidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={onNavigate}
                 className={cn(
                   "group relative flex min-h-[42px] w-full items-center gap-3 py-2.5 pl-5 pr-4 text-[13px] font-medium",
                   "transition-[color] duration-150",

@@ -24,7 +24,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/common/empty";
 import { api } from "@/lib/api";
-import { formatNumber, shortAddress } from "@/lib/utils";
+import { identityDisplayId, identityDisplayName, identityInitials } from "@/lib/identity";
+import { formatNumber } from "@/lib/utils";
 import { pickColor } from "@/lib/charts";
 import type { OwnerInvestor } from "@/lib/types";
 
@@ -47,6 +48,8 @@ export function InvestorsTable({
     return investors.filter(
       (it) =>
         it.wallet_address.toLowerCase().includes(q) ||
+        identityDisplayName(it, it.wallet_address).toLowerCase().includes(q) ||
+        identityDisplayId(it).toLowerCase().includes(q) ||
         it.email?.toLowerCase().includes(q) ||
         it.positions.some((p) => p.property_name.toLowerCase().includes(q)),
     );
@@ -57,7 +60,7 @@ export function InvestorsTable({
   const visible = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-sm backdrop-blur-2xl">
+    <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-none backdrop-blur-2xl transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border/60 p-4 md:flex-row md:items-center md:justify-between">
         <div className="relative w-full max-w-md">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -106,24 +109,27 @@ export function InvestorsTable({
               </TableCell>
             </TableRow>
           ) : (
-            visible.map((it) => (
-              <TableRow
-                key={it.wallet_address}
-                className="cursor-pointer"
-                onClick={() => setActive(it)}
-              >
+            visible.map((it) => {
+              const displayName = identityDisplayName(it, it.wallet_address);
+              const displayId = identityDisplayId(it);
+              return (
+                <TableRow
+                  key={it.wallet_address}
+                  className="cursor-pointer"
+                  onClick={() => setActive(it)}
+                >
                 <TableCell className="w-[28%]">
                   <div className="flex items-center gap-3">
                     <span
-                      className="grid h-8 w-8 place-items-center rounded-full font-mono text-[10px] text-white"
+                      className="grid h-8 w-8 place-items-center rounded-full text-[10px] font-semibold text-white"
                       style={{ background: pickColor(it.wallet_address.length) }}
                     >
-                      {it.wallet_address.slice(2, 4).toUpperCase()}
+                      {identityInitials(it, it.wallet_address)}
                     </span>
                     <div className="flex flex-col">
-                      <span className="font-mono text-sm">{shortAddress(it.wallet_address, 6, 4)}</span>
+                      <span className="text-sm font-medium">{displayName}</span>
                       <span className="text-xs text-muted-foreground">
-                        {it.user_id ? `Member #${it.user_id}` : "Unregistered"}
+                        {displayId}
                       </span>
                     </div>
                   </div>
@@ -143,8 +149,9 @@ export function InvestorsTable({
                     <ExternalLink className="h-3.5 w-3.5" />
                   </Button>
                 </TableCell>
-              </TableRow>
-            ))
+                </TableRow>
+              );
+            })
           )}
         </TableBody>
       </Table>
@@ -208,6 +215,8 @@ function InvestorDetailsDialog({
   });
 
   if (!row) return null;
+  const displayName = identityDisplayName(row, row.wallet_address);
+  const displayId = identityDisplayId(row);
 
   return (
     <Dialog open onOpenChange={(o) => (!o ? onClose() : null)}>
@@ -215,13 +224,13 @@ function InvestorDetailsDialog({
         <DialogHeader>
           <div className="flex items-center gap-3">
             <span
-              className="grid h-10 w-10 place-items-center rounded-full font-mono text-sm text-white"
+              className="grid h-10 w-10 place-items-center rounded-full text-sm font-semibold text-white"
               style={{ background: pickColor(row.wallet_address.length) }}
             >
-              {row.wallet_address.slice(2, 4).toUpperCase()}
+              {identityInitials(row, row.wallet_address)}
             </span>
             <div>
-              <DialogTitle>{shortAddress(row.wallet_address, 8, 6)}</DialogTitle>
+              <DialogTitle>{displayName}</DialogTitle>
               <DialogDescription>
                 {row.properties_count} position{row.properties_count === 1 ? "" : "s"} · avg ownership{" "}
                 {row.avg_ownership_pct.toFixed(2)}%
@@ -232,12 +241,8 @@ function InvestorDetailsDialog({
         <div className="grid grid-cols-2 gap-3">
           <Pair
             icon={<Wallet className="h-3.5 w-3.5" />}
-            label="Wallet"
-            value={
-              <span className="font-mono text-sm">
-                {shortAddress(row.wallet_address, 7, 5).replace("…", "...")}
-              </span>
-            }
+            label="Profile ID"
+            value={<span className="text-sm font-medium">{displayId}</span>}
           />
           <Pair icon={<Mail className="h-3.5 w-3.5" />} label="Email" value={row.email ?? "—"} />
           <Pair label="KYC" value={<KycBadge value={row.kyc_status ?? undefined} className="text-sm" />} />

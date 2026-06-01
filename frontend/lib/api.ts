@@ -13,6 +13,9 @@ export type SessionRecord = {
     email?: string | null;
     kyc_status?: string;
     active?: boolean;
+    full_name?: string | null;
+    display_id?: string | null;
+    profile_role?: string | null;
   };
   expires_at?: string;
 };

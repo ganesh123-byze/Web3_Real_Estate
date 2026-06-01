@@ -29,6 +29,7 @@ import { availablePropertyTokens, propertyIsInvestable, propertyUnitValue } from
 import { useProperty, useTransactions } from "@/lib/queries";
 import { addressExplorerUrl, RUNTIME_CONFIG } from "@/lib/runtime-config";
 import type { Property, Role } from "@/lib/types";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { cn, formatCurrency, formatDateTime, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 export type PropertyDetailRole = Role;
@@ -126,6 +127,15 @@ export function PropertyDetailDialog({
     });
     return creatorTx?.wallet_address ?? null;
   }, [property, transactionsQuery.data]);
+  const sessionIdentity = currentSessionIdentity();
+  const creatorLabel =
+    creatorWallet && sessionIdentity?.wallet_address?.toLowerCase() === creatorWallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, creatorWallet)
+      : identityDisplayName({ wallet_address: creatorWallet }, creatorWallet);
+  const footerIdentityLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : null;
 
   if (!initialProperty && !open) return null;
 
@@ -307,10 +317,10 @@ export function PropertyDetailDialog({
                     />
                     <InfoRow label="Token standard" value={property.nft_token_id != null ? "ERC-721" : property.token_address ? "ERC-20" : "—"} />
                     <CopyRow
-                      label="Created by wallet"
+                      label="Created by"
                       value={creatorWallet}
                       fallback="Creator not recorded"
-                      mono
+                      displayValue={creatorWallet ? creatorLabel : undefined}
                       explorer={creatorWallet ? addressExplorerUrl(creatorWallet) : undefined}
                     />
                     <InfoRow
@@ -334,7 +344,7 @@ export function PropertyDetailDialog({
 
             <DialogFooter className="flex shrink-0 flex-row items-center justify-between gap-2 border-t border-border bg-card px-4 py-2">
               <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-                {wallet ? shortAddress(wallet, 6, 4) : property.owner_wallet ? shortAddress(property.owner_wallet, 6, 4) : footerHint}
+                {footerIdentityLabel ?? (wallet ? shortAddress(wallet, 6, 4) : property.owner_wallet ? shortAddress(property.owner_wallet, 6, 4) : footerHint)}
               </span>
               <div className="flex shrink-0 gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
@@ -404,15 +414,17 @@ function CopyRow({
   fallback,
   explorer,
   mono,
+  displayValue,
 }: {
   label: string;
   value?: string | null;
   fallback: string;
   explorer?: string;
   mono?: boolean;
+  displayValue?: string;
 }) {
   const [copied, setCopied] = useState(false);
-  const display = value ? shortAddress(value, 8, 6) : fallback;
+  const display = value ? displayValue || shortAddress(value, 8, 6) : fallback;
 
   async function copy() {
     if (!value) return;

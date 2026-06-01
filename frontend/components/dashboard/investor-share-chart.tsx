@@ -1,31 +1,13 @@
 "use client";
 
 import { useState, type MouseEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, api } from "@/lib/api";
 import { shortAddress } from "@/lib/utils";
 import type { Property } from "@/lib/types";
+import type { PropertyOwnershipItem } from "@/lib/ownership";
 
-type PreviewBreakdownItem = {
-  investor: string;
-  payout_wei: number;
-  payout_eth: string;
-  ownership_bps: number;
-  ownership_pct: number;
-};
-
-type PreviewResponse = {
-  property_id: number;
-  property_name: string;
-  monthly_rent_wei: string;
-  investor_count: number;
-  breakdown: PreviewBreakdownItem[];
-};
-
-type OwnershipChartItem = PreviewBreakdownItem & {
-  share_pct: number;
+type OwnershipChartItem = PropertyOwnershipItem & {
   isUnallocated?: boolean;
 };
 
@@ -49,26 +31,20 @@ function getOwnershipColor(index: number, isUnallocated?: boolean) {
   return isUnallocated ? "hsl(var(--muted))" : OWNERSHIP_COLORS[index % OWNERSHIP_COLORS.length];
 }
 
-export function InvestorShareChart({ property }: { property: Property | null }) {
-  const rentReady = !!property?.rent_enabled && Number(property?.monthly_rent_eth ?? 0) > 0;
-  const enabled = !!property?.id && !!property?.token_address && rentReady;
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["preview-distribution", property?.id],
-    queryFn: () => api.get<PreviewResponse>(`/tenant/preview-distribution/${property?.id}`),
-    enabled,
-    retry: false,
-    refetchInterval: 20_000,
-  });
-
-  const items = data?.breakdown ?? [];
-  const total = items.reduce((acc, it) => acc + (it.ownership_pct || 0), 0);
+export function InvestorShareChart({
+  property,
+  ownership = [],
+  loading,
+}: {
+  property: Property | null;
+  ownership?: PropertyOwnershipItem[];
+  loading?: boolean;
+}) {
+  const items = ownership;
+  const total = items.reduce((acc, it) => acc + (it.share_pct || 0), 0);
   const headerName = property?.name ?? "Investor Ownership";
-  const shareScale = total > 0 && total <= 1 ? 100 : 1;
-  const allocatedShare = Math.min(100, total * shareScale);
-  const ownershipChartItems: OwnershipChartItem[] = items.map((it) => ({
-    ...it,
-    share_pct: it.ownership_pct * shareScale,
-  }));
+  const allocatedShare = Math.min(100, total);
+  const ownershipChartItems: OwnershipChartItem[] = items;
   const unallocatedShare = Math.max(0, 100 - allocatedShare);
   const chartItems: OwnershipChartItem[] =
     unallocatedShare > 0
@@ -76,10 +52,7 @@ export function InvestorShareChart({ property }: { property: Property | null }) 
           ...ownershipChartItems,
           {
             investor: "Unallocated",
-            payout_wei: 0,
-            payout_eth: "0",
-            ownership_bps: 0,
-            ownership_pct: 0,
+            token_amount: 0,
             share_pct: unallocatedShare,
             isUnallocated: true,
           },
@@ -99,7 +72,7 @@ export function InvestorShareChart({ property }: { property: Property | null }) 
             </CardDescription>
           </div>
           <span className="shrink-0 text-base font-semibold tabular-nums text-foreground">
-            {isLoading ? "Loading" : `${total.toFixed(1)}% invested`}
+            {loading ? "Loading" : `${total.toFixed(1)}% invested`}
           </span>
         </div>
       </CardHeader>
@@ -109,13 +82,11 @@ export function InvestorShareChart({ property }: { property: Property | null }) 
             <div className="grid h-[220px] place-items-center text-sm text-muted-foreground">
               Select a property
             </div>
-          ) : isLoading ? (
+          ) : loading ? (
             <Skeleton className="h-[220px] w-[220px] rounded-full" />
-          ) : !rentReady || error || items.length === 0 ? (
+          ) : items.length === 0 ? (
             <div className="grid h-[220px] place-items-center px-4 text-center text-xs text-muted-foreground">
-              {!rentReady || (error instanceof ApiError && error.status === 400)
-                ? "Set monthly rent on this property to see investor distribution."
-                : "No investor data yet for this property."}
+              No investor data yet for this property.
             </div>
           ) : (
             <>

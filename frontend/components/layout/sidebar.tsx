@@ -22,12 +22,17 @@ const NAV: NavItem[] = [
   { href: "/property_owner/rent", label: "Rent Management", icon: Coins },
 ];
 
-export function AdminSidebar() {
+export function AdminSidebar({ mobile = false, onNavigate }: { mobile?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border/60 bg-[#F9FAFF] px-4 py-5 shadow-[16px_0_60px_-48px_hsl(var(--foreground)/0.6)] dark:bg-card/[0.35] lg:flex">
-      <Link href="/property_owner/dashboard" className="mb-9 flex items-center gap-3 px-1">
+    <aside
+      className={cn(
+        "flex h-full w-60 shrink-0 flex-col border-r border-border/60 bg-[#F9FAFF] px-4 py-5 shadow-none dark:bg-card/[0.35]",
+        mobile ? "relative w-full max-w-full" : "sticky top-0 hidden h-screen lg:flex",
+      )}
+    >
+      <Link href="/property_owner/dashboard" onClick={onNavigate} className="mb-9 flex items-center gap-3 px-1">
         <div className="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-primary via-chart-3 to-chart-2 font-bold text-primary-foreground shadow-lg shadow-primary/20">
           E
         </div>
@@ -49,6 +54,7 @@ export function AdminSidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate}
               className={cn(
                 "group relative -mx-4 flex items-center gap-3 px-7 py-3 text-sm transition-all",
                 active

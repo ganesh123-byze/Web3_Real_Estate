@@ -102,6 +102,7 @@ export async function registerWallet(params: {
   walletAddress: string;
   role: Role;
   email?: string | null;
+  fullName?: string | null;
 }): Promise<SessionRecord> {
   const challenge = await api.post<{ nonce: string; message: string; expires_at: string }>(
     "/auth/nonce",
@@ -116,6 +117,7 @@ export async function registerWallet(params: {
       nonce: challenge.nonce,
       role: params.role,
       email: params.email || null,
+      full_name: params.fullName?.trim() || null,
     },
   );
   const session: SessionRecord = { token: resp.token, expires_at: resp.expires_at, user: resp.user };

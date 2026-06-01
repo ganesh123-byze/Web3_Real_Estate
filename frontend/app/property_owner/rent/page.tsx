@@ -37,6 +37,7 @@ import {
 } from "@/lib/queries";
 import { useSetRent } from "@/lib/mutations";
 import { formatDateTime, formatEth, shortAddress } from "@/lib/utils";
+import { identityDisplayName } from "@/lib/identity";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
 
@@ -53,7 +54,7 @@ export default function RentManagementPage() {
         subtitle="Live rent metrics, per-property controls, payments, and distributions"
       />
       <main className="flex-1 space-y-4 p-4 lg:p-6">
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <GradientStatCard
             title="Total Rent Collected"
             value={formatEth(rent.data?.total_rent_collected_wei ?? "0", { fromWei: true, digits: 3 })}
@@ -136,16 +137,26 @@ export default function RentManagementPage() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    (payments.data ?? []).slice(0, 8).map((p) => (
-                      <TableRow key={p.id ?? p.tx_hash}>
-                        <TableCell className="font-mono text-sm">
+                    (payments.data ?? []).slice(0, 8).map((p) => {
+                      const tenantLabel = identityDisplayName(
+                        {
+                          wallet_address: p.tenant_wallet,
+                          full_name: p.tenant_full_name,
+                          display_id: p.tenant_display_id,
+                          profile_role: p.tenant_profile_role,
+                        },
+                        p.tenant_wallet,
+                      );
+                      return (
+                        <TableRow key={p.id ?? p.tx_hash}>
+                        <TableCell className="text-sm">
                           <a
                             href={txExplorerUrl(p.tx_hash)}
                             target="_blank"
                             rel="noreferrer"
                             className="hover:underline"
                           >
-                            {shortAddress(p.tenant_wallet, 6, 4)}
+                            {tenantLabel}
                           </a>
                         </TableCell>
                         <TableCell className="text-sm">
@@ -158,7 +169,8 @@ export default function RentManagementPage() {
                           {formatDateTime(p.payment_date)}
                         </TableCell>
                       </TableRow>
-                    ))
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>

@@ -92,7 +92,7 @@ export function GradientStatCard({
   return (
     <div
       className={cn(
-        "relative h-full min-h-36 overflow-hidden rounded-2xl border bg-background/40 p-px shadow-[0_18px_50px_-38px_hsl(var(--foreground)/0.65)]",
+        "relative h-full min-h-36 overflow-hidden rounded-2xl border bg-background/40 p-px shadow-[0_9px_26px_-22px_hsl(var(--foreground)/0.38)] transition-shadow hover:shadow-[0_18px_50px_-38px_hsl(var(--foreground)/0.65)]",
         BORDER_ACCENTS[accent],
         className,
       )}

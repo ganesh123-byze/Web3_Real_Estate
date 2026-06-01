@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn, shortAddress } from "@/lib/utils";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { sendClaimRewardsTx } from "@/components/investor/contract-actions";
 import {
   emitWorkflowCompletion,
@@ -54,6 +55,11 @@ export function InvestorClaimDialog({
   const [step, setStep] = useState<"idle" | "prepare" | "wallet" | "confirm">("idle");
   const [busy, setBusy] = useState(false);
   const open = Boolean(reward);
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : shortAddress(wallet, 6, 4);
 
   const onClaim = useCallback(async () => {
     if (!wallet || !reward) return;
@@ -125,7 +131,7 @@ export function InvestorClaimDialog({
           <div className="rounded-lg border border-border bg-muted/30 p-3">
             <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Claimable amount</div>
             <div className="mt-1 text-2xl font-semibold">{reward?.claimable_amount_eth ?? "0"} ETH</div>
-            <div className="mt-1 text-xs text-muted-foreground">Wallet {shortAddress(wallet, 6, 4)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">Profile {walletLabel}</div>
           </div>
           <div className="space-y-2 text-xs text-muted-foreground">
             <Step active={step === "prepare"} done={["wallet", "confirm"].includes(step)} icon={ShieldCheck} label="Preparing claim transaction" />

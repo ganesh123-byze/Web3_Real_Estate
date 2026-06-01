@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn, formatNumber, shortAddress } from "@/lib/utils";
 import type { InvestmentPrepareResponse, Property } from "@/lib/types";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { investmentCostWei } from "@/components/investor/investor-utils";
 import { sendInvestmentTx } from "@/components/investor/contract-actions";
 import {
@@ -51,6 +52,11 @@ export function InvestorInvestDialog({
   const tokenAmount = Math.max(0, Math.trunc(Number(amount || 0)));
   const costWei = investmentCostWei(property, tokenAmount);
   const costEth = Number(costWei) / 1e18;
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : shortAddress(wallet, 6, 4);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -155,7 +161,7 @@ export function InvestorInvestDialog({
           </div>
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
             <InvestFact label="Estimated cost" value={`${costEth.toFixed(6)} ETH`} />
-            <InvestFact label="Wallet" value={shortAddress(wallet, 6, 4)} />
+            <InvestFact label="Wallet" value={walletLabel} />
             <InvestFact label="Token price" value={`${Number(property.token_sale_price_eth ?? 0).toFixed(4)} ETH`} />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
           </div>

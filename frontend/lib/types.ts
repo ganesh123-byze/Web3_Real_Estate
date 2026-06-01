@@ -7,6 +7,9 @@ export type AuthUser = {
   email?: string | null;
   kyc_status?: string;
   active?: boolean;
+  full_name?: string | null;
+  display_id?: string | null;
+  profile_role?: string | null;
 };
 
 export type Property = {
@@ -89,6 +92,9 @@ export type RentDistribution = {
 export type RentPayment = {
   id: number;
   tenant_wallet: string;
+  tenant_full_name?: string | null;
+  tenant_display_id?: string | null;
+  tenant_profile_role?: string | null;
   property_id: number;
   property_name?: string | null;
   amount_wei: string;
@@ -244,6 +250,9 @@ export type UserRecord = {
   wallet_address: string;
   email?: string | null;
   kyc_status: string;
+  full_name?: string | null;
+  display_id?: string | null;
+  profile_role?: string | null;
 };
 
 export type TenantRental = {
@@ -322,6 +331,9 @@ export type OwnerInvestor = {
   user_id?: number | null;
   email?: string | null;
   kyc_status?: string | null;
+  full_name?: string | null;
+  display_id?: string | null;
+  profile_role?: string | null;
   positions: OwnerInvestorPosition[];
   properties_count: number;
   avg_ownership_pct: number;

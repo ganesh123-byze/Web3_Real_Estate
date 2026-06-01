@@ -16,6 +16,7 @@ import { cn, formatCurrency, formatNumber, percent, shortAddress } from "@/lib/u
 import { isWorkflowModalAction, subscribeWorkflowAction, workflowPropertyMatches } from "@/lib/ai/action-executor";
 import { useEffect, useState } from "react";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 
 export function PropertyCard({ property }: { property: Property }) {
   const remove = useDeleteProperty();
@@ -26,6 +27,11 @@ export function PropertyCard({ property }: { property: Property }) {
     property.can_manage ?? (wallet && property.owner_wallet && property.owner_wallet.toLowerCase() === wallet.toLowerCase()),
   );
   const creatorWallet = property.owner_wallet ?? null;
+  const sessionIdentity = currentSessionIdentity();
+  const creatorLabel =
+    creatorWallet && sessionIdentity?.wallet_address?.toLowerCase() === creatorWallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, creatorWallet)
+      : identityDisplayName({ wallet_address: creatorWallet }, creatorWallet);
 
   const sold = Number(property.tokens_sold ?? 0);
   const total = Number(property.token_supply ?? 0);
@@ -60,7 +66,7 @@ export function PropertyCard({ property }: { property: Property }) {
         role="button"
         tabIndex={0}
         whileHover={{ y: -2 }}
-        className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/[0.82] shadow-[0_20px_60px_-38px_hsl(var(--foreground)/0.45)] backdrop-blur-2xl"
+        className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/[0.82] shadow-[0_10px_30px_-24px_hsl(var(--foreground)/0.24)] backdrop-blur-2xl transition-shadow hover:shadow-[0_20px_60px_-38px_hsl(var(--foreground)/0.45)]"
         onClick={() => setDetailOpen(true)}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -115,7 +121,7 @@ export function PropertyCard({ property }: { property: Property }) {
           <Stat label="Rent" value={monthlyRentEth > 0 ? `${monthlyRentEth.toFixed(4)} ETH/mo` : "Not set"} />
           <Stat
             label="Created By"
-            value={creatorWallet ? shortAddress(creatorWallet, 6, 4) : "Not recorded"}
+            value={creatorWallet ? creatorLabel : "Not recorded"}
             title={creatorWallet ?? undefined}
           />
         </div>
