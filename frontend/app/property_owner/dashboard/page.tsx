@@ -68,7 +68,7 @@ export default function DashboardPage() {
   const selectedProperty = selected
     ? allProperties.find((property) => property.id === selected.id) ?? selected
     : null;
-  const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty?.id);
+  const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty, transactions.data ?? []);
   const propertyPerf = allProperties
     .map((property) => ({
       id: property.id,
@@ -145,6 +145,7 @@ export default function DashboardPage() {
               onSelectProperty={(property) => setSelected(property)}
               ownerInvestors={ownerInvestors.data ?? []}
               investorsLoading={ownerInvestors.isLoading}
+              transactions={transactions.data ?? []}
             />
           </div>
           <InvestorShareChart

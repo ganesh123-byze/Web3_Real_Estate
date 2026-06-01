@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, formatNumber, shortAddress } from "@/lib/utils";
-import type { OwnerInvestor, Property } from "@/lib/types";
+import type { OwnerInvestor, Property, Transaction } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
 import { propertyOwnershipFor, type PropertyOwnershipItem } from "@/lib/ownership";
 
@@ -17,6 +17,7 @@ export function PropertiesOverviewTable({
   selectedId,
   ownerInvestors,
   investorsLoading,
+  transactions,
 }: {
   properties: Property[];
   loading?: boolean;
@@ -24,6 +25,7 @@ export function PropertiesOverviewTable({
   selectedId?: number | null;
   ownerInvestors?: OwnerInvestor[];
   investorsLoading?: boolean;
+  transactions?: Transaction[];
 }) {
   const [search, setSearch] = useState("");
 
@@ -61,7 +63,8 @@ export function PropertiesOverviewTable({
         </div>
       </div>
 
-      <div className="max-h-[300px] overflow-y-scroll overflow-x-hidden scrollbar-thin">
+      <div className="max-h-[300px] overflow-auto scrollbar-thin">
+        <div className="min-w-[720px]">
         <div className="sticky top-0 z-10 grid grid-cols-[26px_minmax(0,1.5fr)_96px_minmax(88px,0.7fr)_94px_58px] gap-2 border-b border-border bg-card px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           <span>No</span>
           <span>Property</span>
@@ -84,7 +87,7 @@ export function PropertiesOverviewTable({
                 </div>
               )
               : filtered.map((p, idx) => {
-              const ownership = propertyOwnershipFor(ownerInvestors, p.id);
+              const ownership = propertyOwnershipFor(ownerInvestors, p, transactions);
               const investorCount = ownership.length;
               const soldPct = Number(p.sold_percentage ?? 0);
               const tokensSold = Number(p.tokens_sold ?? 0);
@@ -136,6 +139,7 @@ export function PropertiesOverviewTable({
                 </button>
               );
             })}
+        </div>
         </div>
       </div>
     </div>
