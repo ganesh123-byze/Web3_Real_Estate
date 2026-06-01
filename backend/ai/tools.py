@@ -334,7 +334,7 @@ def _backfill_create_property_filled_from_history(
         if role in ("ai", "assistant"):
             if "reply yes to create and deploy" in lowered or (
                 "here are the property details" in lowered
-                and "reply yes" in lowered
+                and ("reply yes" in lowered or "to edit," in lowered)
             ):
                 pending_field = None
                 continue
@@ -2591,12 +2591,13 @@ def _gate_create_property_monthly_rent_value(
 
 def _create_property_confirmation_instruction() -> str:
     return (
-        "Read the confirmation summary to the user. Wait for Yes (submit), No (cancel "
-        "and clear), or a field change. On Yes call fill_create_property with "
-        "confirm_create=true only — do not re-send all fields. On No use "
-        "confirm_create=false. On field change pass only the updated field(s). "
-        "After a failed create, call fill_create_property with confirm_create=true "
-        "to retry — never restart from the property name unless the user asked to."
+        "Read the confirmation summary to the user verbatim (it lists Edit and Delete). "
+        "Wait for Yes (create), Edit (field change), or Delete/No (clear draft). "
+        "On Yes call fill_create_property with confirm_create=true only — do not "
+        "re-send all fields. On Delete or No use confirm_create=false. On Edit pass "
+        "only the updated field(s). After a failed create, call fill_create_property "
+        "with confirm_create=true to retry — never restart from the property name "
+        "unless the user asked to."
     )
 
 

@@ -91,6 +91,14 @@ def test_format_create_property_confirmation_summary():
     )
     assert "Tower" in summary
     assert "Monthly rent (ETH): 0" in summary
+    assert "To edit," in summary
+    assert "To delete" in summary
+    assert "Reply Yes to create and deploy" in summary
+
+
+def test_parse_delete_confirmation_clears_draft():
+    assert parse_yes_no_confirmation("Delete") is False
+    assert parse_yes_no_confirmation("delete all") is False
 
 
 def test_parse_yes_no_confirmation():
