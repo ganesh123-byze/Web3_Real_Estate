@@ -12,7 +12,7 @@ def test_filter_tenant_dashboard_available_matches_rentals_page_rules():
             "has_investors": True,
             "rent_enabled": True,
             "active_rental": False,
-            "current_cycle_paid": False,
+            "can_pay_rent": True,
         },
         {
             "id": 2,
@@ -28,7 +28,7 @@ def test_filter_tenant_dashboard_available_matches_rentals_page_rules():
             "has_investors": True,
             "rent_enabled": True,
             "active_rental": False,
-            "current_cycle_paid": True,
+            "can_pay_rent": False,
         },
         {
             "id": 4,
@@ -51,15 +51,14 @@ def test_filter_tenant_dashboard_available_matches_rentals_page_rules():
     assert [p["id"] for p in available] == [1]
 
 
-def test_filter_excludes_property_paid_by_another_tenant():
-    """Property-level paid flag hides rent from all tenants, not only the payer."""
+def test_filter_excludes_property_when_rent_not_payable():
     rows = [
         {
             "id": 10,
             "has_investors": True,
             "rent_enabled": True,
             "active_rental": False,
-            "current_cycle_paid": True,
+            "can_pay_rent": False,
         },
     ]
     assert filter_tenant_dashboard_available(rows) == []

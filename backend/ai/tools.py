@@ -34,6 +34,14 @@ from backend.ai.workflow_parsers import (
     normalize_create_property_field,
     parse_yes_no_confirmation,
 )
+from backend.ai.copilot_property_scope import (
+    ACTIVE_PROPERTY_SQL,
+    active_property_join,
+    active_property_left_join,
+    fetch_active_property,
+    property_unavailable_message,
+    transaction_excludes_archived_property,
+)
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_last_human_utterance,
@@ -47,7 +55,6 @@ from backend.api._helpers import (
     create_property_record,
     enrich_property_with_supply,
     ensure_rent_property_registered,
-    fetch_property,
     format_transaction_row,
     lock_property,
     require_property_token,
@@ -56,7 +63,11 @@ from backend.api._helpers import (
     validate_monthly_rent_for_chain,
 )
 from backend.api.schemas import PropertyCreate
-from backend.api.rent_cycle import property_rent_period_status
+from backend.services.tenant_rent_eligibility import (
+    build_tenant_property_rent_fields,
+    pay_rent_blocked_message,
+    tenant_may_pay_rent,
+)
 from backend.services.tenant_catalog import (
     fetch_tenant_rental_properties,
     filter_tenant_dashboard_available,
@@ -330,7 +341,7 @@ def _backfill_create_property_filled_from_history(
         if role in ("ai", "assistant"):
             if "reply yes to create and deploy" in lowered or (
                 "here are the property details" in lowered
-                and "reply yes" in lowered
+                and ("reply yes" in lowered or "to edit," in lowered)
             ):
                 pending_field = None
                 continue
@@ -504,6 +515,7 @@ def _serialize_tenant_property(row: dict) -> dict:
     base["current_cycle_paid"] = bool(row.get("current_cycle_paid"))
     base["can_pay_rent"] = bool(row.get("can_pay_rent", not base["current_cycle_paid"]))
     base["tenant_paid_current_cycle"] = bool(row.get("tenant_paid_current_cycle"))
+    base["rent_claimed_by_other_tenant"] = bool(row.get("rent_claimed_by_other_tenant"))
     base["rent_cycle_label"] = row.get("rent_cycle_label")
     base["active_rental"] = bool(row.get("active_rental"))
     base["has_investors"] = bool(row.get("has_investors"))
@@ -519,7 +531,7 @@ def _tenant_property_items(cursor, tenant_wallet: str | None) -> list[dict]:
 
 def _list_properties(cursor) -> list[dict]:
     cursor.execute(
-        "SELECT * FROM properties WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY id DESC"
+        f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
     )
     rows = cursor.fetchall() or []
     return [_serialize_property(enrich_property_with_supply(cursor, r)) for r in rows]
@@ -806,12 +818,12 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
+            f"""
             SELECT p.id AS property_id, p.name AS property_name, p.location,
                    p.token_symbol, p.token_supply,
                    o.token_amount AS token_amount_base
             FROM token_ownerships o
-            JOIN properties p ON p.id = o.property_id
+            {active_property_join("p.id = o.property_id")}
             JOIN users u ON u.id = o.user_id
             WHERE LOWER(u.wallet_address) = LOWER(%s) AND o.token_amount > 0
             ORDER BY p.id DESC
@@ -854,14 +866,15 @@ async def _get_my_claimable_rewards(_args: dict, user: AuthUser, db: Any) -> Too
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
-            SELECT property_id,
-                   SUM(CAST(payout_amount_wei AS DECIMAL(36,0))) AS pending_wei,
+            f"""
+            SELECT irp.property_id,
+                   SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))) AS pending_wei,
                    COUNT(*) AS pending_payouts
-            FROM investor_rent_payouts
-            WHERE LOWER(investor_wallet) = LOWER(%s)
-              AND COALESCE(claim_status, 'claimable') = 'claimable'
-            GROUP BY property_id
+            FROM investor_rent_payouts irp
+            {active_property_join("p.id = irp.property_id")}
+            WHERE LOWER(irp.investor_wallet) = LOWER(%s)
+              AND COALESCE(irp.claim_status, 'claimable') = 'claimable'
+            GROUP BY irp.property_id
             ORDER BY pending_wei DESC
             """,
             (user.wallet_address,),
@@ -899,12 +912,12 @@ async def _get_my_active_rentals(_args: dict, user: AuthUser, db: Any) -> ToolRe
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
+            f"""
             SELECT tr.id, tr.property_id, p.name AS property_name, p.location,
                    tr.rental_start_date, tr.status
             FROM tenant_rentals tr
             JOIN tenants t ON t.id = tr.tenant_id
-            JOIN properties p ON p.id = tr.property_id
+            {active_property_join("p.id = tr.property_id")}
             WHERE LOWER(t.wallet_address) = LOWER(%s) AND tr.status = 'active'
             ORDER BY tr.created_at DESC
             """,
@@ -947,12 +960,12 @@ async def _get_my_rent_payments(args: dict, user: AuthUser, db: Any) -> ToolResu
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
+            f"""
             SELECT rp.id, rp.amount_eth, rp.tx_hash, rp.payment_date,
                    rp.payment_status, p.name AS property_name, rp.property_id
             FROM rent_payments rp
             JOIN tenants t ON t.id = rp.tenant_id
-            JOIN properties p ON p.id = rp.property_id
+            {active_property_join("p.id = rp.property_id")}
             WHERE LOWER(t.wallet_address) = LOWER(%s)
             ORDER BY rp.payment_date DESC
             LIMIT %s
@@ -999,8 +1012,8 @@ async def _get_my_owned_properties(_args: dict, user: AuthUser, db: Any) -> Tool
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-            "AND COALESCE(is_active, TRUE) = TRUE ORDER BY id DESC",
+            f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+            f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
             (user.wallet_address,),
         )
         rows = cursor.fetchall() or []
@@ -1023,21 +1036,21 @@ async def _get_rent_analytics(_args: dict, user: AuthUser, db: Any) -> ToolResul
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
+            f"""
             SELECT
               COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected_wei,
               COUNT(*) AS payments_count
             FROM rent_payments rp
-            JOIN properties p ON p.id = rp.property_id
+            {active_property_join("p.id = rp.property_id")}
             WHERE LOWER(p.owner_wallet) = LOWER(%s)
             """,
             (user.wallet_address,),
         )
         agg = cursor.fetchone() or {}
         cursor.execute(
-            "SELECT COUNT(*) AS active FROM tenant_rentals tr "
-            "JOIN properties p ON p.id = tr.property_id "
-            "WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'",
+            f"SELECT COUNT(*) AS active FROM tenant_rentals tr "
+            f"{active_property_join('p.id = tr.property_id')} "
+            f"WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'",
             (user.wallet_address,),
         )
         active = cursor.fetchone() or {}
@@ -1066,13 +1079,13 @@ async def _get_my_investors(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            """
+            f"""
             SELECT u.wallet_address, u.email,
                    p.id AS property_id, p.name AS property_name, p.token_symbol,
                    p.token_supply, o.token_amount AS token_amount_base
             FROM token_ownerships o
             JOIN users u ON u.id = o.user_id
-            JOIN properties p ON p.id = o.property_id
+            {active_property_join("p.id = o.property_id")}
             WHERE LOWER(p.owner_wallet) = LOWER(%s) AND o.token_amount > 0
             ORDER BY p.id DESC, o.token_amount DESC
             """,
@@ -1131,7 +1144,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     wallet = normalize_address(user.wallet_address or "")
 
     cursor.execute(
-        "SELECT * FROM properties WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY id DESC"
+        f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
     )
     property_rows = cursor.fetchall() or []
     properties = [_serialize_property(enrich_property_with_supply(cursor, r)) for r in property_rows]
@@ -1139,25 +1152,39 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     listed_with_sales = [p for p in properties if float(p.get("sold_percentage") or 0) > 0 or p.get("token_address")]
 
     cursor.execute(
-        "SELECT COALESCE(SUM(CAST(amount_wei AS DECIMAL(36,0))), 0) AS collected, "
-        "COUNT(*) AS payments_count FROM rent_payments"
+        f"""
+        SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected,
+               COUNT(*) AS payments_count
+        FROM rent_payments rp
+        {active_property_join("p.id = rp.property_id")}
+        """
     )
     rent_pay = cursor.fetchone() or {}
     cursor.execute(
-        "SELECT COALESCE(SUM(CAST(total_distributed AS DECIMAL(36,0))), 0) AS distributed, "
-        "COUNT(*) AS distributions_count FROM rent_distributions"
+        f"""
+        SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS distributed,
+               COUNT(*) AS distributions_count
+        FROM rent_distributions rd
+        {active_property_join("p.id = rd.property_id")}
+        """
     )
     rent_dist = cursor.fetchone() or {}
-    cursor.execute("SELECT COUNT(*) AS active FROM tenant_rentals WHERE status = 'active'")
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS active FROM tenant_rentals tr
+        {active_property_join("p.id = tr.property_id")}
+        WHERE tr.status = 'active'
+        """
+    )
     active_rentals = int((cursor.fetchone() or {}).get("active") or 0)
 
     cursor.execute(
         "SELECT rp.id, rp.property_id, p.name AS property_name, rp.amount_eth, "
         "rp.payment_date, rp.payment_status, t.wallet_address AS tenant_wallet "
-        "FROM rent_payments rp "
-        "JOIN tenants t ON t.id = rp.tenant_id "
-        "JOIN properties p ON p.id = rp.property_id "
-        "ORDER BY rp.payment_date DESC LIMIT 10"
+        f"FROM rent_payments rp "
+        f"JOIN tenants t ON t.id = rp.tenant_id "
+        f"{active_property_join('p.id = rp.property_id')} "
+        f"ORDER BY rp.payment_date DESC LIMIT 10"
     )
     recent_payments = [
         {
@@ -1173,9 +1200,9 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     cursor.execute(
         "SELECT rd.property_id, p.name AS property_name, rd.total_distributed, "
         "rd.investor_count, rd.distributed_at "
-        "FROM rent_distributions rd "
-        "JOIN properties p ON p.id = rd.property_id "
-        "ORDER BY rd.distributed_at DESC LIMIT 8"
+        f"FROM rent_distributions rd "
+        f"{active_property_join('p.id = rd.property_id')} "
+        f"ORDER BY rd.distributed_at DESC LIMIT 8"
     )
     recent_distributions = [
         {
@@ -1192,11 +1219,11 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     )
     platform_investors = int((cursor.fetchone() or {}).get("n") or 0)
     cursor.execute(
-        """
+        f"""
         SELECT p.id, p.name, COUNT(DISTINCT o.user_id) AS investor_count
         FROM properties p
         LEFT JOIN token_ownerships o ON o.property_id = p.id AND o.token_amount > 0
-        WHERE COALESCE(p.is_active, TRUE) = TRUE
+        WHERE {ACTIVE_PROPERTY_SQL}
         GROUP BY p.id, p.name
         HAVING COUNT(DISTINCT o.user_id) > 0
         ORDER BY investor_count DESC, p.id DESC
@@ -1215,9 +1242,10 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     cursor.execute(
         "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
         "p.name AS property_name, t.amount_spent "
-        "FROM transactions t "
-        "LEFT JOIN properties p ON p.id = t.property_id "
-        "ORDER BY t.timestamp DESC, t.id DESC LIMIT 12"
+        f"FROM transactions t "
+        f"{active_property_left_join('p.id = t.property_id')} "
+        f"WHERE 1=1 {transaction_excludes_archived_property()} "
+        f"ORDER BY t.timestamp DESC, t.id DESC LIMIT 12"
     )
     recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
 
@@ -1230,10 +1258,10 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     my_investors_data: dict = {}
     if wallet:
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT o.user_id) AS n
             FROM token_ownerships o
-            JOIN properties p ON p.id = o.property_id
+            {active_property_join("p.id = o.property_id")}
             WHERE LOWER(p.owner_wallet) = %s AND o.token_amount > 0
             """,
             (wallet,),
@@ -1357,8 +1385,8 @@ async def _get_wallet_balance(_args: dict, user: AuthUser, _db: Any) -> ToolResu
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, name, token_address, token_symbol "
-            "FROM properties WHERE token_address IS NOT NULL"
+            f"SELECT id, name, token_address, token_symbol "
+            f"FROM properties WHERE token_address IS NOT NULL AND {ACTIVE_PROPERTY_SQL}"
         )
         for row in cursor.fetchall() or []:
             addr = row.get("token_address")
@@ -1440,10 +1468,10 @@ async def _get_my_transactions(args: dict, user: AuthUser, db: Any) -> ToolResul
             "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
             "t.block_number, COALESCE(t.wallet_address, i.investor_wallet) AS wallet_address, "
             "t.gas_fee, t.amount_spent, t.remaining_balance, p.name AS property_name "
-            "FROM transactions t "
-            "LEFT JOIN properties p ON p.id = t.property_id "
+            f"FROM transactions t "
+            f"{active_property_left_join('p.id = t.property_id')} "
             "LEFT JOIN investments i ON LOWER(i.deposit_tx_hash) = LOWER(t.tx_hash) "
-            "WHERE " + " AND ".join(conditions) + " "
+            "WHERE " + " AND ".join(conditions) + f" {transaction_excludes_archived_property()} "
             "ORDER BY t.timestamp DESC, t.id DESC LIMIT %s"
         )
         params.append(limit)
@@ -1493,12 +1521,15 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
             "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
             "t.block_number, COALESCE(t.wallet_address, i.investor_wallet) AS wallet_address, "
             "t.gas_fee, t.amount_spent, t.remaining_balance, p.name AS property_name "
-            "FROM transactions t "
-            "LEFT JOIN properties p ON p.id = t.property_id "
+            f"FROM transactions t "
+            f"{active_property_left_join('p.id = t.property_id')} "
             "LEFT JOIN investments i ON LOWER(i.deposit_tx_hash) = LOWER(t.tx_hash) "
         )
+        archive_filter = transaction_excludes_archived_property()
         if conditions:
-            query += "WHERE " + " AND ".join(conditions) + " "
+            query += "WHERE " + " AND ".join(conditions) + f" {archive_filter} "
+        else:
+            query += f"WHERE 1=1 {archive_filter} "
         query += "ORDER BY t.timestamp DESC, t.id DESC LIMIT %s"
         params.append(limit)
         cursor.execute(query, tuple(params))
@@ -1536,9 +1567,9 @@ async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolRes
         return ToolResult(ok=False, error="property_id is required.")
     cursor = db.cursor(dictionary=True)
     try:
-        prop = fetch_property(cursor, int(pid))
+        prop = fetch_active_property(cursor, int(pid))
         if not prop:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
+            return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
         enriched = enrich_property_with_supply(cursor, prop)
         cursor.execute(
             "SELECT COUNT(DISTINCT user_id) AS investor_count "
@@ -1585,9 +1616,9 @@ async def _get_my_rent_distributions(_args: dict, user: AuthUser, db: Any) -> To
         cursor.execute(
             "SELECT rd.id, rd.property_id, p.name AS property_name, "
             "rd.total_distributed, rd.investor_count, rd.distributed_at, rd.tx_hash "
-            "FROM rent_distributions rd "
-            "JOIN properties p ON p.id = rd.property_id "
-            "WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+            f"FROM rent_distributions rd "
+            f"{active_property_join('p.id = rd.property_id')} "
+            f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
             "ORDER BY rd.distributed_at DESC LIMIT 50",
             (user.wallet_address,),
         )
@@ -1627,10 +1658,10 @@ async def _get_my_active_tenants(_args: dict, user: AuthUser, db: Any) -> ToolRe
         cursor.execute(
             "SELECT tr.id, tr.property_id, p.name AS property_name, p.location, "
             "t.wallet_address AS tenant_wallet, tr.rental_start_date, tr.status "
-            "FROM tenant_rentals tr "
-            "JOIN tenants t ON t.id = tr.tenant_id "
-            "JOIN properties p ON p.id = tr.property_id "
-            "WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active' "
+            f"FROM tenant_rentals tr "
+            f"JOIN tenants t ON t.id = tr.tenant_id "
+            f"{active_property_join('p.id = tr.property_id')} "
+            f"WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active' "
             "ORDER BY tr.created_at DESC",
             (user.wallet_address,),
         )
@@ -1671,11 +1702,11 @@ async def _get_my_rent_collections(args: dict, user: AuthUser, db: Any) -> ToolR
             "SELECT rp.id, rp.property_id, p.name AS property_name, rp.amount_eth, "
             "rp.amount_wei, rp.tx_hash, rp.payment_date, rp.payment_status, "
             "t.wallet_address AS tenant_wallet "
-            "FROM rent_payments rp "
-            "JOIN tenants t ON t.id = rp.tenant_id "
-            "JOIN properties p ON p.id = rp.property_id "
-            "WHERE LOWER(p.owner_wallet) = LOWER(%s) "
-            "ORDER BY rp.payment_date DESC LIMIT %s",
+            f"FROM rent_payments rp "
+            f"JOIN tenants t ON t.id = rp.tenant_id "
+            f"{active_property_join('p.id = rp.property_id')} "
+            f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+            f"ORDER BY rp.payment_date DESC LIMIT %s",
             (user.wallet_address, limit),
         )
         rows = cursor.fetchall() or []
@@ -1718,25 +1749,39 @@ register(ToolSpec(
 async def _get_my_yield_summary(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
+        wallet = user.wallet_address
         cursor.execute(
-            "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS earned, "
-            "COUNT(*) AS payouts, COUNT(DISTINCT property_id) AS props "
-            "FROM investor_rent_payouts WHERE LOWER(investor_wallet) = LOWER(%s)",
-            (user.wallet_address,),
+            f"""
+            SELECT COALESCE(SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))), 0) AS earned,
+                   COUNT(*) AS payouts,
+                   COUNT(DISTINCT irp.property_id) AS props
+            FROM investor_rent_payouts irp
+            {active_property_join("p.id = irp.property_id")}
+            WHERE LOWER(irp.investor_wallet) = LOWER(%s)
+            """,
+            (wallet,),
         )
         totals = cursor.fetchone() or {}
         cursor.execute(
-            "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS claimable "
-            "FROM investor_rent_payouts WHERE LOWER(investor_wallet) = LOWER(%s) "
-            "AND COALESCE(claim_status, 'claimable') = 'claimable'",
-            (user.wallet_address,),
+            f"""
+            SELECT COALESCE(SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))), 0) AS claimable
+            FROM investor_rent_payouts irp
+            {active_property_join("p.id = irp.property_id")}
+            WHERE LOWER(irp.investor_wallet) = LOWER(%s)
+              AND COALESCE(irp.claim_status, 'claimable') = 'claimable'
+            """,
+            (wallet,),
         )
         claimable = int((cursor.fetchone() or {}).get("claimable") or 0)
         cursor.execute(
-            "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS claimed "
-            "FROM investor_rent_payouts WHERE LOWER(investor_wallet) = LOWER(%s) "
-            "AND claim_status = 'claimed'",
-            (user.wallet_address,),
+            f"""
+            SELECT COALESCE(SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))), 0) AS claimed
+            FROM investor_rent_payouts irp
+            {active_property_join("p.id = irp.property_id")}
+            WHERE LOWER(irp.investor_wallet) = LOWER(%s)
+              AND irp.claim_status = 'claimed'
+            """,
+            (wallet,),
         )
         claimed = int((cursor.fetchone() or {}).get("claimed") or 0)
     finally:
@@ -1772,10 +1817,10 @@ async def _get_my_claim_history(_args: dict, user: AuthUser, db: Any) -> ToolRes
             "SELECT irp.property_id, p.name AS property_name, irp.claim_tx_hash, "
             "COALESCE(SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))), 0) AS claimed_wei, "
             "COUNT(*) AS payout_count, MAX(irp.claimed_at) AS claimed_at "
-            "FROM investor_rent_payouts irp "
-            "JOIN properties p ON p.id = irp.property_id "
-            "WHERE LOWER(irp.investor_wallet) = LOWER(%s) "
-            "AND irp.claim_status = 'claimed' AND irp.claim_tx_hash IS NOT NULL "
+            f"FROM investor_rent_payouts irp "
+            f"{active_property_join('p.id = irp.property_id')} "
+            f"WHERE LOWER(irp.investor_wallet) = LOWER(%s) "
+            f"AND irp.claim_status = 'claimed' AND irp.claim_tx_hash IS NOT NULL "
             "GROUP BY irp.property_id, p.name, irp.claim_tx_hash "
             "ORDER BY MAX(irp.claimed_at) DESC LIMIT 50",
             (user.wallet_address,),
@@ -1816,10 +1861,10 @@ async def _get_my_rental_earnings(_args: dict, user: AuthUser, db: Any) -> ToolR
             "COUNT(*) AS payment_count, "
             "MAX(irp.ownership_percentage) AS current_ownership_pct, "
             "MAX(irp.distributed_at) AS last_distributed_at "
-            "FROM investor_rent_payouts irp "
-            "JOIN properties p ON p.id = irp.property_id "
-            "WHERE LOWER(irp.investor_wallet) = LOWER(%s) "
-            "GROUP BY irp.property_id, p.name "
+            f"FROM investor_rent_payouts irp "
+            f"{active_property_join('p.id = irp.property_id')} "
+            f"WHERE LOWER(irp.investor_wallet) = LOWER(%s) "
+            f"GROUP BY irp.property_id, p.name "
             "ORDER BY earned_wei DESC",
             (user.wallet_address,),
         )
@@ -1855,20 +1900,32 @@ register(ToolSpec(
 async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT COUNT(*) AS n FROM properties WHERE COALESCE(is_active, TRUE) = TRUE")
+        cursor.execute(f"SELECT COUNT(*) AS n FROM properties WHERE {ACTIVE_PROPERTY_SQL}")
         properties_active = int((cursor.fetchone() or {}).get("n") or 0)
         cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
         investors_active = int((cursor.fetchone() or {}).get("n") or 0)
-        cursor.execute("SELECT COUNT(*) AS n FROM tenant_rentals WHERE status = 'active'")
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS n FROM tenant_rentals tr
+            {active_property_join("p.id = tr.property_id")}
+            WHERE tr.status = 'active'
+            """
+        )
         active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
         cursor.execute(
-            "SELECT COALESCE(SUM(CAST(amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n "
-            "FROM rent_payments"
+            f"""
+            SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
+            FROM rent_payments rp
+            {active_property_join("p.id = rp.property_id")}
+            """
         )
         rent_agg = cursor.fetchone() or {}
         cursor.execute(
-            "SELECT COALESCE(SUM(CAST(total_distributed AS DECIMAL(36,0))), 0) AS wei "
-            "FROM rent_distributions"
+            f"""
+            SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
+            FROM rent_distributions rd
+            {active_property_join("p.id = rd.property_id")}
+            """
         )
         dist_agg = cursor.fetchone() or {}
         cursor.execute("SELECT COUNT(*) AS n FROM transactions")
@@ -2586,12 +2643,13 @@ def _gate_create_property_monthly_rent_value(
 
 def _create_property_confirmation_instruction() -> str:
     return (
-        "Read the confirmation summary to the user. Wait for Yes (submit), No (cancel "
-        "and clear), or a field change. On Yes call fill_create_property with "
-        "confirm_create=true only — do not re-send all fields. On No use "
-        "confirm_create=false. On field change pass only the updated field(s). "
-        "After a failed create, call fill_create_property with confirm_create=true "
-        "to retry — never restart from the property name unless the user asked to."
+        "Read the confirmation summary to the user verbatim (it lists Edit and Delete). "
+        "Wait for Yes (create), Edit (field change), or Delete/No (clear draft). "
+        "On Yes call fill_create_property with confirm_create=true only — do not "
+        "re-send all fields. On Delete or No use confirm_create=false. On Edit pass "
+        "only the updated field(s). After a failed create, call fill_create_property "
+        "with confirm_create=true to retry — never restart from the property name "
+        "unless the user asked to."
     )
 
 
@@ -2638,6 +2696,7 @@ def _create_property_confirmation_prompt(
         "awaiting_create_confirmation": True,
         "confirmation_summary": summary,
         "speak_to_user": speak,
+        "speak_verbatim": True,
         "instruction": _create_property_confirmation_instruction(),
     }
     final_actions = list(actions)
@@ -2848,6 +2907,77 @@ def _create_property_ui_submit_actions(
         )
     )
     return actions
+
+
+def _create_property_workflow_active(
+    session: dict[str, Any], filled: dict[str, str]
+) -> bool:
+    if session.get("in_progress") or session.get("awaiting_create_confirmation"):
+        return True
+    if filled:
+        return True
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        text = _message_content(msg).lower()
+        if "here are the property details i have" in text:
+            return True
+        if "what's the name of the property" in text:
+            return True
+        if "monthly rent" in text and "100 eth" in text:
+            return True
+    return False
+
+
+async def try_server_create_property_confirmation(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Emit the canonical confirmation summary without waiting for the LLM to paraphrase it.
+
+    When every field is collected (including monthly rent) but the model replies in
+    free text instead of calling fill_create_property, this keeps Edit/Delete in chat.
+    """
+    if canonical_role(user.role) != "property_owner":
+        return None
+    if _latest_human_yes_no_reply() is not None:
+        return None
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("chat_property_limit_reached"):
+        return None
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return None
+    if pre_session.get("awaiting_create_confirmation"):
+        return None
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    if not _create_property_workflow_active(pre_session, filled):
+        return None
+    if not _create_property_required_fields_present(filled):
+        return None
+
+    probe = _merge_last_user_utterance(
+        dict(filled),
+        _CREATE_PROPERTY_MODAL,
+        _CREATE_PROPERTY_FIELDS,
+        _CREATE_PROPERTY_FIELDS[:5],
+    )
+    probe = normalize_create_property_accumulated(probe)
+    if _create_property_needs_monthly_rent_collection(probe):
+        return None
+
+    result = await _fill_create_property({}, user, db)
+    data = result.data or {}
+    if not data.get("awaiting_create_confirmation"):
+        return None
+    speak = str(data.get("speak_to_user") or "").strip()
+    if not speak:
+        return None
+    return result
 
 
 async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
@@ -3179,9 +3309,9 @@ async def _start_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResul
         return ToolResult(ok=False, error="property_id must be an integer.")
     cursor = db.cursor(dictionary=True)
     try:
-        prop = fetch_property(cursor, pid)
+        prop = fetch_active_property(cursor, pid)
         if not prop:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
+            return ToolResult(ok=False, error=property_unavailable_message(pid))
         owner = normalize_address(prop.get("owner_wallet") or "")
         if not owner or owner != normalize_address(user.wallet_address):
             return ToolResult(ok=False, error="You can only edit properties you own.")
@@ -3276,9 +3406,9 @@ async def _start_set_rent(args: dict, user: AuthUser, db: Any) -> ToolResult:
         return ToolResult(ok=False, error="property_id must be an integer.")
     cursor = db.cursor(dictionary=True)
     try:
-        prop = fetch_property(cursor, pid)
+        prop = fetch_active_property(cursor, pid)
         if not prop:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
+            return ToolResult(ok=False, error=property_unavailable_message(pid))
         owner = normalize_address(prop.get("owner_wallet") or "")
         if not owner or owner != normalize_address(user.wallet_address):
             return ToolResult(ok=False, error="You can only set rent on properties you own.")
@@ -3740,9 +3870,9 @@ async def _start_invest(args: dict, _user: AuthUser, db: Any) -> ToolResult:
 
     cursor = db.cursor(dictionary=True)
     try:
-        row = fetch_property(cursor, int(pid))
+        row = fetch_active_property(cursor, int(pid))
         if not row:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
+            return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
         prop = _serialize_property(enrich_property_with_supply(cursor, row))
         err = _validate_property_investable(prop)
     finally:
@@ -3859,11 +3989,9 @@ async def _execute_pay_rent_ui(property_id: int, user: AuthUser, db: Any) -> Too
     pid = int(property_id)
     cursor = db.cursor(dictionary=True)
     try:
-        prop = fetch_property(cursor, pid)
+        prop = fetch_active_property(cursor, pid)
         if not prop:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
-        if not prop.get("is_active", True):
-            return ToolResult(ok=False, error=f"Property {pid} is not available.")
+            return ToolResult(ok=False, error=property_unavailable_message(pid))
 
         prop = enrich_property_with_supply(cursor, prop)
         serialized = _serialize_property(prop)
@@ -3871,9 +3999,26 @@ async def _execute_pay_rent_ui(property_id: int, user: AuthUser, db: Any) -> Too
         if rent_err:
             return ToolResult(ok=False, error=rent_err)
 
-        period = property_rent_period_status(cursor, pid)
-        if period.get("current_cycle_paid"):
-            return _rent_period_already_paid_result(serialized, period)
+        rent_fields = build_tenant_property_rent_fields(
+            cursor,
+            pid,
+            tenant_wallet=user.wallet_address if user else None,
+        )
+        if not tenant_may_pay_rent(rent_fields):
+            return ToolResult(
+                ok=False,
+                error=pay_rent_blocked_message(
+                    rent_fields, property_name=str(serialized.get("name") or "this property")
+                ),
+                data={
+                    "already_paid": bool(rent_fields.get("current_cycle_paid")),
+                    "claimed_by_other": bool(rent_fields.get("rent_claimed_by_other_tenant")),
+                    "property_id": pid,
+                    "property_name": serialized.get("name"),
+                    "next_due_at": rent_fields.get("next_rent_due_at"),
+                    "rent_cycle_label": rent_fields.get("rent_cycle_label"),
+                },
+            )
 
         from backend.services.blockchain import get_rent_property_info, platform_deployer_mismatch
 
@@ -4290,9 +4435,9 @@ async def _start_claim_rewards(args: dict, _user: AuthUser, db: Any) -> ToolResu
         return ToolResult(ok=False, error="property_id is required.")
     cursor = db.cursor(dictionary=True)
     try:
-        prop = fetch_property(cursor, int(pid))
+        prop = fetch_active_property(cursor, int(pid))
         if not prop:
-            return ToolResult(ok=False, error=f"Property {pid} not found.")
+            return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
     finally:
         cursor.close()
     return ToolResult(

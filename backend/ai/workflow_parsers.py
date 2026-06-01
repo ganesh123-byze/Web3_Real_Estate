@@ -289,6 +289,16 @@ _CREATE_PROPERTY_CONFIRMATION_ORDER: tuple[tuple[str, str], ...] = (
 )
 
 
+def create_property_confirmation_footer() -> str:
+    """Actions the property owner can take after the create-property summary."""
+    return (
+        "Reply Yes to create and deploy the listing.\n"
+        "To edit, say which field to change (for example, \"edit location to Dubai\" "
+        "or \"change token symbol to OCN\").\n"
+        "To delete all of these details and start over, say Delete or No."
+    )
+
+
 def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
     """Human-readable summary shown before the admin confirms create-property submit."""
     lines: list[str] = []
@@ -305,9 +315,7 @@ def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
     return (
         "Here are the property details I have:\n"
         f"{body}\n\n"
-        "Reply Yes to create and deploy the listing, or No to cancel and clear these "
-        "details. You can also tell me which field to change (for example, "
-        "\"change location to Dubai\")."
+        f"{create_property_confirmation_footer()}"
     )
 
 
@@ -331,10 +339,23 @@ def parse_yes_no_confirmation(text: str) -> bool | None:
         "do it",
     }:
         return True
-    if t in {"no", "n", "nope", "cancel", "stop", "abort", "don't", "do not", "dont"}:
+    if t in {
+        "no",
+        "n",
+        "nope",
+        "cancel",
+        "stop",
+        "abort",
+        "don't",
+        "do not",
+        "dont",
+        "delete",
+    }:
         return False
     if re.search(r"\b(yes|proceed|go ahead|continue)\b", t):
         return True
     if re.search(r"\b(no|cancel|abort|stop)\b", t):
+        return False
+    if re.search(r"\bdelete\b", t):
         return False
     return None

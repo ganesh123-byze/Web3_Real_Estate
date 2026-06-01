@@ -261,7 +261,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             if (!data) continue;
             try {
               const event = JSON.parse(data);
-              if (event.type === "token") {
+              if (event.type === "stream_reset") {
+                streamingText = "";
+                assistantMessage = { ...assistantMessage, content: "" };
+                set({ messages: [...history, assistantMessage] });
+              } else if (event.type === "token") {
                 const delta = event.content || "";
                 streamingText += delta;
                 assistantMessage = { ...assistantMessage, content: streamingText };

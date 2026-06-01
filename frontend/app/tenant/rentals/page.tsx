@@ -73,7 +73,7 @@ export default function TenantRentalsPage() {
         (property) =>
           Number(property.tokens_sold ?? 0) > 0 &&
           !activeRentalIds.has(property.id) &&
-          !property.current_cycle_paid,
+          property.can_pay_rent !== false,
       ),
     [activeRentalIds, filtered],
   );
@@ -145,6 +145,8 @@ function RentalCard({
   property: Property & {
     rent_enabled?: boolean;
     current_cycle_paid?: boolean;
+    can_pay_rent?: boolean;
+    rent_claimed_by_other_tenant?: boolean;
     rent_cycle_label?: string;
     next_rent_due_at?: string | null;
   };
@@ -219,17 +221,17 @@ function RentalCard({
             <div className="min-w-0 text-[11px] text-muted-foreground font-mono">{shortAddress(property.token_address, 6, 4)}</div>
             <Button
               size="sm"
-              variant={property.current_cycle_paid ? "secondary" : "default"}
-              disabled={!wallet || !property.rent_enabled || property.current_cycle_paid}
+              variant={property.can_pay_rent === false ? "secondary" : "default"}
+              disabled={!wallet || !property.rent_enabled || property.can_pay_rent === false}
               onClick={(event) => {
                 event.stopPropagation();
                 setOpen(true);
               }}
             >
-              {property.current_cycle_paid ? (
+              {property.can_pay_rent === false ? (
                 <>
                   <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                  Paid ✔
+                  {property.rent_claimed_by_other_tenant ? "Occupied" : "Paid ✔"}
                 </>
               ) : (
                 <>
@@ -239,9 +241,11 @@ function RentalCard({
               )}
             </Button>
           </div>
-          {property.current_cycle_paid ? (
+          {property.can_pay_rent === false ? (
             <div className="rounded-md border border-success/25 bg-success/5 px-3 py-2 text-xs font-medium text-success">
-              Rent paid for this period.
+              {property.rent_claimed_by_other_tenant
+                ? "Another tenant is paying rent for this property."
+                : "Rent paid for this period."}
               {property.next_rent_due_at ? (
                 <span className="mt-0.5 block font-normal text-success/90">
                   Next due {formatDateTime(property.next_rent_due_at)}
@@ -256,8 +260,8 @@ function RentalCard({
         open={detailOpen}
         onOpenChange={setDetailOpen}
         statusLabel={isActiveRental ? "Renting" : rentReady ? "Rent ready" : "Rent not set"}
-        actionLabel={property.current_cycle_paid ? "Paid ✔" : "Rent Now"}
-        actionDisabled={!wallet || !property.rent_enabled || property.current_cycle_paid}
+        actionLabel={property.can_pay_rent === false ? "Unavailable" : "Rent Now"}
+        actionDisabled={!wallet || !property.rent_enabled || property.can_pay_rent === false}
         onAction={() => {
           setDetailOpen(false);
           setOpen(true);
@@ -290,10 +294,11 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
     // MetaMask. Surface a clear completion-error so the agent can explain
     // the rent is already paid + next due date.
     const propWithStatus = property as Property & {
+      can_pay_rent?: boolean;
       current_cycle_paid?: boolean;
       next_rent_due_at?: string | null;
     };
-    if (propWithStatus.current_cycle_paid) {
+    if (propWithStatus.can_pay_rent === false) {
       const nextDue = propWithStatus.next_rent_due_at
         ? formatDateTime(propWithStatus.next_rent_due_at)
         : "next cycle";
@@ -411,7 +416,7 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
             <Button
               type="submit"
-              disabled={busy || !wallet || !property.rent_enabled || property.current_cycle_paid}
+              disabled={busy || !wallet || !property.rent_enabled || property.can_pay_rent === false}
             >
               {busy ? "Processing…" : "Pay Rent via MetaMask"}
             </Button>

@@ -44,6 +44,8 @@ def test_confirmation_summary_lists_all_fields():
     assert "Dubai" in summary
     assert "100" in summary
     assert "Reply Yes" in summary
+    assert "To edit," in summary
+    assert "To delete" in summary
 
 
 def test_parse_yes_no_strips_trailing_punctuation():

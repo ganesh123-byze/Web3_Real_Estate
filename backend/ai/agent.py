@@ -26,6 +26,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.ai.config import get_settings
+from backend.ai.agent_reply import (
+    extract_final_reply_from_state,
+    pick_verbatim_speak_to_user,
+    tool_data_requires_verbatim_reply,
+)
+from backend.ai.tools import try_server_create_property_confirmation
 from backend.ai.investor_guards import sanitize_investor_wallet_actions
 from backend.ai.prompts import system_prompt_for_role
 from backend.ai.schemas import AgentAction, ChatMessage, ChatResponse, InterruptResponse
@@ -71,6 +77,7 @@ class AgentState(TypedDict, total=False):
     actions: list[AgentAction]
     interrupt: dict[str, Any] | None
     approval: str | None
+    verbatim_reply: str | None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -171,7 +178,8 @@ async def _call_tools(state: AgentState, user: AuthUser, db: Any) -> dict:
 
     LOGGER.info("[_call_tools] Processing %d tool calls: %s", len(tool_calls), [c.get("name") for c in tool_calls])
     actions: list[AgentAction] = []
-    tool_results = []
+    tool_results: list[ToolMessage] = []
+    verbatim_sources: list[tuple[str, dict[str, Any] | None]] = []
     # Expose the running conversation to tools that need to recover prior state
     # (e.g. fill_create_property merging fields across turns even when the LLM
     # drops some on a subsequent call).
@@ -198,6 +206,14 @@ async def _call_tools(state: AgentState, user: AuthUser, db: Any) -> dict:
                     result_data["missing_required"] = result.data["missing"]
                 if result.data and result.data.get("instruction"):
                     result_data["instruction"] = result.data["instruction"]
+                if result.data and result.data.get("speak_to_user"):
+                    result_data["speak_to_user"] = result.data["speak_to_user"]
+                if result.data and tool_data_requires_verbatim_reply(result.data):
+                    result_data["speak_verbatim"] = True
+                    result_data["instruction"] = (
+                        "Your entire reply MUST be exactly the speak_to_user string — "
+                        "character for character. Do not summarize or rephrase."
+                    )
                 if result.data and result.data.get("success_message"):
                     result_data["success_message"] = result.data["success_message"]
                     result_data["speak_to_user"] = result.data.get(
@@ -206,6 +222,7 @@ async def _call_tools(state: AgentState, user: AuthUser, db: Any) -> dict:
                     result_data["instruction"] = (
                         "Tell the user the success_message verbatim in a natural sentence."
                     )
+                verbatim_sources.append((name, result.data))
                 content = json.dumps(result_data, default=str)
                 tool_results.append(
                     ToolMessage(content=content, tool_call_id=tid, name=name)
@@ -231,7 +248,17 @@ async def _call_tools(state: AgentState, user: AuthUser, db: Any) -> dict:
             )
 
     LOGGER.info("[_call_tools] Total actions accumulated: %d", len(actions))
-    return {"actions": actions, "messages": messages + tool_results}
+    out_messages = list(messages) + tool_results
+    verbatim_reply = pick_verbatim_speak_to_user(verbatim_sources)
+    if verbatim_reply:
+        LOGGER.info("[_call_tools] Using verbatim speak_to_user (%d chars)", len(verbatim_reply))
+        out_messages.append(AIMessage(content=verbatim_reply))
+        return {
+            "actions": actions,
+            "messages": out_messages,
+            "verbatim_reply": verbatim_reply,
+        }
+    return {"actions": actions, "messages": out_messages}
 
 
 async def _call_model(state: AgentState, role: str) -> dict:
@@ -318,6 +345,13 @@ def _should_continue(state: AgentState) -> Literal["call_tools", "human_approval
     return "call_tools"
 
 
+def _after_tools(state: AgentState) -> Literal["call_model", END]:
+    """Skip a second LLM turn when tools already produced the user-facing reply."""
+    if (state.get("verbatim_reply") or "").strip():
+        return END
+    return "call_model"
+
+
 def build_agent_graph(
     role: str,
     user: AuthUser,
@@ -345,7 +379,11 @@ def build_agent_graph(
         _should_continue,
         {"call_tools": "call_tools", "human_approval": "human_approval", END: END},
     )
-    builder.add_edge("call_tools", "call_model")
+    builder.add_conditional_edges(
+        "call_tools",
+        _after_tools,
+        {"call_model": "call_model", END: END},
+    )
     builder.add_edge("human_approval", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -396,13 +434,25 @@ async def run_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
+        preflight = await try_server_create_property_confirmation(user, db)
+        if preflight is not None:
+            reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
+            transcript = list(history)
+            transcript.append(ChatMessage(role="assistant", content=reply))
+            return ChatResponse(
+                reply=reply,
+                actions=preflight.actions,
+                messages=transcript,
+                role=role,
+                model=settings.chat_model,
+                interrupt=None,
+            )
         final_state = await graph.ainvoke(AgentState(messages=messages, actions=[]), config=config or None)
     finally:
         reset_current_messages(msg_token)
         reset_current_thread_id(tid_token)
 
-    final_msg = final_state["messages"][-1]
-    reply = (final_msg.content or "").strip()
+    reply = extract_final_reply_from_state(final_state)
     transcript = list(history)
     transcript.append(ChatMessage(role="assistant", content=reply))
 
@@ -534,16 +584,38 @@ async def stream_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
+        preflight = await try_server_create_property_confirmation(user, db)
+        if preflight is not None:
+            reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
+            yield {
+                "type": "complete",
+                "reply": reply,
+                "actions": [a.model_dump() for a in preflight.actions],
+            }
+            return
+
+        suppress_tokens = False
         async for event in graph.astream_events(
             AgentState(messages=messages, actions=[]),
             config=config or None,
             version="v2",
         ):
             kind = event.get("event")
-            if kind == "on_chat_model_stream":
+            if kind == "on_chat_model_end":
+                output = event.get("data", {}).get("output")
+                tool_calls = getattr(output, "tool_calls", None) or []
+                if tool_calls:
+                    suppress_tokens = True
+                    yield {"type": "stream_reset"}
+            elif kind == "on_chat_model_stream":
+                if suppress_tokens:
+                    continue
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and chunk.content:
                     yield {"type": "token", "content": chunk.content}
+            elif kind == "on_tool_start":
+                suppress_tokens = True
+                yield {"type": "stream_reset"}
             elif kind == "on_tool_start":
                 yield {
                     "type": "tool_start",
@@ -557,9 +629,8 @@ async def stream_agent(
                     "output": event.get("data", {}).get("output"),
                 }
             elif kind == "on_chain_end" and event.get("name") == "LangGraph":
-                final_state = event.get("data", {}).get("output", {})
-                final_msg = final_state.get("messages", [None])[-1]
-                reply = (final_msg.content or "").strip() if final_msg else ""
+                final_state = event.get("data", {}).get("output", {}) or {}
+                reply = extract_final_reply_from_state(final_state)
                 interrupt = final_state.get("interrupt")
                 actions = final_state.get("actions", [])
                 LOGGER.info("[stream_agent] Final reply length: %d, actions count: %d", len(reply), len(actions))
