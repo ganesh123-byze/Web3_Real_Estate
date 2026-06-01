@@ -8,6 +8,11 @@ import {
   syncCreatePropertyStreamEvent,
 } from "@/lib/properties/list-sync";
 import { getRegisteredQueryClient } from "@/lib/query-client-holder";
+import {
+  logCreatePropertyFailure,
+  logCreatePropertyPayload,
+  logCreatePropertyStreamEvent,
+} from "@/lib/properties/create-property-debug";
 import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -334,6 +339,8 @@ async function submitCreatePropertyFromChat(
     ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
   });
 
+  logCreatePropertyPayload("chat", payload);
+
   const queryClient = getRegisteredQueryClient();
   markPropertyCreationStarted(queryClient, payload.name);
   let finalPropertyName = payload.name;
@@ -342,6 +349,12 @@ async function submitCreatePropertyFromChat(
   try {
     const base = getApiBase();
     const token = getToken();
+    const streamTimeoutMs = 10 * 60 * 1000;
+    const timeoutSignal =
+      typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+        ? AbortSignal.timeout(streamTimeoutMs)
+        : undefined;
+
     const res = await fetch(`${base}/properties/stream`, {
       method: "POST",
       headers: {
@@ -350,6 +363,7 @@ async function submitCreatePropertyFromChat(
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(payload),
+      signal: timeoutSignal,
     });
 
     if (!res.ok) {
@@ -362,6 +376,10 @@ async function submitCreatePropertyFromChat(
       } catch {
         if (errText) detail = errText;
       }
+      logCreatePropertyFailure("chat", new Error(detail), {
+        httpStatus: res.status,
+        responseBody: errText.slice(0, 500),
+      });
       throw new Error(detail);
     }
 
@@ -372,6 +390,7 @@ async function submitCreatePropertyFromChat(
     let sseBuffer = "";
     let finalError: string | null = null;
     let streamComplete = false;
+    let lastFailedStep: string | undefined;
 
     while (!streamComplete) {
       const { done, value } = await reader.read();
@@ -391,7 +410,9 @@ async function submitCreatePropertyFromChat(
               property?: Property;
               property_id?: number;
               detail?: string;
+              failed_step?: string;
             };
+            logCreatePropertyStreamEvent(event);
             const eventPropertyId = event.property?.id ?? event.property_id;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
@@ -400,6 +421,7 @@ async function submitCreatePropertyFromChat(
               streamComplete = true;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              lastFailedStep = event.failed_step;
               syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (eventPropertyId) {
@@ -419,7 +441,10 @@ async function submitCreatePropertyFromChat(
         /* stream already closed */
       });
     }
-    if (finalError) throw new Error(finalError);
+    if (finalError) {
+      logCreatePropertyFailure("chat", new Error(finalError), { failedStep: lastFailedStep });
+      throw new Error(finalError);
+    }
     clearPendingModalActions(CREATE_PROPERTY_MODAL);
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
@@ -432,6 +457,10 @@ async function submitCreatePropertyFromChat(
     focusChatInput();
     return true;
   } catch (err: any) {
+    logCreatePropertyFailure("chat", err, {
+      propertyName: finalPropertyName || payload.name,
+      propertyId: completedPropertyId,
+    });
     markPropertyCreationFailed(
       queryClient,
       completedPropertyId,

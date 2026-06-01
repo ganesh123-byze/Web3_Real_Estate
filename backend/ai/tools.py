@@ -38,7 +38,10 @@ from backend.ai.copilot_property_scope import (
     ACTIVE_PROPERTY_SQL,
     active_property_join,
     active_property_left_join,
+    copilot_property_list_meta,
+    count_dashboard_listable_active,
     fetch_active_property,
+    filter_dashboard_listable_properties,
     property_unavailable_message,
     transaction_excludes_archived_property,
 )
@@ -533,8 +536,8 @@ def _list_properties(cursor) -> list[dict]:
     cursor.execute(
         f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
     )
-    rows = cursor.fetchall() or []
-    return [_serialize_property(enrich_property_with_supply(cursor, r)) for r in rows]
+    rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+    return [_serialize_property(r) for r in rows]
 
 
 def _normalize_match_text(value: Any) -> str:
@@ -717,7 +720,8 @@ async def _list_properties_tool(args: dict, _user: AuthUser, db: Any) -> ToolRes
     rent_only = bool(args.get("rent_enabled_only"))
     if rent_only:
         items = [p for p in items if p["rent_enabled"]]
-    return ToolResult(ok=True, data={"count": len(items), "properties": items[:25]})
+    payload = {"properties": items[:25], **copilot_property_list_meta(items)}
+    return ToolResult(ok=True, data=payload)
 
 
 async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
@@ -757,9 +761,10 @@ async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> T
 register(ToolSpec(
     name="list_properties",
     description=(
-        "List active properties on the investor marketplace / platform catalog. "
-        "Property owners use this for cross-listing lookup; investors use it to "
-        "browse token sales. Tenants must use list_tenant_properties instead."
+        "List dashboard-visible properties (same as the Properties / Marketplace UI): "
+        "active, token deployed, sale inventory finalized. Archived and in-progress "
+        "creates are excluded. Use the returned count and property_names — do not guess. "
+        "Tenants must use list_tenant_properties instead."
     ),
     parameters={
         "type": "object",
@@ -1016,16 +1021,21 @@ async def _get_my_owned_properties(_args: dict, user: AuthUser, db: Any) -> Tool
             f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
             (user.wallet_address,),
         )
-        rows = cursor.fetchall() or []
-        items = [_serialize_property(enrich_property_with_supply(cursor, r)) for r in rows]
+        rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+        items = [_serialize_property(r) for r in rows]
     finally:
         cursor.close()
-    return ToolResult(ok=True, data={"count": len(items), "properties": items})
+    payload = {"properties": items, **copilot_property_list_meta(items)}
+    return ToolResult(ok=True, data=payload)
 
 
 register(ToolSpec(
     name="get_my_owned_properties",
-    description="Return all properties owned by the signed-in property owner.",
+    description=(
+        "Return dashboard-visible properties owned by the signed-in property owner "
+        "(same rules as the admin Properties page). Use count and property_names from "
+        "the result — do not invent other listings."
+    ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
     handler=_get_my_owned_properties,
@@ -1146,10 +1156,11 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     cursor.execute(
         f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
     )
-    property_rows = cursor.fetchall() or []
-    properties = [_serialize_property(enrich_property_with_supply(cursor, r)) for r in property_rows]
+    listable_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+    properties = [_serialize_property(r) for r in listable_rows]
+    listable_ids = {int(p["id"]) for p in properties if p.get("id") is not None}
     owned = [p for p in properties if wallet and normalize_address(p.get("owner_wallet") or "") == wallet]
-    listed_with_sales = [p for p in properties if float(p.get("sold_percentage") or 0) > 0 or p.get("token_address")]
+    listed_with_sales = [p for p in properties if float(p.get("sold_percentage") or 0) > 0]
 
     cursor.execute(
         f"""
@@ -1237,6 +1248,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             "investor_count": int(r.get("investor_count") or 0),
         }
         for r in (cursor.fetchall() or [])
+        if int(r["id"]) in listable_ids
     ]
 
     cursor.execute(
@@ -1286,9 +1298,11 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
 
     return {
         "summary": {
+            "dashboard_visible_properties": len(properties),
             "total_properties": len(properties),
             "properties_you_own": len(owned),
             "properties_with_token_sales": len(listed_with_sales),
+            "property_names": [p.get("name") for p in properties if p.get("name")],
             "platform_investors": platform_investors,
             "active_rentals": active_rentals,
             "total_rent_collected_eth": _eth(int(rent_pay.get("collected") or 0)),
@@ -1324,13 +1338,10 @@ async def _get_owner_analytics_overview(_args: dict, user: AuthUser, db: Any) ->
 register(ToolSpec(
     name="get_owner_analytics_overview",
     description=(
-        "Full analytics dashboard snapshot for the property owner: all properties "
-        "(sale progress, rent), platform rent collected/distributed, active rentals, "
-        "investor counts by property, recent rent payments, recent transactions, and "
-        "investment volume. ALWAYS use this when the user asks for 'analytics', "
-        "'view analytics', 'dashboard overview', 'platform stats', or a summary of "
-        "properties + rent + investors together. Summarize the numbers clearly in "
-        "plain language after calling — do not list raw JSON."
+        "Analytics snapshot aligned with the admin dashboard: summary.dashboard_visible_properties "
+        "and summary.property_names match the Properties page. Includes rent collected/distributed, "
+        "active rentals, investors by property, recent payments and transactions. Use for "
+        "'analytics', 'view analytics', or dashboard overview. Report counts from summary only."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
@@ -1570,7 +1581,7 @@ async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolRes
         prop = fetch_active_property(cursor, int(pid))
         if not prop:
             return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
-        enriched = enrich_property_with_supply(cursor, prop)
+        enriched = prop
         cursor.execute(
             "SELECT COUNT(DISTINCT user_id) AS investor_count "
             "FROM token_ownerships WHERE property_id = %s AND token_amount > 0",
@@ -1900,8 +1911,7 @@ register(ToolSpec(
 async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS n FROM properties WHERE {ACTIVE_PROPERTY_SQL}")
-        properties_active = int((cursor.fetchone() or {}).get("n") or 0)
+        properties_active = count_dashboard_listable_active(cursor)
         cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
         investors_active = int((cursor.fetchone() or {}).get("n") or 0)
         cursor.execute(
@@ -1949,9 +1959,9 @@ async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResu
 register(ToolSpec(
     name="get_platform_stats",
     description=(
-        "System-wide totals: active property count, active investors, active "
-        "rentals, total rent collected/distributed, total transactions. Use "
-        "for any 'how big is the platform' style question."
+        "System-wide totals. active_properties counts dashboard-visible listings "
+        "only (same as UI). Also returns active investors, rentals, rent totals, "
+        "and transaction count."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=ALL_ROLES,
@@ -2760,14 +2770,62 @@ def _create_property_submit_in_flight_block(pre_session: dict[str, Any]) -> Tool
     return None
 
 
+def _create_property_submit_failure_result(
+    accumulated: dict[str, str],
+    data: dict[str, Any],
+    *,
+    detail: str,
+    property_name: str,
+) -> ToolResult:
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": None,
+            "submitted": False,
+            "submitting": False,
+            "awaiting_create_confirmation": True,
+            "submit_failed": True,
+            "last_submit_error": detail,
+            "last_submit_name": property_name,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            **data,
+            "filled": accumulated,
+            "missing": [],
+            "submitted": False,
+            "submit_failed": True,
+            "last_submit_error": detail,
+            "speak_to_user": (
+                f"Failed to create the property: {detail} "
+                "You can say Yes to try again, or edit a field such as monthly rent."
+            ),
+            "instruction": (
+                "Tell the user the failure in plain language. Do not claim success. "
+                "They may retry with confirm_create=true."
+            ),
+        },
+        actions=[],
+    )
+
+
 def _create_property_submit_result(
     accumulated: dict[str, str],
     data: dict[str, Any],
+    user: AuthUser,
+    db: Any,
     *,
     bootstrap_for_turn: bool,
     needs_ui_bootstrap: bool,
     had_active_session: bool,
 ) -> ToolResult:
+    """Create the listing on the server (DB + on-chain deploy), same as POST /properties/stream."""
+    del bootstrap_for_turn, needs_ui_bootstrap, had_active_session
+
     in_flight = _create_property_submit_in_flight_block(
         _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
     )
@@ -2779,29 +2837,6 @@ def _create_property_submit_result(
         return blocked
 
     property_name = str(accumulated.get("name") or "property")
-    out_data = {
-        **data,
-        "filled": accumulated,
-        "missing": [],
-        "submitted": True,
-        "submitting": True,
-        "awaiting_create_confirmation": False,
-        "awaiting_ui_confirmation": True,
-        "auto_submit": True,
-        "speak_to_user": (
-            f"Submitting {property_name} now — I will create the listing from this chat."
-        ),
-        "instruction": (
-            "Tell the user the property is submitting from chat. Do not call more tools "
-            "until they see success or an error. Only one property may be created per chat "
-            "session after success; if they ask to create another property later, the tools "
-            "will tell them to refresh for a new chat."
-        ),
-    }
-    submit_bootstrap = bootstrap_for_turn or needs_ui_bootstrap or not had_active_session
-    actions = _create_property_ui_submit_actions(
-        accumulated, bootstrap_ui=submit_bootstrap
-    )
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
@@ -2816,13 +2851,99 @@ def _create_property_submit_result(
             "last_submit_name": property_name,
         },
     )
-    return ToolResult(ok=True, data=out_data, actions=actions)
+
+    try:
+        payload = _property_create_payload_from_accumulated(accumulated)
+        LOGGER.info(
+            "[create_property:copilot] server_create start name=%r total_value=%s "
+            "token_supply=%s monthly_rent_eth=%s",
+            property_name,
+            accumulated.get("total_value"),
+            accumulated.get("token_supply"),
+            accumulated.get("monthly_rent_eth"),
+        )
+        row = create_property_record(db, user, payload)
+        pid = int(row["id"])
+        success = _create_property_success_message(property_name)
+        _mark_create_property_completed(property_name)
+        _set_workflow_session(
+            _CREATE_PROPERTY_MODAL,
+            {
+                "in_progress": False,
+                "filled": accumulated,
+                "next_field": None,
+                "submitted": True,
+                "submitting": False,
+                "awaiting_create_confirmation": False,
+                "submit_failed": False,
+                "last_submit_error": None,
+                "last_submit_name": property_name,
+                "property_id": pid,
+            },
+        )
+        LOGGER.info(
+            "[create_property:copilot] server_create done property_id=%s token=%s",
+            pid,
+            row.get("token_address"),
+        )
+        return ToolResult(
+            ok=True,
+            data={
+                **data,
+                "filled": accumulated,
+                "missing": [],
+                "submitted": True,
+                "submitting": False,
+                "property_id": pid,
+                "token_address": row.get("token_address"),
+                "success_message": success,
+                "speak_to_user": success,
+                "speak_verbatim": True,
+                "instruction": (
+                    "Read speak_to_user verbatim — the property was created and deployed."
+                ),
+            },
+            actions=[
+                AgentAction(type="NAVIGATE", route="/property_owner/properties"),
+            ],
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        LOGGER.error(
+            "[create_property:copilot] server_create failed name=%r http_detail=%s",
+            property_name,
+            detail,
+        )
+        return _create_property_submit_failure_result(
+            accumulated, data, detail=str(detail), property_name=property_name
+        )
+    except ValueError as exc:
+        LOGGER.error(
+            "[create_property:copilot] server_create failed name=%r validation=%s",
+            property_name,
+            exc,
+        )
+        return _create_property_submit_failure_result(
+            accumulated, data, detail=str(exc), property_name=property_name
+        )
+    except Exception as exc:
+        LOGGER.exception(
+            "[create_property:copilot] server_create failed name=%r",
+            property_name,
+        )
+        return _create_property_submit_failure_result(
+            accumulated,
+            data,
+            detail=str(exc)[:300],
+            property_name=property_name,
+        )
 
 
 def _handle_create_property_confirmation_turn(
     args: dict,
     pre_session: dict[str, Any],
     user: AuthUser,
+    db: Any,
     *,
     bootstrap_for_turn: bool,
     needs_ui_bootstrap: bool,
@@ -2859,6 +2980,8 @@ def _handle_create_property_confirmation_turn(
         return _create_property_submit_result(
             filled,
             {"filled": filled},
+            user,
+            db,
             bootstrap_for_turn=bootstrap_for_turn,
             needs_ui_bootstrap=needs_ui_bootstrap,
             had_active_session=had_active_session,
@@ -2984,9 +3107,9 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     """Drive the Create Property workflow and create the listing on submit.
 
     While collecting fields we emit FILL_FIELD / OPEN_MODAL actions for the UI.
-    On the final ``submit=true`` call (all required fields present) we create the
-    property server-side and return ``success_message`` so the copilot can confirm
-    success in the very next reply (no dependency on a frontend completion event).
+    When the user confirms Yes (``confirm_create=true``), the server runs the same
+    pipeline as ``POST /properties/stream`` (DB insert, token deploy, inventory, rent)
+    and returns ``success_message`` — no browser form submit required.
     """
     force_ui_bootstrap = bool(args.pop("_force_create_property_bootstrap", False))
     LOGGER.info("[fill_create_property] args=%s", args)
@@ -3050,6 +3173,7 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         args,
         pre_session,
         user,
+        db,
         bootstrap_for_turn=bootstrap_for_turn,
         needs_ui_bootstrap=needs_ui_bootstrap,
         had_active_session=had_active_session,
@@ -3111,6 +3235,8 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         return _create_property_submit_result(
             accumulated,
             data,
+            user,
+            db,
             bootstrap_for_turn=bootstrap_for_turn,
             needs_ui_bootstrap=needs_ui_bootstrap,
             had_active_session=had_active_session,
@@ -3156,8 +3282,8 @@ register(ToolSpec(
         "empty), and `next_field` (the single field to ask about next). "
         "NEVER ask about a field that already appears in `filled`. When "
         "`missing` is empty the server shows a confirmation summary — the user "
-        "must reply Yes before the listing is submitted (pass confirm_create=true "
-        "after Yes). Pass spoken numbers as-is "
+        "must reply Yes before the listing is created (pass confirm_create=true "
+        "after Yes — the server deploys on-chain). Pass spoken numbers as-is "
         "(e.g. 'one lakh tokens', 'USD symbol') — the server normalizes them. "
         "Do not call more tools after a successful submit. Only one property "
         "may be created per chat session; after success, further calls return "

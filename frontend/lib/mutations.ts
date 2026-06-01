@@ -3,6 +3,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, clearSession, getApiBase, getToken } from "./api";
 import { handleCreatePropertyStreamEvent } from "./properties/list-sync";
+import {
+  logCreatePropertyFailure,
+  logCreatePropertyPayload,
+  logCreatePropertyStreamEvent,
+} from "./properties/create-property-debug";
 import { queryKeys } from "./queries";
 import type { Property } from "./types";
 
@@ -66,8 +71,27 @@ export function useCreatePropertyStream() {
       onProgress?: (event: CreatePropertyEvent) => void;
       signal?: AbortSignal;
     }): Promise<Property> => {
+      logCreatePropertyPayload("stream", {
+        name: payload.name,
+        location: payload.location,
+        total_value: payload.total_value,
+        token_supply: payload.token_supply,
+        token_symbol: payload.token_symbol,
+        token_sale_price_eth: payload.token_sale_price_eth,
+        monthly_rent_eth: payload.monthly_rent_eth,
+      });
       const base = getApiBase();
       const token = getToken();
+      const streamTimeoutMs = 10 * 60 * 1000;
+      const timeoutSignal =
+        typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+          ? AbortSignal.timeout(streamTimeoutMs)
+          : undefined;
+      const combinedSignal =
+        signal && timeoutSignal
+          ? AbortSignal.any([signal, timeoutSignal])
+          : signal ?? timeoutSignal;
+
       const res = await fetch(`${base}/properties/stream`, {
         method: "POST",
         headers: {
@@ -76,7 +100,7 @@ export function useCreatePropertyStream() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload),
-        signal,
+        signal: combinedSignal,
       });
       if (!res.ok) {
         if (res.status === 401) {
@@ -90,6 +114,10 @@ export function useCreatePropertyStream() {
         } catch {
           if (errText) detail = errText;
         }
+        logCreatePropertyFailure("stream", new Error(detail), {
+          httpStatus: res.status,
+          responseBody: errText.slice(0, 500),
+        });
         throw new Error(detail);
       }
       const reader = res.body?.getReader();
@@ -116,12 +144,16 @@ export function useCreatePropertyStream() {
             } catch {
               continue;
             }
+            logCreatePropertyStreamEvent(event);
             onProgress?.(event);
             handleCreatePropertyStreamEvent(qc, event);
             if (event.step === "done" && event.property) {
               finalProperty = event.property;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              logCreatePropertyFailure("stream", new Error(finalError), {
+                failedStep: (event as { failed_step?: string }).failed_step,
+              });
             }
           }
         }

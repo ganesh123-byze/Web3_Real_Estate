@@ -188,11 +188,32 @@ def build_and_send_with_retry(tx: dict, max_attempts: int = 3, bump_pct: int = 3
 
 
 def deploy_contract(contract_name: str, constructor_args: list[Any]) -> tuple[str, dict]:
-    abi, bytecode = load_artifact(contract_name)
-    contract = _web3.eth.contract(abi=abi, bytecode=bytecode)
-    tx = contract.constructor(*constructor_args).build_transaction({"from": get_deployer_account().address})
-    receipt = build_and_send(tx)
-    return receipt.contractAddress, receipt
+    deployer = get_deployer_account().address
+    LOGGER.info(
+        "[blockchain:deploy] contract=%s deployer=%s constructor_args=%s",
+        contract_name,
+        deployer,
+        constructor_args,
+    )
+    try:
+        abi, bytecode = load_artifact(contract_name)
+        contract = _web3.eth.contract(abi=abi, bytecode=bytecode)
+        tx = contract.constructor(*constructor_args).build_transaction({"from": deployer})
+        receipt = build_and_send(tx)
+        LOGGER.info(
+            "[blockchain:deploy] success contract=%s address=%s status=%s",
+            contract_name,
+            receipt.contractAddress,
+            receipt.get("status") if hasattr(receipt, "get") else getattr(receipt, "status", None),
+        )
+        return receipt.contractAddress, receipt
+    except Exception:
+        LOGGER.exception(
+            "[blockchain:deploy] failed contract=%s args=%s",
+            contract_name,
+            constructor_args,
+        )
+        raise
 
 
 def get_contract(contract_name: str, address: str):
@@ -384,7 +405,24 @@ def set_whitelist(security_token_address: str, wallet_address: str, approved: bo
 def mint_security_tokens(security_token_address: str, to_address: str, amount: Decimal) -> dict:
     token = get_contract("SecurityToken", security_token_address)
     amount_base = to_base_units(amount, TOKEN_DECIMALS)
-    return send_contract_tx(token, "mint", [to_address, amount_base])
+    LOGGER.info(
+        "[blockchain:mint] token=%s to=%s amount=%s amount_base=%s",
+        security_token_address,
+        to_address,
+        amount,
+        amount_base,
+    )
+    try:
+        receipt = send_contract_tx(token, "mint", [to_address, amount_base])
+        LOGGER.info("[blockchain:mint] success token=%s", security_token_address)
+        return receipt
+    except Exception:
+        LOGGER.exception(
+            "[blockchain:mint] failed token=%s amount_base=%s",
+            security_token_address,
+            amount_base,
+        )
+        raise
 
 
 def transfer_security_tokens(security_token_address: str, to_address: str, amount: Decimal) -> dict:

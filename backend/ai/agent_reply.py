@@ -23,6 +23,8 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("submit_in_flight"):
         return True
+    if data.get("success_message") and data.get("speak_verbatim"):
+        return True
     instruction = str(data.get("instruction") or "").lower()
     return "verbatim" in instruction and "speak_to_user" in instruction
 
