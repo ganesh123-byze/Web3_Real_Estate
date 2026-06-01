@@ -158,16 +158,6 @@ function appendOrUpdateAssistant(messages: AIMessage[], delta: string): AIMessag
   return next;
 }
 
-function withFrontendWorkflowHints(text: string): string {
-  const lower = text.toLowerCase();
-  const isEditRequest =
-    /\b(edit|update|change|modify)\b/.test(lower) && /\b(property|location|name|rent|symbol|price|token)\b/.test(lower);
-  if (!isEditRequest) return text;
-  return `${text}
-
-Frontend workflow instruction: for property edits, update only the fields the user explicitly named. Do not ask for unchanged fields like token price, symbol, token supply, total value, or monthly rent unless the user asked to change them. If the user already gave the target property and new value, return the edit action for only that field.`;
-}
-
 export const useAgentStore = create<AgentStore>((set, get) => ({
   open: false,
   state: "idle",
@@ -202,7 +192,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     if (!clean) return;
     const fromVoice = opts?.fromVoice ?? false;
     const freshSession = opts?.freshSession ?? false;
-    const apiText = withFrontendWorkflowHints(opts?.apiText?.trim() || clean);
+    const apiText = opts?.apiText?.trim() || clean;
 
     stopSpeaking();
     if (freshSession) restartClientSession();
