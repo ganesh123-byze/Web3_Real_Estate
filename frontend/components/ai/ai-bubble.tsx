@@ -94,6 +94,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function getStatePill(state: AIState) {
   if (state === "thinking") return { label: "Thinking" };
+  if (state === "deploying") return { label: "Deploying" };
   if (state === "transcribing") return { label: "Analyzing" };
   if (state === "listening" || state === "recording")
     return { label: "Listening" };
@@ -354,8 +355,9 @@ export function AIBubble() {
   const lastMessages = messages.slice(-40);
   const displayState: AIState = aiSpeaking ? "speaking" : state;
   const pill = getStatePill(displayState);
-  const busy = state === "thinking";
-  const showAgentActivity = state === "thinking" || state === "transcribing";
+  const busy = state === "thinking" || state === "deploying";
+  const showAgentActivity =
+    state === "thinking" || state === "deploying" || state === "transcribing";
   const isSpeaking = aiSpeaking || state === "speaking";
   const isListening = !isSpeaking && (state === "listening" || state === "recording");
   const hasUserConversation = messages.some((m) => m.role === "user");

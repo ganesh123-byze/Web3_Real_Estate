@@ -24,6 +24,7 @@ from backend.api._helpers import (
     lock_property,
     property_needs_token_deployment,
     require_property_token,
+    rent_sync_error_is_non_fatal,
     sync_rent_chain_for_new_property,
     validate_monthly_rent_for_chain,
 )
@@ -185,7 +186,8 @@ def _finalize_step_finalize_inventory(db, property_id: int) -> None:
         cursor.close()
 
 
-def _finalize_step_sync_rent(db, property_id: int) -> None:
+def _finalize_step_sync_rent(db, property_id: int) -> str | None:
+    """Sync rent on-chain. Returns a warning message when sync is skipped (non-fatal)."""
     cursor = db.cursor(dictionary=True)
     try:
         prop = lock_property(cursor, property_id)
@@ -193,29 +195,50 @@ def _finalize_step_sync_rent(db, property_id: int) -> None:
             raise HTTPException(status_code=404, detail="Property not found")
         sync_rent_chain_for_new_property(cursor, prop, property_id)
         db.commit()
-    except HTTPException:
+        return None
+    except HTTPException as exc:
         db.rollback()
+        skip = rent_sync_error_is_non_fatal(exc)
+        if skip:
+            LOGGER.warning(
+                "[create_property:sync_rent] skipped (non-fatal) property_id=%s detail=%s",
+                property_id,
+                skip,
+            )
+            return skip
         raise
     except Exception as exc:
         db.rollback()
-        raise HTTPException(
+        wrapped = HTTPException(
             status_code=500,
             detail=f"Property was saved but setup failed while syncing rent chain: {exc}",
-        ) from exc
+        )
+        skip = rent_sync_error_is_non_fatal(wrapped)
+        if skip:
+            LOGGER.warning(
+                "[create_property:sync_rent] skipped (non-fatal) property_id=%s detail=%s",
+                property_id,
+                skip,
+            )
+            return skip
+        raise wrapped from exc
     finally:
         cursor.close()
 
 
-def _finalize_new_property(db, property_id: int) -> None:
+def _finalize_new_property(db, property_id: int) -> str | None:
     """Run the standard 3-stage finalize pipeline after a property INSERT.
 
     Kept as a single sync entrypoint for the non-streaming POST /properties
     handler. The streaming variant calls each ``_finalize_step_*`` helper
     individually so it can yield SSE progress between stages.
+
+    Returns an optional rent-sync warning when the listing was created but
+    monthly rent could not be set on-chain (same behavior as the stream UI).
     """
     _finalize_step_deploy_token(db, property_id)
     _finalize_step_finalize_inventory(db, property_id)
-    _finalize_step_sync_rent(db, property_id)
+    return _finalize_step_sync_rent(db, property_id)
 
 
 def _property_has_activity(cursor, property_item: dict) -> bool:
@@ -257,7 +280,9 @@ def create_property(
     repairs sale inventory, and syncs rent chain state when monthly rent is set.
     """
     try:
-        return create_property_record(db, user, payload)
+        row = create_property_record(db, user, payload)
+        row.pop("_rent_sync_warning", None)
+        return row
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
@@ -405,19 +430,6 @@ async def create_property_stream(
         # calls are blocking. We yield the *intent* event before kicking
         # off the thread so the UI advances right away, and the *done*
         # event after — which lets the client mark the row as completed.
-        def _rent_sync_skippable(exc: HTTPException) -> str | None:
-            detail = exc.detail
-            if isinstance(detail, dict):
-                if detail.get("code") == "DEPLOYER_CONTRACT_MISMATCH":
-                    return str(detail.get("message") or detail)
-                return None
-            text = str(detail)
-            if "rent amount too high" in text.lower() or "exceeds the on-chain limit" in text.lower():
-                return text
-            if "DEPLOYER_CONTRACT_MISMATCH" in text or "not the owner" in text or "Ownable" in text:
-                return text
-            return None
-
         async def run_stage(
             intent: str,
             completed: str,
@@ -434,7 +446,9 @@ async def create_property_stream(
             try:
                 await asyncio.to_thread(work)
             except HTTPException as exc:
-                skip_msg = _rent_sync_skippable(exc) if allow_rent_sync_skip else None
+                skip_msg = (
+                    rent_sync_error_is_non_fatal(exc) if allow_rent_sync_skip else None
+                )
                 if skip_msg:
                     LOGGER.warning(
                         "[create_property:stream] stage_skipped property_id=%s step=%s detail=%s",

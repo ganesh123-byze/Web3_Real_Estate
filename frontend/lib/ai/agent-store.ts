@@ -287,6 +287,15 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                 streamingText = "";
                 assistantMessage = { ...assistantMessage, content: "" };
                 set({ messages: [...history, assistantMessage] });
+              } else if (event.type === "status") {
+                const statusText = String(event.message || "").trim();
+                if (statusText) {
+                  streamingText = statusText;
+                  assistantMessage = { ...assistantMessage, content: statusText };
+                  const nextState: AIState =
+                    event.phase === "deploying" ? "deploying" : "thinking";
+                  set({ messages: [...history, assistantMessage], state: nextState });
+                }
               } else if (event.type === "token") {
                 const delta = event.content || "";
                 streamingText += delta;
@@ -397,6 +406,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       },
       onStreamReset: () => {
         set({ messages: resetTrailingAssistant(get().messages) });
+      },
+      onStatus: ({ phase, message }) => {
+        const text = (message || "").trim();
+        if (!text) return;
+        set({
+          messages: finalizeAssistantMessage(get().messages, text),
+          state: phase === "deploying" ? "deploying" : get().state,
+        });
       },
       onComplete: ({ reply }) => {
         const text = (reply || "").trim();

@@ -163,6 +163,39 @@ def test_fill_create_prompts_confirmation_when_all_fields_present():
         reset_current_thread_id(token)
 
 
+def test_fill_create_succeeds_with_rent_sync_warning_in_message():
+    """Copilot chat must not fail when rent sync is skipped but the listing exists."""
+    token = set_current_thread_id("test:create:rent-sync-warning")
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        gate = asyncio.run(_fill_create_property(_complete_filled(), _owner(), None))
+        assert gate.data.get("awaiting_create_confirmation") is True
+
+        warning = "Monthly rent exceeds the on-chain limit of 100 ETH."
+        with patch(
+            "backend.ai.tools.create_property_record",
+            return_value={
+                "id": 88,
+                "name": "Mega Estate",
+                "token_address": "0xabc",
+                "_rent_sync_warning": warning,
+            },
+        ):
+            proceed = asyncio.run(
+                _fill_create_property({"confirm_create": True}, _owner(), None)
+            )
+        assert proceed.ok
+        assert proceed.data.get("submitted") is True
+        speak = str(proceed.data.get("speak_to_user") or "")
+        assert "successfully created" in speak.lower()
+        assert "Sync Rent Chain" in speak
+        assert warning in speak
+        assert "Failed to create" not in speak
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
+
+
 def test_fill_create_submits_after_user_confirms_yes():
     token = set_current_thread_id("test:create:confirm-yes")
     msg_token = None

@@ -43,6 +43,7 @@ type SessionState =
   | "recording"
   | "transcribing"
   | "thinking"
+  | "deploying"
   | "speaking"
   | "error";
 
@@ -59,6 +60,8 @@ type Callbacks = {
   onComplete?: (payload: VoiceCompletePayload) => void;
   /** Drop partial LLM text before tool output replaces the turn. */
   onStreamReset?: () => void;
+  /** Interim workflow line (e.g. property deploy in progress). */
+  onStatus?: (payload: { phase?: string; message?: string }) => void;
   onActions?: (actions: any[]) => void;
   onLevel?: (level: number) => void;
   onError?: (msg: string) => void;
@@ -244,6 +247,17 @@ export class VoiceSessionManager {
         case "stream_reset":
           this.callbacks.onStreamReset?.();
           break;
+        case "status": {
+          const statusMsg = typeof data.message === "string" ? data.message.trim() : "";
+          if (statusMsg) {
+            this.callbacks.onStatus?.({
+              phase: data.phase,
+              message: statusMsg,
+            });
+            if (data.phase === "deploying") this.setState("deploying");
+          }
+          break;
+        }
         case "token":
           this.callbacks.onToken(data.text || data.content || "");
           break;

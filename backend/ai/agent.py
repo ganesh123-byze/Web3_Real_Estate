@@ -31,11 +31,12 @@ from backend.ai.agent_reply import (
     pick_verbatim_speak_to_user,
     tool_data_requires_verbatim_reply,
 )
-from backend.ai.tools import try_server_create_property_confirmation
+from backend.ai.create_property_messages import create_property_deploying_message
 from backend.ai.investor_guards import sanitize_investor_wallet_actions
 from backend.ai.prompts import system_prompt_for_role
 from backend.ai.schemas import AgentAction, ChatMessage, ChatResponse, InterruptResponse
 from backend.ai.tools import (
+    create_property_pending_name,
     dispatch,
     invest_workflow_session,
     openai_tool_schemas,
@@ -44,6 +45,7 @@ from backend.ai.tools import (
     reset_current_thread_id,
     set_current_messages,
     set_current_thread_id,
+    try_server_create_property_confirmation,
 )
 from backend.services.auth import AuthUser, canonical_role
 
@@ -623,12 +625,16 @@ async def stream_agent(
                 name = event.get("name", "")
                 tool_input = (event.get("data") or {}).get("input") or {}
                 if name == "fill_create_property" and tool_input.get("confirm_create"):
-                    status = (
-                        "Creating your property now — deploying the token and setting up "
-                        "rent on-chain. This may take a minute…"
+                    pname = (
+                        str(tool_input.get("name") or "").strip()
+                        or create_property_pending_name()
                     )
-                    streamed_reply_chars += len(status)
-                    yield {"type": "token", "content": status}
+                    deploy_msg = create_property_deploying_message(pname or None)
+                    yield {
+                        "type": "status",
+                        "phase": "deploying",
+                        "message": deploy_msg,
+                    }
                 yield {
                     "type": "tool_start",
                     "name": name,

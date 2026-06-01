@@ -157,9 +157,12 @@ def create_property_record(db, user: "AuthUser", payload: PropertyCreate) -> dic
             if property_needs_token_deployment(existing_property):
                 property_id = int(existing_property["id"])
                 db.commit()
-                _finalize_new_property(db, property_id)
+                rent_sync_warning = _finalize_new_property(db, property_id)
                 cursor.execute("SELECT * FROM properties WHERE id = %s", (property_id,))
-                return enrich_property_with_supply(cursor, cursor.fetchone(), viewer=user)
+                row = enrich_property_with_supply(cursor, cursor.fetchone(), viewer=user)
+                if rent_sync_warning:
+                    row["_rent_sync_warning"] = rent_sync_warning
+                return row
             return enrich_property_with_supply(cursor, existing_property, viewer=user)
 
         cursor.execute(
@@ -180,9 +183,12 @@ def create_property_record(db, user: "AuthUser", payload: PropertyCreate) -> dic
         )
         property_id = int(cursor.fetchone()["id"])
         db.commit()
-        _finalize_new_property(db, property_id)
+        rent_sync_warning = _finalize_new_property(db, property_id)
         cursor.execute("SELECT * FROM properties WHERE id = %s", (property_id,))
-        return enrich_property_with_supply(cursor, cursor.fetchone(), viewer=user)
+        row = enrich_property_with_supply(cursor, cursor.fetchone(), viewer=user)
+        if rent_sync_warning:
+            row["_rent_sync_warning"] = rent_sync_warning
+        return row
     except HTTPException:
         db.rollback()
         raise
@@ -782,6 +788,28 @@ def sync_investors_to_contract(cursor, property_id: int) -> list[str]:
     if new_investors:
         add_investors_to_rent(property_id, new_investors)
     return new_investors
+
+
+def rent_sync_error_is_non_fatal(exc: HTTPException) -> str | None:
+    """User-facing reason to continue create-property when rent sync cannot complete.
+
+    Matches the streaming create UI: token deploy and inventory still succeed;
+    the owner can sync rent later from the property card.
+    """
+    detail = exc.detail
+    if isinstance(detail, dict):
+        if detail.get("code") == "DEPLOYER_CONTRACT_MISMATCH":
+            return str(detail.get("message") or detail)
+        return None
+    text = str(detail)
+    lower = text.lower()
+    if "rent amount too high" in lower or "exceeds the on-chain limit" in lower:
+        return text
+    if "property was saved but setup failed while syncing rent chain" in lower:
+        return text
+    if "DEPLOYER_CONTRACT_MISMATCH" in text or "not the owner" in text or "Ownable" in text:
+        return text
+    return None
 
 
 def _rent_amount_too_high_http_exception(exc: Exception) -> HTTPException | None:

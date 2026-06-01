@@ -2478,11 +2478,20 @@ def _property_create_payload_from_accumulated(accumulated: dict) -> PropertyCrea
     )
 
 
-def _create_property_success_message(name: str) -> str:
-    clean = (name or "").strip()
-    if clean:
-        return f"Property '{clean}' created successfully."
-    return "Property created successfully."
+def create_property_pending_name() -> str:
+    """Property name from the in-flight create workflow session (for status messages)."""
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    return str((session.get("filled") or {}).get("name") or "").strip()
+
+
+def _create_property_success_message(
+    name: str,
+    *,
+    rent_sync_warning: str | None = None,
+) -> str:
+    from backend.ai.create_property_messages import create_property_success_message
+
+    return create_property_success_message(name, rent_sync_warning=rent_sync_warning)
 
 
 def _create_property_args_change_fields(
@@ -2864,7 +2873,11 @@ def _create_property_submit_result(
         )
         row = create_property_record(db, user, payload)
         pid = int(row["id"])
-        success = _create_property_success_message(property_name)
+        rent_sync_warning = str(row.pop("_rent_sync_warning", "") or "").strip() or None
+        success = _create_property_success_message(
+            property_name,
+            rent_sync_warning=rent_sync_warning,
+        )
         _mark_create_property_completed(property_name)
         _set_workflow_session(
             _CREATE_PROPERTY_MODAL,
