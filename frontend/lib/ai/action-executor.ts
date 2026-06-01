@@ -8,6 +8,13 @@ import {
   syncCreatePropertyStreamEvent,
 } from "@/lib/properties/list-sync";
 import { getRegisteredQueryClient } from "@/lib/query-client-holder";
+import {
+  logCreatePropertyFailure,
+  logCreatePropertyPayload,
+  logCreatePropertyStreamEvent,
+} from "@/lib/properties/create-property-debug";
+import { queryKeys } from "@/lib/queries";
+import { tokenSalePriceEthForPayload } from "@/components/properties/property-form-shared";
 import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -19,6 +26,7 @@ const ACTION_EVENT = "estatechain:ai-action";
 const COMPLETION_EVENT = "estatechain:ai-completion";
 const PENDING_TTL = 8000;
 const CREATE_PROPERTY_MODAL = "CREATE_PROPERTY";
+const EDIT_PROPERTY_MODAL = "EDIT_PROPERTY";
 export const CREATE_PROPERTY_CHAT_ONLY_EVENT = "estatechain:create-property-chat-only";
 
 export type AICompletionStatus = "success" | "error";
@@ -36,6 +44,7 @@ type PendingOpen = {
 
 const pendingModalOpens = new Map<string, PendingOpen>();
 const workflowFormValues = new Map<string, Record<string, string>>();
+const workflowPropertyIds = new Map<string, number | string>();
 
 declare global {
   interface Window {
@@ -54,6 +63,9 @@ function rememberPendingOpen(action: AIAction) {
 
 function rememberPendingAction(action: AIAction) {
   if (!action.modal) return;
+  if (action.property_id !== undefined && action.property_id !== null) {
+    workflowPropertyIds.set(action.modal, action.property_id);
+  }
   window.__estatechainPendingModalActions ??= {};
   const queued = window.__estatechainPendingModalActions[action.modal] ?? [];
   queued.push({ action, expiresAt: nowMs() + PENDING_TTL });
@@ -110,6 +122,7 @@ export function clearPendingModalQueues(modal: string) {
 export function clearPendingModalActions(modal: string) {
   clearPendingModalQueues(modal);
   workflowFormValues.delete(modal);
+  workflowPropertyIds.delete(modal);
 }
 
 /**
@@ -144,6 +157,12 @@ function enterCreatePropertyChatOnlyMode() {
   if (typeof window === "undefined") return;
   clearPendingModalQueues(CREATE_PROPERTY_MODAL);
   window.dispatchEvent(new CustomEvent(CREATE_PROPERTY_CHAT_ONLY_EVENT));
+  focusChatInput();
+}
+
+function enterEditPropertyChatOnlyMode() {
+  if (typeof window === "undefined") return;
+  clearPendingModalQueues(EDIT_PROPERTY_MODAL);
   focusChatInput();
 }
 
@@ -290,13 +309,6 @@ async function clickWorkflowSubmitVisibly(modal: string): Promise<boolean> {
   return true;
 }
 
-function calculateTokenPriceEth(totalValue: string | undefined, tokenSupply: string | undefined): string {
-  const total = Number(totalValue ?? 0);
-  const supply = Number(tokenSupply ?? 0);
-  if (!Number.isFinite(total) || !Number.isFinite(supply) || total <= 0 || supply <= 0) return "";
-  return String(total / supply);
-}
-
 async function submitCreatePropertyFromChat(
   formValuesOverride?: Record<string, string>,
 ): Promise<boolean> {
@@ -320,7 +332,7 @@ async function submitCreatePropertyFromChat(
     total_value: String(values.total_value).trim(),
     token_supply: String(values.token_supply).trim(),
     token_symbol: String(values.token_symbol).trim(),
-    token_sale_price_eth: calculateTokenPriceEth(values.total_value, values.token_supply),
+    token_sale_price_eth: tokenSalePriceEthForPayload(values.total_value, values.token_supply),
     monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
     images: [] as string[],
   };
@@ -334,6 +346,8 @@ async function submitCreatePropertyFromChat(
     ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
   });
 
+  logCreatePropertyPayload("chat", payload);
+
   const queryClient = getRegisteredQueryClient();
   markPropertyCreationStarted(queryClient, payload.name);
   let finalPropertyName = payload.name;
@@ -342,6 +356,12 @@ async function submitCreatePropertyFromChat(
   try {
     const base = getApiBase();
     const token = getToken();
+    const streamTimeoutMs = 10 * 60 * 1000;
+    const timeoutSignal =
+      typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+        ? AbortSignal.timeout(streamTimeoutMs)
+        : undefined;
+
     const res = await fetch(`${base}/properties/stream`, {
       method: "POST",
       headers: {
@@ -350,6 +370,7 @@ async function submitCreatePropertyFromChat(
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(payload),
+      signal: timeoutSignal,
     });
 
     if (!res.ok) {
@@ -362,6 +383,10 @@ async function submitCreatePropertyFromChat(
       } catch {
         if (errText) detail = errText;
       }
+      logCreatePropertyFailure("chat", new Error(detail), {
+        httpStatus: res.status,
+        responseBody: errText.slice(0, 500),
+      });
       throw new Error(detail);
     }
 
@@ -372,6 +397,7 @@ async function submitCreatePropertyFromChat(
     let sseBuffer = "";
     let finalError: string | null = null;
     let streamComplete = false;
+    let lastFailedStep: string | undefined;
 
     while (!streamComplete) {
       const { done, value } = await reader.read();
@@ -391,7 +417,9 @@ async function submitCreatePropertyFromChat(
               property?: Property;
               property_id?: number;
               detail?: string;
+              failed_step?: string;
             };
+            logCreatePropertyStreamEvent(event);
             const eventPropertyId = event.property?.id ?? event.property_id;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
@@ -400,6 +428,7 @@ async function submitCreatePropertyFromChat(
               streamComplete = true;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              lastFailedStep = event.failed_step;
               syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (eventPropertyId) {
@@ -419,7 +448,10 @@ async function submitCreatePropertyFromChat(
         /* stream already closed */
       });
     }
-    if (finalError) throw new Error(finalError);
+    if (finalError) {
+      logCreatePropertyFailure("chat", new Error(finalError), { failedStep: lastFailedStep });
+      throw new Error(finalError);
+    }
     clearPendingModalActions(CREATE_PROPERTY_MODAL);
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
@@ -432,6 +464,10 @@ async function submitCreatePropertyFromChat(
     focusChatInput();
     return true;
   } catch (err: any) {
+    logCreatePropertyFailure("chat", err, {
+      propertyName: finalPropertyName || payload.name,
+      propertyId: completedPropertyId,
+    });
     markPropertyCreationFailed(
       queryClient,
       completedPropertyId,
@@ -448,13 +484,137 @@ async function submitCreatePropertyFromChat(
   }
 }
 
+function valueFromEditField(
+  values: Record<string, string>,
+  field: string,
+  fallback: string | number | null | undefined,
+) {
+  if (Object.prototype.hasOwnProperty.call(values, field)) {
+    return String(values[field] ?? "").trim();
+  }
+  return fallback == null ? "" : String(fallback);
+}
+
+async function fetchProperty(propertyId: number | string): Promise<Property> {
+  const cached = getRegisteredQueryClient()
+    ?.getQueryData<Property[]>(queryKeys.properties)
+    ?.find((property) => String(property.id) === String(propertyId));
+  if (cached) return cached;
+
+  const base = getApiBase();
+  const token = getToken();
+  const res = await fetch(`${base}/properties/${propertyId}`, {
+    headers: {
+      Accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) clearSession();
+    throw new Error(res.status === 404 ? "Property not found." : `HTTP ${res.status}`);
+  }
+  return (await res.json()) as Property;
+}
+
+async function submitEditPropertyFromChat(
+  formValuesOverride?: Record<string, string>,
+): Promise<boolean> {
+  const propertyId = workflowPropertyIds.get(EDIT_PROPERTY_MODAL);
+  if (propertyId == null) {
+    emitCompletion({
+      modal: EDIT_PROPERTY_MODAL,
+      status: "error",
+      message: "I couldn't identify which property to edit. Please include the property name again.",
+    });
+    focusChatInput();
+    return false;
+  }
+
+  const stored = workflowFormValues.get(EDIT_PROPERTY_MODAL) ?? {};
+  const values = { ...stored, ...(formValuesOverride ?? {}) };
+
+  try {
+    const property = await fetchProperty(propertyId);
+    const totalValue = valueFromEditField(values, "total_value", property.total_value);
+    const tokenSupply = valueFromEditField(values, "token_supply", property.token_supply);
+    const tokenSalePrice = property.token_address
+      ? String(property.token_sale_price_eth ?? "")
+      : tokenSalePriceEthForPayload(String(totalValue), String(tokenSupply));
+    const payload = {
+      name: valueFromEditField(values, "name", property.name),
+      location: valueFromEditField(values, "location", property.location),
+      total_value: totalValue,
+      token_supply: tokenSupply,
+      token_symbol: valueFromEditField(values, "token_symbol", property.token_symbol),
+      token_sale_price_eth: tokenSalePrice,
+      monthly_rent_eth: Object.prototype.hasOwnProperty.call(values, "monthly_rent_eth")
+        ? String(values.monthly_rent_eth ?? "").trim() || null
+        : property.monthly_rent_eth ?? null,
+      images: property.images ?? [],
+    };
+
+    const base = getApiBase();
+    const token = getToken();
+    const res = await fetch(`${base}/properties/${property.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) clearSession();
+      const errText = await res.text().catch(() => "");
+      let detail = res.status === 401 ? "Session expired. Please log in again." : `HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed?.detail && res.status !== 401) detail = String(parsed.detail);
+      } catch {
+        if (errText) detail = errText;
+      }
+      throw new Error(detail);
+    }
+
+    const updated = (await res.json()) as Property;
+    const queryClient = getRegisteredQueryClient();
+    queryClient?.setQueryData<Property[]>(queryKeys.properties, (current) =>
+      (current ?? []).map((property) => (property.id === updated.id ? updated : property)),
+    );
+    void queryClient?.invalidateQueries({ queryKey: queryKeys.properties });
+    void queryClient?.invalidateQueries({ queryKey: queryKeys.property(updated.id) });
+    clearPendingModalActions(EDIT_PROPERTY_MODAL);
+    emitCompletion({
+      modal: EDIT_PROPERTY_MODAL,
+      status: "success",
+      message: `Property "${updated.name}" updated successfully.`,
+    });
+    notifyAIDataChanged();
+    focusChatInput();
+    return true;
+  } catch (err: any) {
+    emitCompletion({
+      modal: EDIT_PROPERTY_MODAL,
+      status: "error",
+      message: err?.message || "Failed to update property.",
+    });
+    focusChatInput();
+    return false;
+  }
+}
+
 /** Execute a single UI action. */
 export async function executeAction(
   action: AIAction,
   router: { push: (href: string) => void },
-  opts?: { createPropertyChatOnly?: boolean },
+  opts?: { createPropertyChatOnly?: boolean; editPropertyChatOnly?: boolean },
 ) {
   console.log("[AI Action] Executing:", action.type, action);
+  if (action.modal && action.property_id !== undefined && action.property_id !== null) {
+    workflowPropertyIds.set(action.modal, action.property_id);
+  }
   if (opts?.createPropertyChatOnly) {
     if (action.type === "NAVIGATE") {
       enterCreatePropertyChatOnlyMode();
@@ -478,6 +638,28 @@ export async function executeAction(
         notifyAIDataChanged();
         return;
       }
+    }
+  }
+  if (opts?.editPropertyChatOnly && action.type === "NAVIGATE") {
+    enterEditPropertyChatOnlyMode();
+    return;
+  }
+  if (opts?.editPropertyChatOnly && action.modal === EDIT_PROPERTY_MODAL) {
+    if (action.type === "OPEN_MODAL" || action.type === "FOCUS_FIELD") {
+      enterEditPropertyChatOnlyMode();
+      return;
+    }
+    if (action.type === "FILL_FIELD" && action.field) {
+      const values = workflowFormValues.get(EDIT_PROPERTY_MODAL) ?? {};
+      values[action.field] = String(action.value ?? "");
+      workflowFormValues.set(EDIT_PROPERTY_MODAL, values);
+      enterEditPropertyChatOnlyMode();
+      return;
+    }
+    if (action.type === "SUBMIT_FORM") {
+      enterEditPropertyChatOnlyMode();
+      await submitEditPropertyFromChat(action.form_values ?? undefined);
+      return;
     }
   }
   if (action.type === "NAVIGATE" && action.route) {
@@ -555,8 +737,18 @@ export async function executeAction(
 
 export async function executeActions(actions: AIAction[], router: { push: (href: string) => void }) {
   const createPropertyChatOnly = actions.some((action) => action.modal === CREATE_PROPERTY_MODAL);
+  const editPropertyChatOnly = actions.some((action) => action.modal === EDIT_PROPERTY_MODAL);
+  const hasEditFieldChanges = actions.some(
+    (action) => action.modal === EDIT_PROPERTY_MODAL && action.type === "FILL_FIELD" && !!action.field,
+  );
+  const hasEditSubmit = actions.some(
+    (action) => action.modal === EDIT_PROPERTY_MODAL && action.type === "SUBMIT_FORM",
+  );
   for (const action of actions) {
-    await executeAction(action, router, { createPropertyChatOnly });
+    await executeAction(action, router, { createPropertyChatOnly, editPropertyChatOnly });
+  }
+  if (editPropertyChatOnly && hasEditFieldChanges && !hasEditSubmit) {
+    await submitEditPropertyFromChat();
   }
 }
 
