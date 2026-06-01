@@ -40,10 +40,12 @@ const FEATURE_GRID = [
 export default function LandingPage() {
   const router = useRouter();
   const [view, setView] = useState<"connect" | "register" | "redirect">("connect");
+  const [authIntent, setAuthIntent] = useState<"signin" | "signup">("signin");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingWallet, setPendingWallet] = useState<string | null>(null);
   const [role, setRole] = useState<Role | null>(null);
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
 
   useEffect(() => {
@@ -53,13 +55,14 @@ export default function LandingPage() {
     }
   }, [router]);
 
-  async function handleConnect() {
+  async function handleConnect(intent: "signin" | "signup" = "signin") {
+    setAuthIntent(intent);
     setError(null);
     setBusy(true);
     try {
       const result = await signIn();
       if (result.status === "authenticated") {
-        toast.success("Signed in.");
+        toast.success(intent === "signup" ? "Wallet already registered. Signed in." : "Signed in.");
         setView("redirect");
         router.push(`/${result.session.user.role}`);
       } else {
@@ -77,13 +80,14 @@ export default function LandingPage() {
   }
 
   async function handleRegister() {
-    if (!pendingWallet || !role) return;
+    if (!pendingWallet || !role || !fullName.trim()) return;
     setError(null);
     setBusy(true);
     try {
       const session = await registerWallet({
         walletAddress: pendingWallet,
         role,
+        fullName: fullName.trim(),
         email: email.trim() || null,
       });
       toast.success("Account created.");
@@ -147,7 +151,7 @@ export default function LandingPage() {
 
           <div className="mt-7 grid max-w-xl gap-2.5 sm:grid-cols-2">
             {FEATURE_GRID.map((feature) => (
-              <div key={feature.label} className="rounded-xl border border-border/70 bg-card/60 px-3 py-2.5 shadow-sm backdrop-blur">
+              <div key={feature.label} className="rounded-xl border border-border/70 bg-card/60 px-3 py-2.5 shadow-none backdrop-blur transition-shadow hover:shadow-sm">
                 <div className="flex items-center gap-2.5">
                   <feature.icon className="h-4 w-4 text-primary" />
                   <span className="text-sm font-medium">{feature.label}</span>
@@ -161,19 +165,33 @@ export default function LandingPage() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.05 }}
-          className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/80 p-6 shadow-2xl shadow-primary/5 backdrop-blur"
+          className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/80 p-6 shadow-[0_12px_35px_-28px_hsl(var(--primary)/0.5)] backdrop-blur transition-shadow hover:shadow-[0_24px_70px_-45px_hsl(var(--primary)/0.55)]"
         >
           {view === "connect" && (
             <div className="relative flex flex-col gap-4">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight">Sign in with your wallet</h2>
+                <h2 className="text-2xl font-semibold tracking-tight">
+                  {authIntent === "signup" ? "Sign up with your wallet" : "Sign in with your wallet"}
+                </h2>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  We use a MetaMask signature as your identity. No passwords, no gas.
+                  {authIntent === "signup"
+                    ? "New users continue with MetaMask, then add full name and role details."
+                    : "We use a MetaMask signature as your identity. No passwords, no gas."}
                 </p>
               </div>
-              <Button onClick={handleConnect} disabled={busy} size="lg" className="h-12 gap-2 rounded-2xl">
+              <Button onClick={() => handleConnect("signin")} disabled={busy} size="lg" className="h-12 gap-2 rounded-2xl">
                 <MetaMaskIcon size={18} />
-                {busy ? "Awaiting signature…" : "Connect with MetaMask"}
+                {busy ? "Awaiting signature…" : "Login with MetaMask"}
+              </Button>
+              <Button
+                onClick={() => handleConnect("signup")}
+                disabled={busy}
+                size="lg"
+                variant="outline"
+                className="h-12 gap-2 rounded-2xl bg-background/50"
+              >
+                <MetaMaskIcon size={18} />
+                {busy ? "Awaiting signature…" : "Sign up with MetaMask"}
               </Button>
               {error && (
                 <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -195,13 +213,24 @@ export default function LandingPage() {
                   <Sparkles className="h-3.5 w-3.5" />
                   Account setup
                 </span>
-                <h2 className="mt-4 text-2xl font-semibold tracking-tight">Choose your workspace</h2>
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight">Sign up with your wallet</h2>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Pick how you'll use the platform. This choice is bound to your wallet.
+                  Add your full name and choose how you'll use the platform. This choice is bound to your wallet.
                 </p>
               </div>
               <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3 font-mono text-xs">
                 {shortAddress(pendingWallet, 8, 6)}
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="full-name">Full name</Label>
+                <Input
+                  id="full-name"
+                  required
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="Andrew Wilson"
+                  className="h-11 rounded-2xl"
+                />
               </div>
               <div className="flex flex-col gap-2">
                 {ROLE_OPTIONS.map((opt) => {
@@ -214,7 +243,7 @@ export default function LandingPage() {
                       className={cn(
                         "flex flex-col gap-1 rounded-2xl border px-4 py-3 text-left transition-all",
                         active
-                          ? "border-primary bg-primary/10 shadow-lg shadow-primary/10"
+                          ? "border-primary bg-primary/10 shadow-[0_6px_18px_-14px_hsl(var(--primary)/0.45)]"
                           : "border-border/70 bg-background/40 hover:border-primary/30 hover:bg-muted/60",
                       )}
                     >
@@ -236,8 +265,8 @@ export default function LandingPage() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <Button onClick={handleRegister} disabled={busy || !role} size="lg" className="h-12 rounded-2xl">
-                  {busy ? "Signing…" : "Create Account"}
+                <Button onClick={handleRegister} disabled={busy || !role || !fullName.trim()} size="lg" className="h-12 rounded-2xl">
+                  {busy ? "Signing…" : "Sign up with MetaMask"}
                   {!busy && <ArrowRight className="h-4 w-4" />}
                 </Button>
                 <Button
@@ -246,6 +275,7 @@ export default function LandingPage() {
                   onClick={() => {
                     setPendingWallet(null);
                     setRole(null);
+                    setFullName("");
                     setError(null);
                     setView("connect");
                   }}

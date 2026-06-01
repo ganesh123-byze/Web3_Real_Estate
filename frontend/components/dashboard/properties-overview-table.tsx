@@ -1,42 +1,29 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
 import { Building2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
 import { cn, formatNumber, shortAddress } from "@/lib/utils";
-import type { Property } from "@/lib/types";
+import type { OwnerInvestor, Property } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
-
-type PreviewBreakdownItem = {
-  investor: string;
-  payout_wei: number;
-  payout_eth: string;
-  ownership_bps: number;
-  ownership_pct: number;
-};
-
-type PreviewResponse = {
-  property_id: number;
-  property_name: string;
-  monthly_rent_wei: string;
-  investor_count: number;
-  breakdown: PreviewBreakdownItem[];
-};
+import { propertyOwnershipFor, type PropertyOwnershipItem } from "@/lib/ownership";
 
 export function PropertiesOverviewTable({
   properties,
   loading,
   onSelectProperty,
   selectedId,
+  ownerInvestors,
+  investorsLoading,
 }: {
   properties: Property[];
   loading?: boolean;
   onSelectProperty?: (p: Property) => void;
   selectedId?: number | null;
+  ownerInvestors?: OwnerInvestor[];
+  investorsLoading?: boolean;
 }) {
   const [search, setSearch] = useState("");
 
@@ -48,18 +35,8 @@ export function PropertiesOverviewTable({
     );
   }, [properties, search]);
 
-  const previewQueries = useQueries({
-    queries: filtered.map((p) => ({
-      queryKey: ["preview-distribution", p.id],
-      queryFn: () => api.get<PreviewResponse>(`/tenant/preview-distribution/${p.id}`),
-      enabled: !!p.token_address && !!p.rent_enabled && Number(p.monthly_rent_eth ?? 0) > 0,
-      retry: false,
-      refetchInterval: 20_000,
-    })),
-  });
-
   return (
-    <div className="h-full overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-sm backdrop-blur-2xl">
+    <div className="h-full overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-none backdrop-blur-2xl transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border/60 p-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-2">
           <div className="grid h-8 w-8 place-items-center rounded-xl bg-primary/10 text-primary">
@@ -107,8 +84,8 @@ export function PropertiesOverviewTable({
                 </div>
               )
               : filtered.map((p, idx) => {
-              const breakdown = previewQueries[idx]?.data?.breakdown;
-              const investorCount = breakdown?.length ?? 0;
+              const ownership = propertyOwnershipFor(ownerInvestors, p.id);
+              const investorCount = ownership.length;
               const soldPct = Number(p.sold_percentage ?? 0);
               const tokensSold = Number(p.tokens_sold ?? 0);
               const tokensTotal = Number(p.token_supply ?? 0);
@@ -150,10 +127,9 @@ export function PropertiesOverviewTable({
                   </span>
                   <span className="text-left">
                     <InvestorAvatars
-                      breakdown={breakdown}
-                      isLoading={previewQueries[idx]?.isLoading && !!p.token_address}
+                      ownership={ownership}
+                      isLoading={investorsLoading && !!p.token_address}
                       hasToken={!!p.token_address}
-                      hasRent={Number(p.monthly_rent_eth ?? 0) > 0}
                       count={investorCount}
                     />
                   </span>
@@ -167,16 +143,14 @@ export function PropertiesOverviewTable({
 }
 
 function InvestorAvatars({
-  breakdown,
+  ownership,
   isLoading,
   hasToken,
-  hasRent,
   count,
 }: {
-  breakdown?: PreviewBreakdownItem[];
+  ownership: PropertyOwnershipItem[];
   isLoading?: boolean;
   hasToken: boolean;
-  hasRent: boolean;
   count: number;
 }) {
   if (isLoading) return <Skeleton className="mx-auto h-5 w-6" />;
@@ -192,17 +166,17 @@ function InvestorAvatars({
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Investors
           </div>
-          {!hasToken || !breakdown || breakdown.length === 0 ? (
+          {!hasToken || ownership.length === 0 ? (
             <div className="text-[11px] text-muted-foreground">
-              {!hasToken ? "No token deployed yet." : hasRent ? "No investors yet." : "Set rent to view investors."}
+              {!hasToken ? "No token deployed yet." : "No investors yet."}
             </div>
           ) : (
           <div className="max-h-44 space-y-1.5 overflow-y-auto pr-1 scrollbar-thin">
-            {breakdown.map((item) => (
+            {ownership.map((item) => (
               <div key={item.investor} className="flex items-center justify-between gap-3">
                 <span className="truncate font-mono text-[11px]">{shortAddress(item.investor, 6, 4)}</span>
                 <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                  {item.ownership_pct.toFixed(2)}%
+                  {item.share_pct.toFixed(2)}%
                 </span>
               </div>
             ))}

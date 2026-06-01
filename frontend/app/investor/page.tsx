@@ -60,7 +60,7 @@ export default function InvestorDashboardPage() {
         subtitle="Your holdings, yield, wallet health, and latest on-chain activity"
       />
       <main className="flex-1 space-y-4 p-4 lg:p-6">
-        <section className="grid grid-cols-2 gap-1.5">
+        <section className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <InvestorKpiCard
             title="Tokens Held"
             value={formatNumber(metrics.totalTokens, 4)}

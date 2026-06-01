@@ -21,9 +21,17 @@ import {
 import { useTenantActiveRentals, useTenantPayments, useTenantProperties, useWalletBalances } from "@/lib/queries";
 import { formatDateTime, formatEth, shortAddress } from "@/lib/utils";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 
 export default function TenantDashboardPage() {
   const wallet = useCurrentWallet();
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
+      ? identityDisplayName(sessionIdentity, wallet)
+      : wallet
+        ? shortAddress(wallet, 4, 4).replace("…", "...")
+        : "Wallet not connected";
   const properties = useTenantProperties(wallet);
   const payments = useTenantPayments(wallet);
   const rentals = useTenantActiveRentals(wallet);
@@ -65,7 +73,7 @@ export default function TenantDashboardPage() {
             icon={Wallet}
             title="Available Balance"
             value={balances.isLoading ? "" : formatEth(balances.data?.native?.balance ?? "0", { digits: 4 })}
-            sub={wallet ? shortAddress(wallet, 4, 4).replace("…", "...") : "Wallet not connected"}
+            sub={walletLabel}
             loading={balances.isLoading}
             accent="cyan"
             graph="line"

@@ -37,6 +37,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty";
 import { txExplorerUrl } from "@/lib/runtime-config";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { cn, formatDateTime, shortAddress } from "@/lib/utils";
 import type { Transaction } from "@/lib/types";
 
@@ -85,6 +86,7 @@ export function TransactionsTable({
   const [typeFilter, setTypeFilter] = useState(ALL_TYPES);
   const [propertyFilter, setPropertyFilter] = useState(ALL_PROPERTIES);
   const [active, setActive] = useState<Transaction | null>(null);
+  const sessionIdentity = currentSessionIdentity();
 
   const typeOptions = useMemo(() => {
     const grouped = new Map<string, { value: string; label: string; types: Set<string> }>();
@@ -213,6 +215,12 @@ export function TransactionsTable({
             visible.map((t) => {
               const meta = TYPE_META[t.type] || TYPE_META.default;
               const Icon = meta.icon;
+              const walletLabel =
+                t.wallet_address && sessionIdentity?.wallet_address?.toLowerCase() === t.wallet_address.toLowerCase()
+                  ? identityDisplayName(sessionIdentity, t.wallet_address)
+                  : t.wallet_address
+                    ? shortAddress(t.wallet_address, 6, 4)
+                    : "—";
               return (
                 <TableRow
                   key={t.id ?? t.tx_hash}
@@ -232,8 +240,8 @@ export function TransactionsTable({
                       {t.property_name || (t.property_id ? `#${t.property_id}` : "—")}
                     </span>
                   </TableCell>
-                  <TableCell className="font-mono text-sm">
-                    {t.wallet_address ? shortAddress(t.wallet_address, 6, 4) : "—"}
+                  <TableCell className="text-sm">
+                    {walletLabel}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     <span className="text-sm font-medium">{t.display_amount}</span>
@@ -333,7 +341,13 @@ function TransactionDialog({ tx, onClose }: { tx: Transaction | null; onClose: (
   if (!tx) return null;
   const meta = TYPE_META[tx.type] || TYPE_META.default;
   const Icon = meta.icon;
-  const walletLabel = tx.wallet_address ? shortAddress(tx.wallet_address, 6, 4) : "—";
+  const sessionIdentity = currentSessionIdentity();
+  const walletLabel =
+    tx.wallet_address && sessionIdentity?.wallet_address?.toLowerCase() === tx.wallet_address.toLowerCase()
+      ? identityDisplayName(sessionIdentity, tx.wallet_address)
+      : tx.wallet_address
+        ? shortAddress(tx.wallet_address, 6, 4)
+        : "—";
 
   return (
     <Dialog open onOpenChange={(o) => (!o ? onClose() : null)}>
@@ -371,7 +385,6 @@ function TransactionDialog({ tx, onClose }: { tx: Transaction | null; onClose: (
           <DetailField
             label="Wallet"
             value={walletLabel}
-            mono
             title={tx.wallet_address || undefined}
           />
           <DetailField label="Block" value={tx.block_number ?? "—"} />

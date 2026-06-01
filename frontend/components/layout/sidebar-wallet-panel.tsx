@@ -5,9 +5,11 @@ import { MetaMaskIcon } from "@/components/icons/metamask";
 import { Button } from "@/components/ui/button";
 import { getSession, type SessionRecord } from "@/lib/api";
 import { logout } from "@/lib/auth";
+import { cacheEnsName, identityDisplayId, identityDisplayName } from "@/lib/identity";
 
 export function SidebarWalletPanel() {
   const [session, setSession] = useState<SessionRecord | null>(null);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setSession(getSession());
@@ -20,34 +22,47 @@ export function SidebarWalletPanel() {
     };
   }, []);
 
-  const accountLabel =
-    (session?.user as (SessionRecord["user"] & { name?: string | null; full_name?: string | null }) | undefined)
-      ?.name?.trim() ||
-    (session?.user as (SessionRecord["user"] & { name?: string | null; full_name?: string | null }) | undefined)
-      ?.full_name?.trim() ||
-    session?.user?.email?.trim() ||
-    "MetaMask account";
+  useEffect(() => {
+    void cacheEnsName(session?.user?.wallet_address).then((ens) => {
+      if (ens) setSession(getSession());
+    });
+  }, [session?.user?.wallet_address]);
+
+  const accountLabel = identityDisplayName(session?.user);
+  const accountId = identityDisplayId(session?.user);
+  const showAccountId = accountId && accountId !== accountLabel;
 
   return (
-    <div className="mt-auto rounded-2xl border border-border/70 bg-background/70 p-3 shadow-sm">
-      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-        <MetaMaskIcon size={15} />
-        MetaMask
-      </div>
+    <div className="mt-auto rounded-2xl border border-border/70 bg-background/70 p-2 shadow-none transition-shadow hover:shadow-sm">
       {session ? (
         <>
-          <div className="mt-2 truncate text-xs font-medium text-foreground" title={accountLabel}>
-            {accountLabel}
-          </div>
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="sm"
-            className="mt-3 w-full justify-center rounded-xl"
-            onClick={() => logout()}
+            className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60"
+            onClick={() => setOpen((value) => !value)}
+            aria-expanded={open}
           >
-            Logout with MetaMask
-          </Button>
+            <MetaMaskIcon size={18} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground" title={accountLabel}>
+                {accountLabel}
+              </span>
+              {showAccountId ? (
+                <span className="block truncate text-[11px] text-muted-foreground">{accountId}</span>
+              ) : null}
+            </span>
+          </button>
+          {open ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2 w-full justify-center rounded-xl"
+              onClick={() => logout()}
+            >
+              Logout with MetaMask
+            </Button>
+          ) : null}
         </>
       ) : (
         <Button asChild size="sm" className="mt-3 w-full justify-center rounded-xl">

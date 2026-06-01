@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { logout } from "@/lib/auth";
 import { getSession, type SessionRecord } from "@/lib/api";
-import { cn, shortAddress } from "@/lib/utils";
+import { cacheEnsName, identityDisplayId, identityDisplayName } from "@/lib/identity";
+import { cn } from "@/lib/utils";
 
 export function WalletPill({ className }: { className?: string }) {
   const [session, setSession] = useState<SessionRecord | null>(null);
@@ -30,6 +31,12 @@ export function WalletPill({ className }: { className?: string }) {
     };
   }, []);
 
+  useEffect(() => {
+    void cacheEnsName(session?.user?.wallet_address).then((ens) => {
+      if (ens) setSession(getSession());
+    });
+  }, [session?.user?.wallet_address]);
+
   if (!session) {
     return (
       <Button asChild size="sm" variant="outline" className={cn("gap-2 px-3", className)}>
@@ -42,6 +49,8 @@ export function WalletPill({ className }: { className?: string }) {
   }
 
   const wallet = session.user?.wallet_address ?? "";
+  const label = identityDisplayName(session.user, wallet);
+  const displayId = identityDisplayId(session.user);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -53,13 +62,13 @@ export function WalletPill({ className }: { className?: string }) {
           )}
         >
           <MetaMaskIcon size={16} />
-          <span className="font-mono tracking-tight">{shortAddress(wallet, 4, 4)}</span>
+          <span className="max-w-36 truncate tracking-tight">{label}</span>
           <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>MetaMask wallet</DropdownMenuLabel>
-        <div className="px-2 pb-2 font-mono text-[11px] text-muted-foreground break-all">{wallet}</div>
+        <DropdownMenuLabel>{label}</DropdownMenuLabel>
+        <div className="px-2 pb-2 text-[11px] text-muted-foreground">{displayId}</div>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => logout()} className="text-destructive focus:text-destructive">
           <LogOut className="h-4 w-4" />

@@ -19,8 +19,8 @@ const VARIANT_STYLES: Record<
 > = {
   violet: {
     outer: cn(
-      "border border-[#ebe6f4]/90 shadow-[0_4px_16px_-10px_rgba(124,58,237,0.12)]",
-      "dark:border-violet-400/10 dark:shadow-[0_6px_20px_-8px_rgba(124,58,237,0.28)]",
+      "border border-[#ebe6f4]/90 shadow-[0_2px_8px_-6px_rgba(124,58,237,0.08)] hover:shadow-[0_4px_16px_-10px_rgba(124,58,237,0.12)]",
+      "dark:border-violet-400/10 dark:shadow-[0_3px_10px_-7px_rgba(124,58,237,0.16)] dark:hover:shadow-[0_6px_20px_-8px_rgba(124,58,237,0.28)]",
     ),
     topBar: cn(
       "bg-gradient-to-r from-[#7c3aed] via-[#a78bfa] to-[#ddd6fe]",
@@ -39,8 +39,8 @@ const VARIANT_STYLES: Record<
   },
   mint: {
     outer: cn(
-      "border border-[#dcefe6]/90 shadow-[0_4px_16px_-10px_rgba(16,185,129,0.1)]",
-      "dark:border-emerald-400/10 dark:shadow-[0_6px_20px_-8px_rgba(16,185,129,0.22)]",
+      "border border-[#dcefe6]/90 shadow-[0_2px_8px_-6px_rgba(16,185,129,0.07)] hover:shadow-[0_4px_16px_-10px_rgba(16,185,129,0.1)]",
+      "dark:border-emerald-400/10 dark:shadow-[0_3px_10px_-7px_rgba(16,185,129,0.14)] dark:hover:shadow-[0_6px_20px_-8px_rgba(16,185,129,0.22)]",
     ),
     topBar: cn(
       "bg-gradient-to-r from-[#0d9488] via-[#2dd4bf] to-[#a7f3d0]",
@@ -59,8 +59,8 @@ const VARIANT_STYLES: Record<
   },
   sky: {
     outer: cn(
-      "border border-[#dceaf5]/90 shadow-[0_4px_16px_-10px_rgba(59,130,246,0.1)]",
-      "dark:border-sky-400/10 dark:shadow-[0_6px_20px_-8px_rgba(56,189,248,0.22)]",
+      "border border-[#dceaf5]/90 shadow-[0_2px_8px_-6px_rgba(59,130,246,0.07)] hover:shadow-[0_4px_16px_-10px_rgba(59,130,246,0.1)]",
+      "dark:border-sky-400/10 dark:shadow-[0_3px_10px_-7px_rgba(56,189,248,0.14)] dark:hover:shadow-[0_6px_20px_-8px_rgba(56,189,248,0.22)]",
     ),
     topBar: cn(
       "bg-gradient-to-r from-[#2563eb] via-[#38bdf8] to-[#bae6fd]",
@@ -79,8 +79,8 @@ const VARIANT_STYLES: Record<
   },
   periwinkle: {
     outer: cn(
-      "border border-[#ebe8f2]/90 shadow-[0_4px_16px_-10px_rgba(99,102,241,0.1)]",
-      "dark:border-indigo-400/10 dark:shadow-[0_6px_20px_-8px_rgba(99,102,241,0.22)]",
+      "border border-[#ebe8f2]/90 shadow-[0_2px_8px_-6px_rgba(99,102,241,0.07)] hover:shadow-[0_4px_16px_-10px_rgba(99,102,241,0.1)]",
+      "dark:border-indigo-400/10 dark:shadow-[0_3px_10px_-7px_rgba(99,102,241,0.14)] dark:hover:shadow-[0_6px_20px_-8px_rgba(99,102,241,0.22)]",
     ),
     topBar: cn(
       "bg-gradient-to-r from-[#8b5cf6] via-[#c4b5fd] to-[#f5d0fe]",
@@ -115,7 +115,7 @@ export function InvestorKpiCard({
   const v = VARIANT_STYLES[variant];
 
   return (
-    <div className={cn("flex flex-col overflow-hidden rounded-xl", v.outer)}>
+    <div className={cn("flex flex-col overflow-hidden rounded-xl transition-shadow", v.outer)}>
       <div className={cn("h-[2px] w-full shrink-0 bg-gradient-to-r", v.topBar)} aria-hidden />
       <div className={cn("flex flex-col p-3", v.body)}>
         <div className="flex items-start justify-between gap-2">
