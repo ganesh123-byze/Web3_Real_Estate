@@ -33,7 +33,7 @@ export function VoiceModeOverlay() {
 
   const isSpeaking = state === "speaking" || aiSpeaking;
   const isThinking = state === "thinking" || state === "transcribing";
-  const isListening = state === "listening" || state === "recording";
+  const isListening = !isSpeaking && (state === "listening" || state === "recording");
 
   // Orb scale follows mic level when listening; gentle breathing pulse when AI speaks.
   const orbScale = isListening ? 1 + smoothLevel * 0.55 : 1;

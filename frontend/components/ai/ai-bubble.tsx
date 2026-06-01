@@ -356,8 +356,8 @@ export function AIBubble() {
   const pill = getStatePill(displayState);
   const busy = state === "thinking";
   const showAgentActivity = state === "thinking" || state === "transcribing";
-  const isListening = state === "listening" || state === "recording";
   const isSpeaking = aiSpeaking || state === "speaking";
+  const isListening = !isSpeaking && (state === "listening" || state === "recording");
   const hasUserConversation = messages.some((m) => m.role === "user");
   const showWelcome = !hasUserConversation;
 
@@ -601,10 +601,10 @@ export function AIBubble() {
                   <div className="flex min-h-[18px] items-center justify-center text-[11.5px] text-muted-foreground">
                     {showAgentActivity ? (
                       <AgentActivityText state={state} />
-                    ) : isListening ? (
-                      "Listening — speak naturally"
                     ) : isSpeaking ? (
                       "Speaking"
+                    ) : isListening ? (
+                      "Listening — speak naturally"
                     ) : (
                       "Tap the mic to end voice mode"
                     )}
