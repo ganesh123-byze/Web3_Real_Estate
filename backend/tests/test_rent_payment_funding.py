@@ -68,13 +68,8 @@ def test_execute_pay_rent_ui_blocks_when_wallet_underfunded(monkeypatch):
     monkeypatch.setattr(tools, "_validate_property_rentable", lambda _p: None)
     monkeypatch.setattr(
         tools,
-        "get_last_confirmed_rent_payment_by_wallet",
-        lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
-        tools,
-        "compute_rent_period_status",
-        lambda _lp: {"current_cycle_paid": False},
+        "property_rent_period_status",
+        lambda *_a, **_k: {"current_cycle_paid": False},
     )
     monkeypatch.setattr("backend.services.blockchain.platform_deployer_mismatch", lambda: None)
     monkeypatch.setattr(tools, "_ensure_rent_chain_ready_for_payment", lambda *_a, **_k: 0)
