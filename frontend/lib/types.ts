@@ -33,6 +33,7 @@ export type Property = {
   rent_enabled?: boolean;
   current_cycle_paid?: boolean;
   tenant_paid_current_cycle?: boolean;
+  rent_claimed_by_other_tenant?: boolean;
   can_pay_rent?: boolean;
   rent_cycle_label?: string;
   next_rent_due_at?: string | null;

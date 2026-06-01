@@ -5,10 +5,9 @@ from decimal import Decimal
 from typing import Any
 
 from backend.api._helpers import enrich_property_with_supply
-from backend.api.rent_cycle import (
-    property_rent_period_status,
-    serialize_period_fields,
-    tenant_rent_period_status,
+from backend.services.tenant_rent_eligibility import (
+    build_tenant_property_rent_fields,
+    tenant_property_is_visible,
 )
 
 
@@ -58,14 +57,15 @@ def fetch_tenant_rental_properties(
         rent_wei = enriched.get("monthly_rent_wei") or "0"
         enriched["rent_enabled"] = rent_wei not in (None, "", "0")
         property_id = int(enriched["id"])
-        enriched.update(serialize_period_fields(property_rent_period_status(cursor, property_id)))
-        if tenant_wallet:
-            tenant_period = tenant_rent_period_status(cursor, tenant_wallet, property_id)
-            enriched["tenant_paid_current_cycle"] = bool(tenant_period.get("current_cycle_paid"))
-        else:
-            enriched["tenant_paid_current_cycle"] = False
+        active_rental = property_id in active_rental_ids
+        rent_fields = build_tenant_property_rent_fields(
+            cursor, property_id, tenant_wallet=tenant_wallet
+        )
+        enriched.update(rent_fields)
         enriched["has_investors"] = Decimal(enriched.get("tokens_sold") or 0) > 0
-        enriched["active_rental"] = int(enriched["id"]) in active_rental_ids
+        enriched["active_rental"] = active_rental
+        if tenant_wallet and not tenant_property_is_visible(rent_fields, active_rental=active_rental):
+            continue
         result.append(enriched)
     return result
 
@@ -78,7 +78,7 @@ def filter_tenant_dashboard_available(properties: list[dict[str, Any]]) -> list[
             continue
         if prop.get("active_rental"):
             continue
-        if prop.get("current_cycle_paid"):
+        if not prop.get("can_pay_rent"):
             continue
         if not prop.get("rent_enabled"):
             continue

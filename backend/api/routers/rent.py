@@ -72,11 +72,12 @@ from backend.services.blockchain import (
 )
 from backend.services.blockchain_indexer import _handle_rent_events, reconcile_transaction
 from backend.services.tenant_catalog import fetch_tenant_rental_properties
-from backend.api.rent_cycle import (
-    compute_rent_period_status,
-    property_rent_period_status,
-    serialize_period_fields,
+from backend.services.tenant_rent_eligibility import (
+    build_tenant_property_rent_fields,
+    pay_rent_blocked_message,
+    tenant_may_pay_rent,
 )
+from backend.api.rent_cycle import compute_rent_period_status, serialize_period_fields
 
 router = APIRouter()
 
@@ -101,10 +102,6 @@ def _current_rent_cycle() -> tuple[int, int, str]:
     now = datetime.utcnow()
     label = now.strftime("%B %Y")
     return now.month, now.year, label
-
-
-def _property_rent_period_status(cursor, property_id: int) -> dict:
-    return property_rent_period_status(cursor, property_id)
 
 
 def _ensure_rent_chain_ready_for_payment(cursor, property_item: dict, property_id: int) -> int:
@@ -470,17 +467,18 @@ def prepare_rent_payment(
             if not web3.is_address(effective_tenant_wallet):
                 raise HTTPException(status_code=400, detail="Invalid tenant wallet")
             checksum = web3.to_checksum_address(effective_tenant_wallet)
-            period = _property_rent_period_status(cursor, property_id)
-            if period["current_cycle_paid"]:
-                next_due = period["next_due_at"]
-                due_label = next_due.strftime("%B %d, %Y") if hasattr(next_due, "strftime") else str(next_due)
+            rent_fields = build_tenant_property_rent_fields(
+                cursor, property_id, tenant_wallet=checksum
+            )
+            if not tenant_may_pay_rent(rent_fields):
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        f"Rent for this property is already paid for this period. "
-                        f"Next due {due_label}."
+                    detail=pay_rent_blocked_message(
+                        rent_fields,
+                        property_name=str(property_item.get("name") or "this property"),
                     ),
                 )
+            period = rent_fields
 
         from backend.services.blockchain import platform_deployer_mismatch
 
@@ -573,7 +571,11 @@ def prepare_rent_payment(
         calldata = encode_pay_rent(property_id)
         web3 = get_web3()
         now = datetime.utcnow()
-        period_fields = serialize_period_fields(period)
+        period_fields = (
+            period
+            if effective_tenant_wallet
+            else serialize_period_fields(period)
+        )
         return PayRentPrepareResponse(
             property_id=property_id,
             property_name=property_item["name"],
@@ -616,15 +618,15 @@ def confirm_rent_payment(
             raise HTTPException(status_code=404, detail="Property not found")
 
         get_or_create_tenant(cursor, tenant_checksum)
-        period = _property_rent_period_status(cursor, property_id)
-        if period["current_cycle_paid"]:
-            next_due = period["next_due_at"]
-            due_label = next_due.strftime("%B %d, %Y") if hasattr(next_due, "strftime") else str(next_due)
+        rent_fields = build_tenant_property_rent_fields(
+            cursor, property_id, tenant_wallet=tenant_checksum
+        )
+        if not tenant_may_pay_rent(rent_fields):
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"Rent for this property is already paid for this period. "
-                    f"Next due {due_label}."
+                detail=pay_rent_blocked_message(
+                    rent_fields,
+                    property_name=str(property_item.get("name") or "this property"),
                 ),
             )
 
@@ -826,8 +828,10 @@ def tenant_active_rentals(
                 r["rental_end_date"] = r["rental_end_date"].isoformat()
             if r.get("created_at"):
                 r["created_at"] = r["created_at"].isoformat()
-            period = _property_rent_period_status(cursor, int(r["property_id"]))
-            r.update(serialize_period_fields(period))
+            rent_fields = build_tenant_property_rent_fields(
+                cursor, int(r["property_id"]), tenant_wallet=checksum
+            )
+            r.update(rent_fields)
         return rows
     finally:
         cursor.close()

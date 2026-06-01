@@ -56,7 +56,11 @@ from backend.api._helpers import (
     validate_monthly_rent_for_chain,
 )
 from backend.api.schemas import PropertyCreate
-from backend.api.rent_cycle import property_rent_period_status
+from backend.services.tenant_rent_eligibility import (
+    build_tenant_property_rent_fields,
+    pay_rent_blocked_message,
+    tenant_may_pay_rent,
+)
 from backend.services.tenant_catalog import (
     fetch_tenant_rental_properties,
     filter_tenant_dashboard_available,
@@ -504,6 +508,7 @@ def _serialize_tenant_property(row: dict) -> dict:
     base["current_cycle_paid"] = bool(row.get("current_cycle_paid"))
     base["can_pay_rent"] = bool(row.get("can_pay_rent", not base["current_cycle_paid"]))
     base["tenant_paid_current_cycle"] = bool(row.get("tenant_paid_current_cycle"))
+    base["rent_claimed_by_other_tenant"] = bool(row.get("rent_claimed_by_other_tenant"))
     base["rent_cycle_label"] = row.get("rent_cycle_label")
     base["active_rental"] = bool(row.get("active_rental"))
     base["has_investors"] = bool(row.get("has_investors"))
@@ -3871,9 +3876,26 @@ async def _execute_pay_rent_ui(property_id: int, user: AuthUser, db: Any) -> Too
         if rent_err:
             return ToolResult(ok=False, error=rent_err)
 
-        period = property_rent_period_status(cursor, pid)
-        if period.get("current_cycle_paid"):
-            return _rent_period_already_paid_result(serialized, period)
+        rent_fields = build_tenant_property_rent_fields(
+            cursor,
+            pid,
+            tenant_wallet=user.wallet_address if user else None,
+        )
+        if not tenant_may_pay_rent(rent_fields):
+            return ToolResult(
+                ok=False,
+                error=pay_rent_blocked_message(
+                    rent_fields, property_name=str(serialized.get("name") or "this property")
+                ),
+                data={
+                    "already_paid": bool(rent_fields.get("current_cycle_paid")),
+                    "claimed_by_other": bool(rent_fields.get("rent_claimed_by_other_tenant")),
+                    "property_id": pid,
+                    "property_name": serialized.get("name"),
+                    "next_due_at": rent_fields.get("next_rent_due_at"),
+                    "rent_cycle_label": rent_fields.get("rent_cycle_label"),
+                },
+            )
 
         from backend.services.blockchain import get_rent_property_info, platform_deployer_mismatch
 
