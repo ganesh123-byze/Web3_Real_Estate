@@ -1,11 +1,13 @@
 """Tests for spoken workflow answer normalization."""
 from backend.ai.workflow_parsers import (
-    assess_high_value_create_property,
-    assess_monthly_rent_over_chatbot_limit,
     assistant_prompted_for_create_field,
+    create_property_monthly_rent_collection_prompt,
+    create_property_monthly_rent_over_limit,
+    format_create_property_confirmation_summary,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
+    parse_yes_no_confirmation,
 )
 
 
@@ -63,11 +65,35 @@ def test_accumulated_normalization():
     assert out["monthly_rent_eth"] == "0.5"
 
 
-def test_rent_at_fifty_is_allowed():
-    assert assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "50"})["over_limit"] is False
+def test_create_property_monthly_rent_collection_prompt():
+    prompt = create_property_monthly_rent_collection_prompt()
+    assert "100 ETH" in prompt
+    assert "less than" in prompt.lower()
 
 
-def test_rent_above_fifty_is_rejected():
-    blocked = assess_monthly_rent_over_chatbot_limit({"monthly_rent_eth": "50.01"})
-    assert blocked["over_limit"] is True
-    assert "below 50" in blocked["speak_to_user"].lower()
+def test_create_property_monthly_rent_over_limit():
+    assert create_property_monthly_rent_over_limit("100") is True
+    assert create_property_monthly_rent_over_limit("99.9") is False
+    assert create_property_monthly_rent_over_limit("1000") is True
+    assert create_property_monthly_rent_over_limit("0") is False
+    assert create_property_monthly_rent_over_limit("skip") is False
+
+
+def test_format_create_property_confirmation_summary():
+    summary = format_create_property_confirmation_summary(
+        {
+            "name": "Tower",
+            "location": "NYC",
+            "total_value": "10",
+            "token_supply": "10000",
+            "token_symbol": "TWR",
+        }
+    )
+    assert "Tower" in summary
+    assert "Monthly rent (ETH): 0" in summary
+
+
+def test_parse_yes_no_confirmation():
+    assert parse_yes_no_confirmation("Yes") is True
+    assert parse_yes_no_confirmation("no thanks") is False
+    assert parse_yes_no_confirmation("maybe later") is None

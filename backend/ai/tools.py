@@ -23,9 +23,12 @@ from typing import Any, Awaitable, Callable
 from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
-    assess_high_value_create_property,
-    assess_monthly_rent_over_chatbot_limit,
     assistant_prompted_for_create_field,
+    create_property_monthly_rent_collection_prompt,
+    create_property_monthly_rent_is_skip,
+    create_property_monthly_rent_over_limit,
+    create_property_monthly_rent_rejection_message,
+    format_create_property_confirmation_summary,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
@@ -50,6 +53,7 @@ from backend.api._helpers import (
     require_property_token,
     sync_investors_to_contract,
     sync_rent_amount_to_contract,
+    validate_monthly_rent_for_chain,
 )
 from backend.api.schemas import PropertyCreate
 from backend.api.rent_cycle import (
@@ -227,6 +231,35 @@ def _message_content(msg: Any) -> str:
     return (content or "").strip() if isinstance(content, str) else ""
 
 
+def _create_property_session_preserves_filled(session: dict[str, Any] | None) -> bool:
+    """True when server-side CREATE_PROPERTY draft must survive history recovery."""
+    if not session:
+        return False
+    if session.get("chat_property_limit_reached"):
+        return False
+    filled = session.get("filled")
+    if not filled:
+        return False
+    if session.get("in_progress"):
+        return True
+    return bool(
+        session.get("awaiting_create_confirmation")
+        or session.get("submitting")
+        or session.get("submit_failed")
+    )
+
+
+def _latest_human_yes_no_reply() -> bool | None:
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("human", "user"):
+            continue
+        text = _message_content(msg)
+        if not text:
+            continue
+        return parse_yes_no_confirmation(text)
+    return None
+
+
 def _merge_last_user_utterance(
     accumulated: dict[str, str],
     modal: str,
@@ -235,6 +268,8 @@ def _merge_last_user_utterance(
 ) -> dict[str, str]:
     """If the LLM omitted the field the user just answered, use the last human line."""
     session = _get_workflow_session(modal)
+    if modal == _CREATE_PROPERTY_MODAL and _latest_human_yes_no_reply() is not None:
+        return accumulated
     next_field = session.get("next_field")
     missing = [f for f in required if f not in accumulated or not accumulated.get(f)]
     if not next_field and missing:
@@ -278,6 +313,68 @@ def _merge_last_user_utterance(
             return accumulated
     accumulated[next_field] = value
     return accumulated
+
+
+def _backfill_create_property_filled_from_history(
+    accumulated: dict[str, str],
+) -> dict[str, str]:
+    """Recover answers from chat when the LLM skipped fill_create_property tool calls."""
+    out = dict(accumulated)
+    field_order = list(_CREATE_PROPERTY_FIELDS)
+    hist = _current_history() or []
+    pending_field: str | None = None
+
+    for msg in hist:
+        role = _message_role(msg)
+        text = _message_content(msg)
+        if not text:
+            continue
+        lowered = text.lower()
+        if role in ("ai", "assistant"):
+            if "reply yes to create and deploy" in lowered or (
+                "here are the property details" in lowered
+                and "reply yes" in lowered
+            ):
+                pending_field = None
+                continue
+            for field in field_order:
+                if assistant_prompted_for_create_field(text, field):
+                    pending_field = field
+                    break
+            continue
+        if role not in ("human", "user") or not pending_field:
+            continue
+        if out.get(pending_field) not in (None, ""):
+            pending_field = None
+            continue
+        if parse_yes_no_confirmation(text) is not None:
+            pending_field = None
+            continue
+        if pending_field == "name" and is_generic_create_property_intent(text):
+            continue
+        if pending_field == "monthly_rent_eth" and create_property_monthly_rent_is_skip(text):
+            out[pending_field] = "0"
+            pending_field = None
+            continue
+        value = normalize_create_property_field(pending_field, text)
+        if value:
+            out[pending_field] = value
+        pending_field = None
+
+    return normalize_create_property_accumulated(out)
+
+
+def _persist_create_property_filled(filled: dict[str, str], **extra: Any) -> None:
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            **session,
+            "in_progress": True,
+            "filled": filled,
+            **extra,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1821,6 +1918,49 @@ _CREATE_PROPERTY_FIELDS = (
     "monthly_rent_eth",
 )
 _CREATE_PROPERTY_MODAL = "CREATE_PROPERTY"
+_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE = (
+    "Please refresh the page to start a new chat before creating another property."
+)
+
+
+def _create_property_chat_limit_reached(session: dict[str, Any] | None) -> bool:
+    """True after one successful create-property submission in this copilot thread."""
+    return bool((session or {}).get("chat_property_limit_reached"))
+
+
+def _block_create_property_when_chat_limit_reached() -> ToolResult | None:
+    """One property per chat session — block further create attempts without processing input."""
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    if not _create_property_chat_limit_reached(session):
+        return None
+    last_name = str(session.get("last_created_name") or "").strip()
+    if last_name:
+        speak = (
+            f"Property '{last_name}' was created successfully in this chat. "
+            f"{_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE}"
+        )
+    else:
+        speak = (
+            "A property was already created successfully in this chat. "
+            f"{_CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE}"
+        )
+    return ToolResult(
+        ok=True,
+        data={
+            "blocked": True,
+            "chat_property_limit_reached": True,
+            "submitted": True,
+            "filled": {},
+            "missing": [],
+            "speak_to_user": speak,
+            "instruction": (
+                "Tell the user exactly what speak_to_user says. Do NOT call "
+                "start_create_property or fill_create_property. Do NOT ask for "
+                "property fields or accept their latest input for a new listing."
+            ),
+        },
+        actions=[],
+    )
 
 
 def _assistant_announced_property_created(text: str) -> bool:
@@ -1829,28 +1969,120 @@ def _assistant_announced_property_created(text: str) -> bool:
     return "created successfully" in lowered and "property" in lowered
 
 
+def _assistant_announced_property_create_failure(text: str) -> bool:
+    """Detect frontend/tooling failure lines after a create-property submit."""
+    lowered = (text or "").lower()
+    if not lowered or _assistant_announced_property_created(text):
+        return False
+    if "reply yes to create and deploy" in lowered:
+        return False
+    if "here are the property details" in lowered:
+        return False
+    if lowered.startswith("submitting ") and "from this chat" in lowered:
+        return False
+    markers = (
+        "failed to create",
+        "property creation failed",
+        "missing property details",
+        "session expired",
+        "exceeds the on-chain limit",
+        "cannot exceed",
+        "total property value cannot",
+        "monthly rent exceeds",
+        "monthly rent cannot exceed",
+        "setup failed",
+        "http 401",
+        "http 409",
+        "http 500",
+        "issue with the property creation",
+        "did not complete",
+        "property was saved but setup failed",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _latest_assistant_create_property_outcome() -> tuple[str | None, str]:
+    """Return ('success'|'failure'|None, message text for the latest outcome)."""
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        text = _message_content(msg)
+        if _assistant_announced_property_created(text):
+            return "success", text
+        if _assistant_announced_property_create_failure(text):
+            return "failure", text
+    return None, ""
+
+
+def _reconcile_create_property_session_after_outcome(
+    pre_session: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Restore confirmation draft after a failed deploy so the admin can retry Yes."""
+    session = dict(pre_session or {})
+    outcome, failure_text = _latest_assistant_create_property_outcome()
+    if outcome == "success":
+        _sync_create_property_limit_from_success_announcement()
+        return _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    if outcome != "failure":
+        return session
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(session.get("filled") or {}))
+    )
+    if not _create_property_required_fields_present(filled):
+        return session
+
+    restored = {
+        "in_progress": True,
+        "filled": filled,
+        "next_field": None,
+        "submitted": False,
+        "submitting": False,
+        "awaiting_create_confirmation": True,
+        "submit_failed": True,
+        "last_submit_error": failure_text[:500],
+    }
+    _set_workflow_session(_CREATE_PROPERTY_MODAL, restored)
+    return restored
+
+
+def _sync_create_property_limit_from_success_announcement() -> None:
+    """Lock one-property-per-chat after the UI reports a successful create."""
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    if session.get("chat_property_limit_reached"):
+        return
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        text = _message_content(msg)
+        if _assistant_announced_property_created(text):
+            name = ""
+            m = re.search(r"property\s+'([^']+)'", text, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+            _mark_create_property_completed(name)
+        return
+
+
 def _mark_create_property_completed(property_name: str = "") -> None:
-    """Start a fresh post-success session so the next property in the same chat bootstraps UI."""
+    """Mark this chat thread as having used its one allowed create-property submission."""
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
             "in_progress": False,
             "submitted": True,
-            "awaiting_new_property": True,
+            "chat_property_limit_reached": True,
             "filled": {},
-            "next_field": "name",
+            "next_field": None,
             "last_created_name": (property_name or "").strip(),
-            "awaiting_high_value_confirmation": False,
-            "high_values_confirmed": False,
-            "property_create_cancelled": False,
         },
     )
 
 
 def _create_property_session_needs_ui_bootstrap(session: dict[str, Any]) -> bool:
     """True when the Create dialog must be navigated/opened before fill/submit."""
-    if session.get("awaiting_new_property"):
-        return True
+    if _create_property_chat_limit_reached(session):
+        return False
     return not bool(session.get("in_progress"))
 
 
@@ -1870,6 +2102,29 @@ def _human_requested_new_create_property_listing() -> bool:
 
 
 async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
+    _sync_create_property_limit_from_success_announcement()
+    blocked = _block_create_property_when_chat_limit_reached()
+    if blocked is not None:
+        return blocked
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL)
+    )
+    if pre_session.get("submit_failed") and pre_session.get("filled"):
+        filled = _backfill_create_property_filled_from_history(
+            normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+        )
+        if _create_property_required_fields_present(filled):
+            return _create_property_confirmation_prompt(
+                filled,
+                actions=[],
+                data={"filled": filled},
+                bootstrap_for_turn=True,
+                needs_ui_bootstrap=True,
+                had_active_session=False,
+                pre_session=pre_session,
+            )
+
     modal = _CREATE_PROPERTY_MODAL
     required = _CREATE_PROPERTY_FIELDS[:5]
     # Explicit start always opens a new draft (abandoned partial forms, chat refresh, etc.).
@@ -1884,9 +2139,6 @@ async def _start_create_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
             "filled": filled,
             "next_field": next_field or "name",
             "submitted": False,
-            "awaiting_high_value_confirmation": False,
-            "high_values_confirmed": False,
-            "property_create_cancelled": False,
         },
     )
     focus_field = next_field or "name"
@@ -1920,7 +2172,9 @@ register(ToolSpec(
         "focus in the copilot textbox and does not show the Create Property "
         "dialog behind the chat. After calling this tool, your spoken "
         "reply MUST end with the very next question to ask: \"What's the name "
-        "of the property?\""
+        "of the property?\" Only one property may be created per chat session; "
+        "after a successful create, this tool returns speak_to_user telling the "
+        "user to refresh for a new chat."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
@@ -1960,8 +2214,8 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
 
     accumulated: dict[str, str] = {}
     session = _get_workflow_session(modal)
-    session_filled = session.get("filled") or {}
-    if modal == _CREATE_PROPERTY_MODAL and session.get("awaiting_new_property"):
+    session_filled = dict(session.get("filled") or {})
+    if modal == _CREATE_PROPERTY_MODAL and _create_property_chat_limit_reached(session):
         session_filled = {}
     if isinstance(session_filled, dict):
         for k, v in session_filled.items():
@@ -2005,6 +2259,10 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
             for k, v in prior_filled.items():
                 if k in fields and v not in (None, ""):
                     accumulated[k] = str(v)
+    if modal == _CREATE_PROPERTY_MODAL and _create_property_session_preserves_filled(session):
+        for k, v in session_filled.items():
+            if k in fields and v not in (None, ""):
+                accumulated[k] = str(v)
     return accumulated
 
 
@@ -2072,26 +2330,30 @@ def _build_fill_workflow(
         )
     elif not missing:
         instruction = (
-            "All required fields are collected. Call this tool again with submit=true."
+            "All required fields are collected. The server will show a confirmation "
+            "summary before submitting — read speak_to_user to the user."
         )
 
     if submit and not missing:
-        actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
-        _set_workflow_session(
-            modal,
-            {"in_progress": False, "filled": accumulated, "next_field": None, "submitted": True},
-        )
-        return ToolResult(
-            ok=True,
-            data={
-                "filled": accumulated,
-                "missing": [],
-                "submitted": True,
-                "next_field": None,
-                "instruction": instruction,
-            },
-            actions=actions,
-        )
+        # CREATE_PROPERTY submit runs through fill_create_property so chat limits
+        # apply before SUBMIT_FORM is emitted.
+        if modal != _CREATE_PROPERTY_MODAL:
+            actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
+            _set_workflow_session(
+                modal,
+                {"in_progress": False, "filled": accumulated, "next_field": None, "submitted": True},
+            )
+            return ToolResult(
+                ok=True,
+                data={
+                    "filled": accumulated,
+                    "missing": [],
+                    "submitted": True,
+                    "next_field": None,
+                    "instruction": instruction,
+                },
+                actions=actions,
+            )
 
     if submit and missing:
         # The LLM asked to submit but we don't have everything — keep filling
@@ -2120,21 +2382,6 @@ def _build_fill_workflow(
         "next_field": next_field,
         "submitted": False,
     }
-    if modal == _CREATE_PROPERTY_MODAL:
-        prev = _get_workflow_session(modal) or {}
-        session_payload["awaiting_new_property"] = False
-        if _create_property_args_change_fields(args):
-            # User edited a field — drop stale confirmation flags so lowered
-            # values are not blocked by an earlier high-value prompt.
-            session_payload["property_create_cancelled"] = False
-            session_payload["awaiting_high_value_confirmation"] = False
-            session_payload["high_values_confirmed"] = False
-        else:
-            session_payload["awaiting_high_value_confirmation"] = bool(
-                prev.get("awaiting_high_value_confirmation")
-            )
-            session_payload["high_values_confirmed"] = bool(prev.get("high_values_confirmed"))
-            session_payload["property_create_cancelled"] = bool(prev.get("property_create_cancelled"))
     _set_workflow_session(modal, session_payload)
     return ToolResult(
         ok=True,
@@ -2173,155 +2420,52 @@ def _create_property_success_message(name: str) -> str:
     return "Property created successfully."
 
 
-def _create_property_args_change_fields(args: dict) -> bool:
-    """True when fill_create_property carries a property field edit (not only submit/confirm)."""
-    for field in _CREATE_PROPERTY_FIELDS:
-        if field in args and args.get(field) not in (None, ""):
-            return True
-    return False
-
-
-def _user_wants_proceed_after_create_cancel(args: dict) -> bool:
-    """Detect Yes / submit after the user already declined high-value confirmation."""
-    if bool(args.get("submit")):
-        return True
-    if args.get("confirm_high_values") is True:
-        return True
-    for msg in reversed(_current_history() or []):
-        if _message_role(msg) not in ("human", "user"):
-            continue
-        text = _message_content(msg)
-        if not text:
-            continue
-        yn = parse_yes_no_confirmation(text)
-        if yn is True:
-            return True
-        if yn is False:
-            return False
-    return False
-
-
-def _block_retry_after_create_cancel(
-    args: dict, session: dict[str, Any]
-) -> ToolResult | None:
-    """After the user said No to high-value confirm, Yes must not re-submit."""
-    if not session.get("property_create_cancelled"):
-        return None
-    if _create_property_args_change_fields(args):
-        return None
-    if not _user_wants_proceed_after_create_cancel(args):
-        return None
-    accumulated = normalize_create_property_accumulated(
-        dict(session.get("filled") or {})
-    )
-    speak = (
-        "This property listing has been canceled. "
-        "To list a property, change a field or start a new listing."
-    )
-    return ToolResult(
-        ok=True,
-        data={
-            "filled": accumulated,
-            "missing": [],
-            "submitted": False,
-            "cancelled": True,
-            "property_create_cancelled": True,
-            "speak_to_user": speak,
-            "instruction": (
-                "Tell the user clearly that this property listing has been canceled. "
-                "Do not submit the form or call more tools."
-            ),
-        },
-        actions=[],
-    )
-
-
-def _resolve_create_high_value_confirmation(
-    args: dict, session: dict[str, Any]
-) -> bool | None:
-    """Yes/No for high-value create: explicit tool arg beats last user utterance."""
-    if "confirm_high_values" in args and args.get("confirm_high_values") is not None:
-        return bool(args.get("confirm_high_values"))
-    if not session.get("awaiting_high_value_confirmation"):
-        return None
-    for msg in reversed(_current_history() or []):
-        if _message_role(msg) not in ("human", "user"):
-            continue
-        text = _message_content(msg)
-        if not text:
-            continue
-        yn = parse_yes_no_confirmation(text)
-        if yn is not None:
-            return yn
-    return None
-
-
-def _gate_create_property_rent_limit(accumulated: dict[str, str]) -> ToolResult | None:
-    """Block create flow when monthly rent exceeds the admin chatbot cap (50 ETH)."""
-    check = assess_monthly_rent_over_chatbot_limit(accumulated)
-    if not check.get("over_limit"):
-        return None
-
-    cleaned = dict(accumulated)
-    cleaned.pop("monthly_rent_eth", None)
-    _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
-        {
-            "in_progress": True,
-            "filled": cleaned,
-            "next_field": "monthly_rent_eth",
-            "submitted": False,
-            "awaiting_high_value_confirmation": False,
-            "high_values_confirmed": False,
-            "property_create_cancelled": False,
-            "awaiting_new_property": False,
-        },
-    )
-    speak = str(check.get("speak_to_user") or "")
-    return ToolResult(
-        ok=True,
-        data={
-            "filled": cleaned,
-            "missing": [],
-            "next_field": "monthly_rent_eth",
-            "submitted": False,
-            "rent_over_limit": True,
-            "speak_to_user": speak,
-            "instruction": str(check.get("instruction") or ""),
-        },
-        actions=[],
-    )
-
-
-def _gate_high_value_create_submit(
-    accumulated: dict[str, str],
+def _create_property_args_change_fields(
     args: dict,
-    session: dict[str, Any],
-) -> ToolResult | None:
-    """Block auto-submit until the user confirms high values (Yes) or cancels (No)."""
-    blocked = _block_retry_after_create_cancel(args, session)
-    if blocked is not None:
-        return blocked
-
-    if session.get("high_values_confirmed"):
-        return None
-
-    assessment = assess_high_value_create_property(accumulated)
-    if not assessment.get("is_high"):
-        if session.get("awaiting_high_value_confirmation") or session.get("high_values_confirmed"):
-            _set_workflow_session(
-                _CREATE_PROPERTY_MODAL,
-                {
-                    **session,
-                    "awaiting_high_value_confirmation": False,
-                    "high_values_confirmed": False,
-                },
+    session_filled: dict[str, Any] | None = None,
+) -> bool:
+    """True when fill_create_property carries a real field edit (not redundant re-send)."""
+    for field in _CREATE_PROPERTY_FIELDS:
+        if field not in args or args.get(field) in (None, ""):
+            continue
+        incoming = normalize_create_property_field(field, str(args[field]))
+        if not incoming:
+            continue
+        if session_filled:
+            existing = normalize_create_property_field(
+                field, str(session_filled.get(field) or "")
             )
+            if existing and incoming.lower() == existing.lower():
+                continue
+        return True
+    return False
+
+
+def _create_property_confirmation_reply(args: dict) -> bool | None:
+    confirm = args.get("confirm_create")
+    if confirm is not None:
+        return bool(confirm)
+    return _latest_human_yes_no_reply()
+
+
+def _create_property_pre_submit_block(accumulated: dict[str, str]) -> ToolResult | None:
+    """Block SUBMIT_FORM when values cannot succeed on-chain; keep confirmation open."""
+    monthly_raw = (accumulated.get("monthly_rent_eth") or "").strip().lower()
+    if not monthly_raw or monthly_raw in {"0", "skip", "none", "no", "n/a"}:
         return None
+    from backend.services.blockchain import to_wei
 
-    confirm = _resolve_create_high_value_confirmation(args, session)
-
-    if confirm is False:
+    try:
+        rent_wei = to_wei(Decimal(str(accumulated["monthly_rent_eth"])))
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    if rent_wei <= 0:
+        return None
+    try:
+        validate_monthly_rent_for_chain(rent_wei)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        summary = format_create_property_confirmation_summary(accumulated)
         _set_workflow_session(
             _CREATE_PROPERTY_MODAL,
             {
@@ -2329,17 +2473,8 @@ def _gate_high_value_create_submit(
                 "filled": accumulated,
                 "next_field": None,
                 "submitted": False,
-                "awaiting_high_value_confirmation": False,
-                "high_values_confirmed": False,
-                "property_create_cancelled": True,
-                "awaiting_new_property": False,
+                "awaiting_create_confirmation": True,
             },
-        )
-        speak = (
-            "Understood — this property listing has been canceled and was not submitted. "
-            "Tell me which value you would like to change (name, location, "
-            "total value, token supply, symbol, or monthly rent), or say "
-            "you want to start over."
         )
         return ToolResult(
             ok=True,
@@ -2347,33 +2482,142 @@ def _gate_high_value_create_submit(
                 "filled": accumulated,
                 "missing": [],
                 "submitted": False,
-                "cancelled": True,
-                "property_create_cancelled": True,
-                "high_value_confirmation": "declined",
-                "speak_to_user": speak,
-                "instruction": (
-                    "Tell the user the create was cancelled. Ask what they want "
-                    "to adjust, then call fill_create_property with the corrected fields."
+                "awaiting_create_confirmation": True,
+                "submit_blocked": True,
+                "on_chain_limit": "monthly_rent",
+                "confirmation_summary": summary,
+                "speak_to_user": (
+                    f"{detail} Update the monthly rent, say No to cancel, or confirm "
+                    "again after lowering rent to 100 ETH or less."
                 ),
+                "instruction": _create_property_confirmation_instruction(),
             },
             actions=[],
         )
+    return None
 
-    if confirm is True:
-        _set_workflow_session(
-            _CREATE_PROPERTY_MODAL,
-            {
-                "in_progress": True,
-                "filled": accumulated,
-                "next_field": None,
-                "submitted": False,
-                "awaiting_high_value_confirmation": False,
-                "high_values_confirmed": True,
-                "awaiting_new_property": False,
-            },
-        )
+
+def _create_property_required_fields_present(filled: dict[str, str]) -> bool:
+    required = _CREATE_PROPERTY_FIELDS[:5]
+    return all(filled.get(field) not in (None, "") for field in required)
+
+
+def _create_property_needs_monthly_rent_collection(filled: dict[str, str]) -> bool:
+    """True when required fields are done but optional rent has not been collected."""
+    if not _create_property_required_fields_present(filled):
+        return False
+    return "monthly_rent_eth" not in filled
+
+
+def _create_property_prompt_for_monthly_rent(
+    accumulated: dict[str, str],
+    *,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult:
+    prompt = create_property_monthly_rent_collection_prompt()
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": "monthly_rent_eth",
+            "submitted": False,
+            "awaiting_create_confirmation": False,
+        },
+    )
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": [],
+        "next_field": "monthly_rent_eth",
+        "submitted": False,
+        "awaiting_create_confirmation": False,
+        "speak_to_user": prompt,
+        "instruction": (
+            "Read speak_to_user verbatim, then wait for the user's monthly rent answer. "
+            "Monthly rent must be less than 100 ETH (say 0 or skip for no rent)."
+        ),
+    }
+    return ToolResult(ok=True, data=out_data, actions=actions)
+
+
+def _gate_create_property_monthly_rent_value(
+    accumulated: dict[str, str],
+    *,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult | None:
+    raw = accumulated.get("monthly_rent_eth")
+    if raw in (None, ""):
         return None
+    if create_property_monthly_rent_is_skip(str(raw)):
+        accumulated["monthly_rent_eth"] = "0"
+        return None
+    if not create_property_monthly_rent_over_limit(str(raw)):
+        return None
+    accumulated.pop("monthly_rent_eth", None)
+    prompt = create_property_monthly_rent_rejection_message(str(raw))
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": "monthly_rent_eth",
+            "submitted": False,
+            "awaiting_create_confirmation": False,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            **data,
+            "filled": accumulated,
+            "missing": [],
+            "next_field": "monthly_rent_eth",
+            "rent_over_limit": True,
+            "speak_to_user": prompt,
+            "instruction": (
+                "The rent value exceeds the 100 ETH limit. Read speak_to_user and "
+                "wait for a lower amount, 0, or skip."
+            ),
+        },
+        actions=[a for a in actions if a.field != "monthly_rent_eth"],
+    )
 
+
+def _create_property_confirmation_instruction() -> str:
+    return (
+        "Read the confirmation summary to the user. Wait for Yes (submit), No (cancel "
+        "and clear), or a field change. On Yes call fill_create_property with "
+        "confirm_create=true only — do not re-send all fields. On No use "
+        "confirm_create=false. On field change pass only the updated field(s). "
+        "After a failed create, call fill_create_property with confirm_create=true "
+        "to retry — never restart from the property name unless the user asked to."
+    )
+
+
+def _create_property_failure_retry_prefix(session: dict[str, Any]) -> str:
+    err = str(session.get("last_submit_error") or "").strip()
+    if err:
+        return f"The previous create attempt did not succeed: {err}\n\n"
+    return "The previous create attempt did not succeed.\n\n"
+
+
+def _create_property_confirmation_prompt(
+    accumulated: dict[str, str],
+    *,
+    actions: list[AgentAction],
+    data: dict[str, Any],
+    bootstrap_for_turn: bool,
+    needs_ui_bootstrap: bool,
+    had_active_session: bool,
+    pre_session: dict[str, Any] | None = None,
+) -> ToolResult:
+    summary = format_create_property_confirmation_summary(accumulated)
+    session = dict(pre_session or {})
+    prefix = _create_property_failure_retry_prefix(session) if session.get("submit_failed") else ""
+    speak = f"{prefix}{summary}"
     _set_workflow_session(
         _CREATE_PROPERTY_MODAL,
         {
@@ -2381,24 +2625,192 @@ def _gate_high_value_create_submit(
             "filled": accumulated,
             "next_field": None,
             "submitted": False,
-            "awaiting_high_value_confirmation": True,
-            "high_values_confirmed": False,
-            "awaiting_new_property": False,
+            "submitting": False,
+            "awaiting_create_confirmation": True,
+            "submit_failed": bool(session.get("submit_failed")),
+            "last_submit_error": session.get("last_submit_error"),
         },
     )
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": [],
+        "next_field": None,
+        "submitted": False,
+        "awaiting_create_confirmation": True,
+        "confirmation_summary": summary,
+        "speak_to_user": speak,
+        "instruction": _create_property_confirmation_instruction(),
+    }
+    final_actions = list(actions)
+    if needs_ui_bootstrap or bootstrap_for_turn or not had_active_session:
+        final_actions = [
+            AgentAction(type="NAVIGATE", route="/property_owner/properties"),
+            AgentAction(type="OPEN_MODAL", modal=_CREATE_PROPERTY_MODAL),
+            *final_actions,
+        ]
+    return ToolResult(ok=True, data=out_data, actions=final_actions)
+
+
+def _create_property_cancel_after_decline() -> ToolResult:
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": {},
+            "next_field": "name",
+            "submitted": False,
+            "awaiting_create_confirmation": False,
+        },
+    )
+    required = _CREATE_PROPERTY_FIELDS[:5]
     return ToolResult(
         ok=True,
         data={
-            "filled": accumulated,
-            "missing": [],
-            "submitted": False,
-            "awaiting_high_value_confirmation": True,
-            "high_value_reasons": assessment.get("reasons") or [],
-            "speak_to_user": str(assessment.get("speak_to_user") or ""),
-            "instruction": str(assessment.get("instruction") or ""),
+            "cancelled": True,
+            "property_create_cancelled": True,
+            "filled": {},
+            "missing": list(required),
+            "next_field": "name",
+            "awaiting_create_confirmation": False,
+            "speak_to_user": (
+                "I've cleared the property details. "
+                "What's the name of the property if you'd like to start again?"
+            ),
+            "instruction": (
+                "The user declined the confirmation. Ask for the property name to "
+                "restart collection. Do not submit until they confirm a new summary."
+            ),
         },
         actions=[],
     )
+
+
+def _create_property_submit_in_flight_block(pre_session: dict[str, Any]) -> ToolResult | None:
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return ToolResult(
+            ok=True,
+            data={
+                "submit_in_flight": True,
+                "speak_to_user": (
+                    "Property creation is still in progress — please wait for the "
+                    "success or error message before trying again."
+                ),
+                "instruction": "Do not call more tools until the create finishes.",
+            },
+            actions=[],
+        )
+    return None
+
+
+def _create_property_submit_result(
+    accumulated: dict[str, str],
+    data: dict[str, Any],
+    *,
+    bootstrap_for_turn: bool,
+    needs_ui_bootstrap: bool,
+    had_active_session: bool,
+) -> ToolResult:
+    in_flight = _create_property_submit_in_flight_block(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if in_flight is not None:
+        return in_flight
+
+    blocked = _create_property_pre_submit_block(accumulated)
+    if blocked is not None:
+        return blocked
+
+    property_name = str(accumulated.get("name") or "property")
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": [],
+        "submitted": True,
+        "submitting": True,
+        "awaiting_create_confirmation": False,
+        "awaiting_ui_confirmation": True,
+        "auto_submit": True,
+        "speak_to_user": (
+            f"Submitting {property_name} now — I will create the listing from this chat."
+        ),
+        "instruction": (
+            "Tell the user the property is submitting from chat. Do not call more tools "
+            "until they see success or an error. Only one property may be created per chat "
+            "session after success; if they ask to create another property later, the tools "
+            "will tell them to refresh for a new chat."
+        ),
+    }
+    submit_bootstrap = bootstrap_for_turn or needs_ui_bootstrap or not had_active_session
+    actions = _create_property_ui_submit_actions(
+        accumulated, bootstrap_ui=submit_bootstrap
+    )
+    _set_workflow_session(
+        _CREATE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": None,
+            "submitted": False,
+            "submitting": True,
+            "awaiting_create_confirmation": False,
+            "submit_failed": False,
+            "last_submit_error": None,
+            "last_submit_name": property_name,
+        },
+    )
+    return ToolResult(ok=True, data=out_data, actions=actions)
+
+
+def _handle_create_property_confirmation_turn(
+    args: dict,
+    pre_session: dict[str, Any],
+    user: AuthUser,
+    *,
+    bootstrap_for_turn: bool,
+    needs_ui_bootstrap: bool,
+    had_active_session: bool,
+) -> ToolResult | None:
+    """Dedicated yes/no turn — submit or cancel from session draft without re-collecting fields."""
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    if filled != (pre_session.get("filled") or {}):
+        _persist_create_property_filled(
+            filled,
+            next_field=pre_session.get("next_field"),
+            awaiting_create_confirmation=bool(
+                pre_session.get("awaiting_create_confirmation")
+                or pre_session.get("submit_failed")
+            ),
+            submit_failed=bool(pre_session.get("submit_failed")),
+            last_submit_error=pre_session.get("last_submit_error"),
+        )
+    awaiting = bool(
+        pre_session.get("awaiting_create_confirmation")
+        or pre_session.get("submit_failed")
+    )
+    complete = _create_property_required_fields_present(filled)
+    if not awaiting and not complete:
+        return None
+
+    confirm = _create_property_confirmation_reply(args)
+    if confirm is True and complete:
+        in_flight = _create_property_submit_in_flight_block(pre_session)
+        if in_flight is not None:
+            return in_flight
+        return _create_property_submit_result(
+            filled,
+            {"filled": filled},
+            bootstrap_for_turn=bootstrap_for_turn,
+            needs_ui_bootstrap=needs_ui_bootstrap,
+            had_active_session=had_active_session,
+        )
+    if confirm is False and (awaiting or complete):
+        return _create_property_cancel_after_decline()
+    if awaiting and _create_property_args_change_fields(args, filled):
+        return None
+    return None
 
 
 def _create_property_ui_submit_actions(
@@ -2426,7 +2838,17 @@ def _create_property_ui_submit_actions(
         actions.append(
             AgentAction(type="FILL_FIELD", modal=modal, field=field, value=str(value))
         )
-    actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
+    actions.append(
+        AgentAction(
+            type="SUBMIT_FORM",
+            modal=modal,
+            form_values={
+                field: str(accumulated[field])
+                for field in _CREATE_PROPERTY_FIELDS
+                if accumulated.get(field) not in (None, "")
+            },
+        )
+    )
     return actions
 
 
@@ -2440,16 +2862,27 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     """
     force_ui_bootstrap = bool(args.pop("_force_create_property_bootstrap", False))
     LOGGER.info("[fill_create_property] args=%s", args)
-    pre_session = _get_workflow_session(_CREATE_PROPERTY_MODAL)
+
+    _sync_create_property_limit_from_success_announcement()
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL)
+    )
+
+    blocked = _block_create_property_when_chat_limit_reached()
+    if blocked is not None:
+        return blocked
 
     # Abandoned draft + user asks to create again (often after copilot refresh) without
     # passing new field values yet — drop the stale server session.
     if (
         _human_requested_new_create_property_listing()
-        and not _create_property_args_change_fields(args)
+        and not _create_property_args_change_fields(args, pre_session.get("filled"))
         and pre_session.get("in_progress")
         and not pre_session.get("submitted")
-        and not pre_session.get("awaiting_new_property")
+        and not pre_session.get("awaiting_create_confirmation")
+        and not pre_session.get("submit_failed")
+        and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
         pre_session = {}
@@ -2474,39 +2907,27 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and session_name
         and incoming_name.lower() != session_name.lower()
         and pre_session.get("in_progress")
-        and not pre_session.get("awaiting_new_property")
+        and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
         pre_session = {}
         needs_ui_bootstrap = True
     had_active_session = bool(
-        pre_session.get("in_progress") and not pre_session.get("awaiting_new_property")
+        (pre_session.get("in_progress") or pre_session.get("awaiting_create_confirmation"))
+        and not _create_property_chat_limit_reached(pre_session)
     )
-
-    cancelled_retry = _block_retry_after_create_cancel(args, pre_session)
-    if cancelled_retry is not None:
-        return cancelled_retry
-
-    # When every required field is present, auto-submit — do not wait for a second LLM turn.
     bootstrap_for_turn = needs_ui_bootstrap
-    if not bool(args.get("submit")):
-        preview = _build_fill_workflow(
-            args,
-            modal="CREATE_PROPERTY",
-            tool_name="fill_create_property",
-            fields=_CREATE_PROPERTY_FIELDS,
-            required=_CREATE_PROPERTY_FIELDS[:5],
-        )
-        if not (preview.data or {}).get("missing"):
-            return await _fill_create_property(
-                {
-                    **args,
-                    "submit": True,
-                    "_force_create_property_bootstrap": bootstrap_for_turn,
-                },
-                user,
-                db,
-            )
+
+    confirmation_turn = _handle_create_property_confirmation_turn(
+        args,
+        pre_session,
+        user,
+        bootstrap_for_turn=bootstrap_for_turn,
+        needs_ui_bootstrap=needs_ui_bootstrap,
+        had_active_session=had_active_session,
+    )
+    if confirmation_turn is not None:
+        return confirmation_turn
 
     result = _build_fill_workflow(
         args,
@@ -2519,73 +2940,75 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     data = dict(result.data or {})
     actions = list(result.actions)
     accumulated = normalize_create_property_accumulated(dict(data.get("filled") or {}))
+    accumulated = _backfill_create_property_filled_from_history(accumulated)
+    required = _CREATE_PROPERTY_FIELDS[:5]
+    missing = [f for f in required if not accumulated.get(f)]
     data["filled"] = accumulated
-    submitted = bool(args.get("submit")) and not data.get("missing")
+    data["missing"] = missing
+    if missing:
+        data["next_field"] = missing[0]
+    elif _create_property_needs_monthly_rent_collection(accumulated):
+        data["next_field"] = "monthly_rent_eth"
+        missing = []
+        data["missing"] = missing
+    else:
+        data["next_field"] = None
+    _persist_create_property_filled(
+        accumulated,
+        next_field=data.get("next_field"),
+        submitted=False,
+        awaiting_create_confirmation=False,
+    )
 
-    rent_gated = _gate_create_property_rent_limit(accumulated)
+    rent_gated = _gate_create_property_monthly_rent_value(
+        accumulated, data=data, actions=actions
+    )
     if rent_gated is not None:
         return rent_gated
 
-    if submitted or (not data.get("missing") and pre_session.get("awaiting_high_value_confirmation")):
-        gate_session = {**pre_session, **(_get_workflow_session(_CREATE_PROPERTY_MODAL) or {})}
-        gated = _gate_high_value_create_submit(accumulated, args, gate_session)
-        if gated is not None:
-            return gated
-        if not submitted:
-            submitted = True
+    if _create_property_needs_monthly_rent_collection(accumulated) and not args.get(
+        "monthly_rent_eth"
+    ):
+        return _create_property_prompt_for_monthly_rent(
+            accumulated, data=data, actions=actions
+        )
 
-    if submitted:
-        property_name = str(accumulated.get("name") or "property")
-        data.update(
-            {
-                "submitted": True,
-                "submitting": True,
-                "awaiting_ui_confirmation": True,
-                "auto_submit": True,
-                "speak_to_user": (
-                    f"Submitting {property_name} now — I will create the listing from this chat."
-                ),
-                "instruction": (
-                    "Tell the user the property is submitting from chat. Do not call more tools "
-                    "until they see success."
-                ),
-            }
-        )
-        submit_bootstrap = bootstrap_for_turn or needs_ui_bootstrap or not had_active_session
-        actions = _create_property_ui_submit_actions(
-            accumulated, bootstrap_ui=submit_bootstrap
-        )
-        LOGGER.info(
-            "[fill_create_property] auto-submit actions=%d filled=%s bootstrap=%s",
-            len(actions),
+    confirm = _create_property_confirmation_reply(args)
+    if confirm is False and (
+        pre_session.get("awaiting_create_confirmation")
+        or _create_property_required_fields_present(accumulated)
+    ):
+        return _create_property_cancel_after_decline()
+    if not missing and confirm is True and _create_property_required_fields_present(accumulated):
+        return _create_property_submit_result(
             accumulated,
-            submit_bootstrap,
+            data,
+            bootstrap_for_turn=bootstrap_for_turn,
+            needs_ui_bootstrap=needs_ui_bootstrap,
+            had_active_session=had_active_session,
         )
-        _mark_create_property_completed(property_name)
-        data["new_property_session"] = True
-        data["instruction"] = (
-            "Tell the user the property is submitting from chat. Do not call more tools "
-            "until they see success. After you confirm success (e.g. "
-            "'Property created successfully'), the next property in this chat "
-            "must call start_create_property again."
+
+    if not missing:
+        return _create_property_confirmation_prompt(
+            accumulated,
+            actions=actions,
+            data=data,
+            bootstrap_for_turn=bootstrap_for_turn,
+            needs_ui_bootstrap=needs_ui_bootstrap,
+            had_active_session=had_active_session,
+            pre_session=pre_session,
         )
-        return ToolResult(ok=True, data=data, actions=actions)
 
     LOGGER.info(
-        "[fill_create_property] filled=%s missing=%s next=%s submitting=%s actions=%d",
+        "[fill_create_property] filled=%s missing=%s next=%s actions=%d",
         data.get("filled"),
         data.get("missing"),
         data.get("next_field"),
-        submitted,
         len(actions),
     )
-    # If the model skipped start_create_property (common after a previous
-    # successful create in the same chat), bootstrap the UI once so subsequent
-    # FILL_FIELD actions have a mounted form target. We do this even if the
-    # current fill call carried no field payload.
-    #
-    # During an active workflow we avoid OPEN_MODAL because the dialog listener
-    # resets form state on open. After a prior successful create, always bootstrap.
+    # If the model skipped start_create_property, bootstrap the UI once so subsequent
+    # FILL_FIELD actions have a mounted form target. During an active workflow we avoid
+    # OPEN_MODAL because the dialog listener resets form state on open.
     if needs_ui_bootstrap or not had_active_session:
         actions = [
             AgentAction(type="NAVIGATE", route="/property_owner/properties"),
@@ -2604,10 +3027,13 @@ register(ToolSpec(
         "(every value collected so far), `missing` (required fields still "
         "empty), and `next_field` (the single field to ask about next). "
         "NEVER ask about a field that already appears in `filled`. When "
-        "`missing` is empty the frontend submits the chat-collected values "
-        "(you may pass submit=true explicitly). Pass spoken numbers as-is "
+        "`missing` is empty the server shows a confirmation summary — the user "
+        "must reply Yes before the listing is submitted (pass confirm_create=true "
+        "after Yes). Pass spoken numbers as-is "
         "(e.g. 'one lakh tokens', 'USD symbol') — the server normalizes them. "
-        "Do not call more tools after a successful auto-submit."
+        "Do not call more tools after a successful submit. Only one property "
+        "may be created per chat session; after success, further calls return "
+        "speak_to_user telling the user to refresh for a new chat."
     ),
     parameters={
         "type": "object",
@@ -2617,19 +3043,26 @@ register(ToolSpec(
             "total_value": {"type": "string", "description": "Total property value in ETH, e.g. '10' or '12.5'."},
             "token_supply": {"type": "string", "description": "Total number of ownership tokens to mint, e.g. '10000'."},
             "token_symbol": {"type": "string", "description": "Short ticker for the token, e.g. 'OCEAN'."},
-            "monthly_rent_eth": {"type": "string", "description": "Optional monthly rent in ETH."},
+            "monthly_rent_eth": {
+                "type": "string",
+                "description": (
+                    "Optional monthly rent in ETH — must be less than 100 ETH "
+                    "(on-chain limit). Use 0 or skip if no rent yet."
+                ),
+            },
             "submit": {
                 "type": "boolean",
                 "description": (
-                    "Set to true on the FINAL call once all 5 required fields are filled. "
-                    "Emits SUBMIT_FORM so the frontend clicks Create."
+                    "Legacy flag — submission is gated by confirm_create after the "
+                    "user approves the confirmation summary."
                 ),
             },
-            "confirm_high_values": {
+            "confirm_create": {
                 "type": "boolean",
                 "description": (
-                    "Only when awaiting_high_value_confirmation is true in the tool result: "
-                    "true = user said Yes, proceed with create; false = user said No, cancel."
+                    "Only when awaiting_create_confirmation is true in the tool result: "
+                    "true = user said Yes, submit the listing; false = user said No, "
+                    "clear details and restart collection."
                 ),
             },
         },

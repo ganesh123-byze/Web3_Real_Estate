@@ -113,12 +113,17 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
 
 2. After EACH user answer, call fill_create_property with ONLY the new
    value the user just gave (pass it under the matching field name).
+   NEVER collect property fields only in free text — confirmation and submit
+   are enforced only through tool results.
    You don't need to repeat earlier values — the server merges them.
    The tool's result returns:
      - filled         → every value collected so far
      - missing        → required fields still empty
      - next_field     → exactly which field to ask about next
-   ALWAYS read `next_field` and ask the user that specific question.
+     - speak_to_user  → when present, read verbatim
+   ALWAYS use `next_field` and `speak_to_user` from the tool. NEVER write your
+   own property summary — only `speak_to_user` and `confirmation_summary` from
+   the tool are authoritative.
    Never re-ask for any field that already appears in `filled`.
 
 3. Field order (use `next_field` from the tool result; phrasing below):
@@ -127,43 +132,39 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
      - total_value → "What's the total property value in ETH?"
      - token_supply→ "How many ownership tokens should we mint?"
      - token_symbol→ "What ticker symbol do you want for the token?"
-     - monthly_rent_eth (optional) → "What's the monthly rent in ETH?"
-       (If the user says "no" / "skip" / "none", treat it as "0".)
-       Maximum allowed: **50 ETH**. If rent is above 50 ETH, the tool returns
-       `rent_over_limit: true` — read `speak_to_user` and ask for a lower rent.
+     - monthly_rent_eth (optional) → the tool returns `speak_to_user` with the
+       rent question — read it verbatim. Monthly rent must be less than 100 ETH
+       (on-chain limit). If the user says "no" / "skip" / "none", treat it as "0".
 
-4. When the tool reports `missing: []` (all 5 required fields filled),
-   call fill_create_property with the monthly_rent_eth answer if any, OR
-   with submit=true. The server auto-submits when all required fields are
-   present: the frontend submits the collected chat values for the user.
+4. When the tool reports `missing: []` and `next_field: monthly_rent_eth`, read
+   `speak_to_user` verbatim — it reminds the user that rent must be less than 100 ETH.
+   After rent is collected (or skipped as 0), the tool shows the confirmation summary.
 
-   HIGH-VALUE CONFIRMATION (property owner chat only — total value & token supply):
-   - If the tool returns `awaiting_high_value_confirmation: true`, read
-     `speak_to_user` verbatim. It applies only when total value or token
-     supply is unusually large (on-chain setup may take longer).
-   - Ask the user to reply **Yes** to proceed or **No** to cancel.
-   - Do NOT call submit or open MetaMask until they answer.
-   - Yes → fill_create_property with confirm_high_values=true and submit=true.
-   - No → fill_create_property with confirm_high_values=false (do not submit).
-   - If they already canceled and later say Yes, the tool will say the
-     listing was canceled — repeat that; do not submit again.
-   - Normal/low values must NOT trigger this — only when the tool sets
-     `awaiting_high_value_confirmation: true`.
+5. When the tool reports `awaiting_create_confirmation: true`, it returns
+   `speak_to_user` with a summary of every collected value. Read `speak_to_user`
+   to the user verbatim — do NOT rewrite the summary yourself. Wait for their
+   reply, then ALWAYS call fill_create_property:
+     - Yes → call fill_create_property with confirm_create=true only (do not re-send
+       all field values — the server already has them).
+     - No → call fill_create_property with confirm_create=false (clears the draft;
+       ask for the property name to start again).
+     - Field change → pass only the updated field(s); the server updates the draft
+       and shows the summary again for confirmation.
 
-5. After auto-submit, tell the user the listing is being created (use
-   `speak_to_user` from the tool). Then STOP — do not call more tools.
-   If the tool returns an error, explain it briefly and ask what to fix.
+6. After the user confirms Yes and the tool reports `submitted: true`, tell the user
+   the listing is being created (use `speak_to_user` from the tool). Wait for the
+   success or error message in chat. If creation fails, call fill_create_property
+   with confirm_create=true to retry the same listing — do NOT restart from the
+   property name unless the user explicitly asks to start over.
 
-6. ALWAYS START FRESH FOR EACH NEW PROPERTY. After you tell the user a
-   property was created successfully (e.g. "Property 'X' created
-   successfully."), the server opens a NEW create session for the same
-   chat. For the next property you MUST call start_create_property
-   again (opens a clean form), then collect fields with
-   fill_create_property. Never reuse names, locations, supplies,
-   symbols, or rents from a previously submitted property — always ask
-   the user fresh. The first fill_create_property for the new property
-   will have empty `filled` even if the prior property is still in
-   your context.
+7. ONE PROPERTY PER CHAT SESSION. After a property is created successfully
+   in this chat, the user cannot create another property here. If they ask
+   to create / add another property, call start_create_property or
+   fill_create_property — the server returns `chat_property_limit_reached:
+   true` and `speak_to_user` asking them to refresh the page for a new chat.
+   Read `speak_to_user` verbatim. Do NOT ask for property fields and do NOT
+   accept their input for a new listing. If they try again, repeat the same
+   refresh message without calling more tools.
 
 Edit property — "edit / update / change <property>":
 1. Resolve the property id via get_my_owned_properties.

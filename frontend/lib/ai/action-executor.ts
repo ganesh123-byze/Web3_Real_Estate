@@ -2,7 +2,13 @@
 
 import type { AIAction } from "./types";
 import { clearSession, getApiBase, getToken } from "@/lib/api";
-import { markPropertyCreationComplete, markPropertyCreationPending } from "@/lib/properties/visibility";
+import {
+  markPropertyCreationFailed,
+  markPropertyCreationStarted,
+  syncCreatePropertyStreamEvent,
+} from "@/lib/properties/list-sync";
+import { getRegisteredQueryClient } from "@/lib/query-client-holder";
+import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -291,8 +297,11 @@ function calculateTokenPriceEth(totalValue: string | undefined, tokenSupply: str
   return String(total / supply);
 }
 
-async function submitCreatePropertyFromChat(): Promise<boolean> {
-  const values = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+async function submitCreatePropertyFromChat(
+  formValuesOverride?: Record<string, string>,
+): Promise<boolean> {
+  const stored = workflowFormValues.get(CREATE_PROPERTY_MODAL) ?? {};
+  const values = { ...stored, ...(formValuesOverride ?? {}) };
   const required = ["name", "location", "total_value", "token_supply", "token_symbol"] as const;
   const missing = required.filter((field) => !String(values[field] ?? "").trim());
   if (missing.length) {
@@ -315,8 +324,18 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
     monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
     images: [] as string[],
   };
+  workflowFormValues.set(CREATE_PROPERTY_MODAL, {
+    ...stored,
+    name: payload.name,
+    location: payload.location,
+    total_value: payload.total_value,
+    token_supply: payload.token_supply,
+    token_symbol: payload.token_symbol,
+    ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
+  });
 
-  markPropertyCreationPending(undefined, payload.name);
+  const queryClient = getRegisteredQueryClient();
+  markPropertyCreationStarted(queryClient, payload.name);
   let finalPropertyName = payload.name;
   let completedPropertyId: number | string | null | undefined = null;
 
@@ -369,22 +388,22 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
           try {
             const event = JSON.parse(raw) as {
               step?: string;
-              property?: { id?: number; name?: string };
+              property?: Property;
               property_id?: number;
               detail?: string;
             };
             const eventPropertyId = event.property?.id ?? event.property_id;
-            const eventPropertyName = event.property?.name ?? finalPropertyName;
             if (event.step === "done") {
               finalPropertyName = event.property?.name || finalPropertyName;
               completedPropertyId = eventPropertyId;
-              markPropertyCreationPending(eventPropertyId, eventPropertyName);
+              syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (event.step === "error") {
               finalError = event.detail || "Property creation failed.";
+              syncCreatePropertyStreamEvent(queryClient, event);
               streamComplete = true;
             } else if (eventPropertyId) {
-              markPropertyCreationPending(eventPropertyId, eventPropertyName);
+              syncCreatePropertyStreamEvent(queryClient, event);
             }
           } catch {
             /* skip malformed SSE JSON */
@@ -409,14 +428,15 @@ async function submitCreatePropertyFromChat(): Promise<boolean> {
         ? `Property '${finalPropertyName}' created successfully.`
         : "Property created successfully.",
     });
-    window.setTimeout(() => {
-      markPropertyCreationComplete(completedPropertyId, finalPropertyName);
-      notifyAIDataChanged();
-    }, 900);
+    notifyAIDataChanged();
     focusChatInput();
     return true;
   } catch (err: any) {
-    markPropertyCreationComplete(completedPropertyId, finalPropertyName || payload.name);
+    markPropertyCreationFailed(
+      queryClient,
+      completedPropertyId,
+      finalPropertyName || payload.name,
+    );
     notifyAIDataChanged();
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
@@ -454,7 +474,7 @@ export async function executeAction(
       }
       if (action.type === "SUBMIT_FORM") {
         enterCreatePropertyChatOnlyMode();
-        await submitCreatePropertyFromChat();
+        await submitCreatePropertyFromChat(action.form_values ?? undefined);
         notifyAIDataChanged();
         return;
       }
