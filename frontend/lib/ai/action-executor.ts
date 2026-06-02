@@ -585,7 +585,8 @@ async function submitEditPropertyFromChat(
     );
     void queryClient?.invalidateQueries({ queryKey: queryKeys.properties });
     void queryClient?.invalidateQueries({ queryKey: queryKeys.property(updated.id) });
-    clearPendingModalActions(EDIT_PROPERTY_MODAL);
+    clearPendingModalQueues(EDIT_PROPERTY_MODAL);
+    workflowFormValues.delete(EDIT_PROPERTY_MODAL);
     emitCompletion({
       modal: EDIT_PROPERTY_MODAL,
       status: "success",
@@ -595,6 +596,8 @@ async function submitEditPropertyFromChat(
     focusChatInput();
     return true;
   } catch (err: any) {
+    clearPendingModalQueues(EDIT_PROPERTY_MODAL);
+    workflowFormValues.delete(EDIT_PROPERTY_MODAL);
     emitCompletion({
       modal: EDIT_PROPERTY_MODAL,
       status: "error",
