@@ -17,6 +17,64 @@ export type SignInResult =
 export const VALID_ROLES = ["property_owner", "investor", "tenant"] as const;
 export type Role = (typeof VALID_ROLES)[number];
 
+/** Merge `/auth/me` onto the cached session user without dropping profile fields. */
+export function mergeSessionUser(
+  base: SessionRecord["user"],
+  patch: Partial<SessionRecord["user"]>,
+): SessionRecord["user"] {
+  const patchName = patch.full_name != null ? String(patch.full_name).trim() : "";
+  const baseName = base.full_name != null ? String(base.full_name).trim() : "";
+  const fullName = patchName || baseName || null;
+  const id = patch.id ?? base.id;
+  return {
+    ...base,
+    ...patch,
+    id,
+    wallet_address: patch.wallet_address ?? base.wallet_address,
+    role: patch.role ?? base.role,
+    full_name: fullName,
+    display_id: patch.display_id ?? base.display_id,
+    profile_role: patch.profile_role ?? base.profile_role,
+    email: patch.email ?? base.email,
+    kyc_status: patch.kyc_status ?? base.kyc_status,
+    active: patch.active ?? base.active,
+  };
+}
+
+const DISPLAY_NAME_API_UNAVAILABLE =
+  "The API server does not support saving display names yet. Deploy the latest backend to Render, then try again.";
+
+/** Persist display name for legacy accounts missing `full_name` in the database. */
+export async function updateMyDisplayName(fullName: string): Promise<SessionRecord["user"] | null> {
+  const session = getSession();
+  if (!session) return null;
+  const trimmed = fullName.trim();
+  if (!trimmed) throw new Error("Name is required.");
+
+  const body = { full_name: trimmed };
+  let updated: SessionRecord["user"];
+  try {
+    updated = await api.post<SessionRecord["user"]>("/auth/me/name", body);
+  } catch (postErr) {
+    if (postErr instanceof ApiError && (postErr.status === 404 || postErr.status === 405)) {
+      try {
+        updated = await api.patch<SessionRecord["user"]>("/auth/me", body);
+      } catch (patchErr) {
+        if (patchErr instanceof ApiError && (patchErr.status === 404 || patchErr.status === 405)) {
+          throw new Error(DISPLAY_NAME_API_UNAVAILABLE);
+        }
+        throw patchErr;
+      }
+    } else {
+      throw postErr;
+    }
+  }
+
+  const merged = mergeSessionUser(session.user, updated);
+  writeSession({ ...session, user: merged });
+  return merged;
+}
+
 function ensureMetaMask() {
   if (typeof window === "undefined" || !window.ethereum) {
     throw new Error("MetaMask is not installed. Install it from https://metamask.io.");
@@ -114,7 +172,8 @@ export async function signIn(params?: { walletAddress?: string | null }): Promis
     expires_at: verify.expires_at,
   };
   writeSession(session);
-  return { status: "authenticated", session };
+  await refreshMe();
+  return { status: "authenticated", session: getSession() ?? session };
 }
 
 export async function registerWallet(params: {
@@ -148,7 +207,8 @@ export async function registerWallet(params: {
   );
   const session: SessionRecord = { token: resp.token, expires_at: resp.expires_at, user: resp.user };
   writeSession(session);
-  return session;
+  await refreshMe();
+  return getSession() ?? session;
 }
 
 export async function refreshMe(): Promise<SessionRecord["user"] | null> {
@@ -156,8 +216,9 @@ export async function refreshMe(): Promise<SessionRecord["user"] | null> {
   if (!session) return null;
   try {
     const me = await api.get<SessionRecord["user"]>("/auth/me");
-    writeSession({ ...session, user: me });
-    return me;
+    const merged = mergeSessionUser(session.user, me);
+    writeSession({ ...session, user: merged });
+    return merged;
   } catch (err) {
     if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
       clearSession();
