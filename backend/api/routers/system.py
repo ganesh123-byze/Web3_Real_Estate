@@ -142,7 +142,11 @@ def list_users(db=Depends(get_db)):
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, wallet_address, email, kyc_status FROM users ORDER BY id ASC"
+            "SELECT id, wallet_address, email, kyc_status, full_name, "
+            "COALESCE(NULLIF(display_id, ''), "
+            "CASE WHEN role = 'property_owner' THEN 'ADM-' WHEN role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(id::text, 3, '0')) AS display_id, "
+            "COALESCE(profile_role, role) AS profile_role "
+            "FROM users ORDER BY id ASC"
         )
         return cursor.fetchall()
     finally:

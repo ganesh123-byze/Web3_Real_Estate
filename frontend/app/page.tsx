@@ -17,12 +17,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MetaMaskIcon } from "@/components/icons/metamask";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { signIn, registerWallet } from "@/lib/auth";
-import { getSession } from "@/lib/api";
+import { getConnectedWallet, lookupWalletRegistration, signIn, registerWallet } from "@/lib/auth";
+import { clearSession, getSession } from "@/lib/api";
 import { toast } from "sonner";
 import { cn, shortAddress } from "@/lib/utils";
 
 type Role = "investor" | "property_owner" | "tenant";
+type PendingAction = "signin" | "signup" | "register" | null;
 
 const ROLE_OPTIONS: { id: Role; title: string; description: string }[] = [
   { id: "investor", title: "Investor", description: "Buy fractional property tokens and earn rental yield." },
@@ -41,12 +42,13 @@ export default function LandingPage() {
   const router = useRouter();
   const [view, setView] = useState<"connect" | "register" | "redirect">("connect");
   const [authIntent, setAuthIntent] = useState<"signin" | "signup">("signin");
-  const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingWallet, setPendingWallet] = useState<string | null>(null);
   const [role, setRole] = useState<Role | null>(null);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const busy = pendingAction !== null;
 
   useEffect(() => {
     const session = getSession();
@@ -58,31 +60,62 @@ export default function LandingPage() {
   async function handleConnect(intent: "signin" | "signup" = "signin") {
     setAuthIntent(intent);
     setError(null);
-    setBusy(true);
+    setPendingAction(intent);
     try {
-      const result = await signIn();
+      const connectedWallet = await getConnectedWallet();
+
+      if (intent === "signup") {
+        if (connectedWallet) {
+          const lookup = await lookupWalletRegistration(connectedWallet);
+          if (lookup.registered) {
+            clearSession();
+            setAuthIntent("signin");
+            setPendingWallet(null);
+            setView("connect");
+            setError("This wallet already has an account. Please login.");
+            return;
+          }
+        }
+        setPendingWallet(connectedWallet);
+        setRole(null);
+        setFullName("");
+        setEmail("");
+        setView("register");
+        return;
+      }
+
+      if (!connectedWallet) {
+        setError("You don't have an account. Please sign up first.");
+        return;
+      }
+
+      const lookup = await lookupWalletRegistration(connectedWallet);
+      if (!lookup.registered) {
+        setError("You don't have an account. Please sign up first.");
+        return;
+      }
+
+      const result = await signIn({ walletAddress: connectedWallet });
       if (result.status === "authenticated") {
-        toast.success(intent === "signup" ? "Wallet already registered. Signed in." : "Signed in.");
+        toast.success("Signed in.");
         setView("redirect");
         router.push(`/${result.session.user.role}`);
       } else {
-        setPendingWallet(result.walletAddress);
-        setRole(null);
-        setView("register");
+        setError("You don't have an account. Please sign up first.");
       }
     } catch (e: any) {
       const msg = e?.message || "Sign-in failed.";
       const isReject = /denied|rejected/i.test(msg);
       setError(isReject ? "Signature canceled in MetaMask." : msg);
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
   async function handleRegister() {
-    if (!pendingWallet || !role || !fullName.trim()) return;
+    if (!role || !fullName.trim()) return;
     setError(null);
-    setBusy(true);
+    setPendingAction("register");
     try {
       const session = await registerWallet({
         walletAddress: pendingWallet,
@@ -96,7 +129,7 @@ export default function LandingPage() {
     } catch (e: any) {
       setError(e?.message || "Registration failed.");
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -181,7 +214,7 @@ export default function LandingPage() {
               </div>
               <Button onClick={() => handleConnect("signin")} disabled={busy} size="lg" className="h-12 gap-2 rounded-2xl">
                 <MetaMaskIcon size={18} />
-                {busy ? "Awaiting signature…" : "Login with MetaMask"}
+                {pendingAction === "signin" ? "Awaiting signature…" : "Login with MetaMask"}
               </Button>
               <Button
                 onClick={() => handleConnect("signup")}
@@ -191,7 +224,7 @@ export default function LandingPage() {
                 className="h-12 gap-2 rounded-2xl bg-background/50"
               >
                 <MetaMaskIcon size={18} />
-                {busy ? "Awaiting signature…" : "Sign up with MetaMask"}
+                {pendingAction === "signup" ? "Checking wallet…" : "Sign up with MetaMask"}
               </Button>
               {error && (
                 <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -219,7 +252,7 @@ export default function LandingPage() {
                 </p>
               </div>
               <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3 font-mono text-xs">
-                {shortAddress(pendingWallet, 8, 6)}
+                {pendingWallet ? shortAddress(pendingWallet, 8, 6) : "Wallet connects when you create the account"}
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="full-name">Full name</Label>
@@ -266,8 +299,8 @@ export default function LandingPage() {
               </div>
               <div className="flex flex-col gap-2">
                 <Button onClick={handleRegister} disabled={busy || !role || !fullName.trim()} size="lg" className="h-12 rounded-2xl">
-                  {busy ? "Signing…" : "Sign up with MetaMask"}
-                  {!busy && <ArrowRight className="h-4 w-4" />}
+                  {pendingAction === "register" ? "Creating account…" : "Sign up with MetaMask"}
+                  {pendingAction !== "register" && <ArrowRight className="h-4 w-4" />}
                 </Button>
                 <Button
                   variant="ghost"
@@ -276,7 +309,9 @@ export default function LandingPage() {
                     setPendingWallet(null);
                     setRole(null);
                     setFullName("");
+                    setEmail("");
                     setError(null);
+                    setAuthIntent("signin");
                     setView("connect");
                   }}
                 >

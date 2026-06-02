@@ -30,6 +30,20 @@ async function requestAccount(): Promise<string> {
   return accounts[0];
 }
 
+export async function getConnectedWallet(): Promise<string | null> {
+  ensureMetaMask();
+  const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+  return accounts?.[0] ? accounts[0].toLowerCase() : null;
+}
+
+export async function lookupWalletRegistration(walletAddress: string): Promise<{
+  wallet_address: string;
+  registered: boolean;
+  role?: string | null;
+}> {
+  return api.get(`/auth/lookup/${walletAddress.toLowerCase()}`, { authOptional: true });
+}
+
 async function personalSign(address: string, message: string): Promise<string> {
   ensureMetaMask();
   return window.ethereum.request({
@@ -68,9 +82,14 @@ export async function ensureSepoliaNetwork() {
   }
 }
 
-export async function signIn(): Promise<SignInResult> {
-  const wallet = await requestAccount();
+export async function signIn(params?: { walletAddress?: string | null }): Promise<SignInResult> {
+  const wallet = params?.walletAddress || await requestAccount();
   await ensureSepoliaNetwork();
+
+  const lookup = await lookupWalletRegistration(wallet);
+  if (!lookup.registered) {
+    return { status: "needs_registration", walletAddress: wallet.toLowerCase() };
+  }
 
   const challenge = await api.post<{ nonce: string; message: string; expires_at: string }>(
     "/auth/nonce",
@@ -99,20 +118,27 @@ export async function signIn(): Promise<SignInResult> {
 }
 
 export async function registerWallet(params: {
-  walletAddress: string;
+  walletAddress?: string | null;
   role: Role;
   email?: string | null;
   fullName?: string | null;
 }): Promise<SessionRecord> {
+  const walletAddress = params.walletAddress || await requestAccount();
+  await ensureSepoliaNetwork();
+  const lookup = await lookupWalletRegistration(walletAddress);
+  if (lookup.registered) {
+    throw new Error("This wallet already has an account. Please login.");
+  }
+
   const challenge = await api.post<{ nonce: string; message: string; expires_at: string }>(
     "/auth/nonce",
-    { wallet_address: params.walletAddress },
+    { wallet_address: walletAddress },
   );
-  const signature = await personalSign(params.walletAddress, challenge.message);
+  const signature = await personalSign(walletAddress, challenge.message);
   const resp = await api.post<{ token: string; expires_at: string; user: SessionRecord["user"] }>(
     "/auth/register",
     {
-      wallet_address: params.walletAddress,
+      wallet_address: walletAddress,
       signature,
       nonce: challenge.nonce,
       role: params.role,
