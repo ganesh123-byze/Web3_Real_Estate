@@ -33,7 +33,9 @@ from backend.ai.workflow_parsers import (
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
+    parse_edit_property_fields_from_utterance,
     parse_yes_no_confirmation,
+    utterance_opens_new_edit_property_flow,
 )
 from backend.ai.copilot_property_scope import (
     ACTIVE_PROPERTY_SQL,
@@ -2013,6 +2015,7 @@ _CREATE_PROPERTY_FIELDS = (
     "monthly_rent_eth",
 )
 _CREATE_PROPERTY_MODAL = "CREATE_PROPERTY"
+_EDIT_PROPERTY_MODAL = "EDIT_PROPERTY"
 _CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE = (
     "Please refresh the page to start a new chat before creating another property."
 )
@@ -2358,6 +2361,12 @@ def _recover_form_state(modal: str, tool_name: str, fields: tuple[str, ...]) -> 
         for k, v in session_filled.items():
             if k in fields and v not in (None, ""):
                 accumulated[k] = str(v)
+    if modal == _EDIT_PROPERTY_MODAL:
+        edit_session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+        if edit_session.get("in_progress"):
+            for k, v in (edit_session.get("filled") or {}).items():
+                if k in fields and v not in (None, ""):
+                    accumulated[k] = str(v)
     return accumulated
 
 
@@ -2434,10 +2443,29 @@ def _build_fill_workflow(
         # apply before SUBMIT_FORM is emitted.
         if modal != _CREATE_PROPERTY_MODAL:
             actions.append(AgentAction(type="SUBMIT_FORM", modal=modal))
-            _set_workflow_session(
-                modal,
-                {"in_progress": False, "filled": accumulated, "next_field": None, "submitted": True},
-            )
+            if modal == _EDIT_PROPERTY_MODAL:
+                prev = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+                _set_workflow_session(
+                    _EDIT_PROPERTY_MODAL,
+                    {
+                        "property_id": prev.get("property_id"),
+                        "property_name": prev.get("property_name"),
+                        "in_progress": False,
+                        "filled": {},
+                        "next_field": None,
+                        "submitted": True,
+                    },
+                )
+            else:
+                _set_workflow_session(
+                    modal,
+                    {
+                        "in_progress": False,
+                        "filled": accumulated,
+                        "next_field": None,
+                        "submitted": True,
+                    },
+                )
             return ToolResult(
                 ok=True,
                 data={
@@ -2477,6 +2505,11 @@ def _build_fill_workflow(
         "next_field": next_field,
         "submitted": False,
     }
+    if modal == _EDIT_PROPERTY_MODAL:
+        prev = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+        if prev.get("property_id") is not None:
+            session_payload["property_id"] = prev.get("property_id")
+            session_payload["property_name"] = prev.get("property_name")
     _set_workflow_session(modal, session_payload)
     return ToolResult(
         ok=True,
@@ -3566,6 +3599,68 @@ register(ToolSpec(
 # the property cards.
 # ---------------------------------------------------------------------------
 
+
+def _resolve_owned_property_from_items(
+    items: list[dict], query: str
+) -> tuple[dict | None, str | None]:
+    """Fuzzy-match a spoken property name to a single owned listing."""
+    q = (query or "").strip()
+    if not q:
+        return None, "Property name is required."
+    if not items:
+        return None, "You have no dashboard-visible properties to edit."
+
+    ranked = sorted(
+        [(_property_match_score(q, p), p) for p in items],
+        key=lambda item: (item[0], int(item[1].get("id") or 0)),
+        reverse=True,
+    )
+    strong = [(score, prop) for score, prop in ranked if score >= 0.72]
+    if not strong:
+        best_score, _best = ranked[0]
+        if best_score < 0.58:
+            examples = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
+            return None, (
+                f"No property found matching {q!r}. Try one of: {examples}."
+            )
+        options = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
+        return None, f"Please confirm which property you mean: {options}."
+    if len(strong) > 1 and (strong[0][0] - strong[1][0]) < 0.08:
+        names = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in strong[:3])
+        return None, f"Several properties match {q!r}: {names}. Which one do you mean?"
+    return strong[0][1], None
+
+
+def _resolve_owned_property_for_user(
+    db: Any, user: AuthUser, query: str
+) -> tuple[dict | None, str | None]:
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+            f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+            (user.wallet_address,),
+        )
+        rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+        items = [_serialize_property(r) for r in rows]
+    finally:
+        cursor.close()
+    return _resolve_owned_property_from_items(items, query)
+
+
+def _with_edit_property_id_on_actions(
+    actions: list[AgentAction], property_id: int
+) -> list[AgentAction]:
+    pid = int(property_id)
+    stamped: list[AgentAction] = []
+    for action in actions:
+        if action.property_id is None:
+            stamped.append(action.model_copy(update={"property_id": pid}))
+        else:
+            stamped.append(action)
+    return stamped
+
+
 _EDIT_PROPERTY_FIELDS = (
     "name",
     "location",
@@ -3594,16 +3689,37 @@ async def _start_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResul
             return ToolResult(ok=False, error="You can only edit properties you own.")
     finally:
         cursor.close()
+    property_name = str(prop.get("name") or "")
+    _set_workflow_session(
+        _EDIT_PROPERTY_MODAL,
+        {
+            "property_id": pid,
+            "property_name": property_name,
+            "in_progress": True,
+            "filled": {},
+            "submitted": False,
+        },
+    )
     return ToolResult(
         ok=True,
         data={
             "property_id": pid,
-            "property_name": prop.get("name"),
-            "message": f"Opening edit form for {prop.get('name')}.",
+            "property_name": property_name,
+            "message": f"Opening edit form for {property_name}.",
+            "instruction": (
+                "Ask what the user wants to change (name, location, or monthly rent in ETH). "
+                "Call fill_edit_property with only each new value; pass submit=true on the "
+                "final field for this round. Further edits on the same property in this chat "
+                "do not need start_edit_property again."
+            ),
         },
         actions=[
             AgentAction(type="NAVIGATE", route="/property_owner/properties"),
-            AgentAction(type="OPEN_MODAL", modal="EDIT_PROPERTY", property_id=pid),
+            AgentAction(
+                type="OPEN_MODAL",
+                modal=_EDIT_PROPERTY_MODAL,
+                property_id=pid,
+            ),
         ],
     )
 
@@ -3629,17 +3745,110 @@ register(ToolSpec(
 ))
 
 
-async def _fill_edit_property(args: dict, _user: AuthUser, _db: Any) -> ToolResult:
+async def _fill_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     LOGGER.info("[fill_edit_property] Called with args: %s", args)
-    # At minimum we need ONE changed field to submit; required=() means we
-    # accept submission as soon as the user is done answering.
-    return _build_fill_workflow(
-        args,
-        modal="EDIT_PROPERTY",
+    session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+    pid = session.get("property_id")
+    property_name = str(session.get("property_name") or "")
+
+    if pid is None:
+        hint = str(args.get("property_name") or "").strip() or _latest_human_utterance()
+        if hint and not utterance_opens_new_edit_property_flow(hint):
+            prop, err = _resolve_owned_property_for_user(db, user, hint)
+            if prop:
+                pid = int(prop["id"])
+                property_name = str(prop.get("name") or "")
+                _set_workflow_session(
+                    _EDIT_PROPERTY_MODAL,
+                    {
+                        "property_id": pid,
+                        "property_name": property_name,
+                        "in_progress": True,
+                        "filled": {},
+                        "submitted": False,
+                    },
+                )
+            elif err:
+                return ToolResult(ok=False, error=err)
+
+    if pid is None:
+        return ToolResult(
+            ok=False,
+            error=(
+                "No property is selected for editing. Call start_edit_property with "
+                "property_id first, or include the property name."
+            ),
+        )
+
+    merged_args = dict(args)
+    for field in _EDIT_PROPERTY_FIELDS:
+        if field not in merged_args or merged_args.get(field) in (None, ""):
+            continue
+        merged_args[field] = normalize_create_property_field(
+            field, str(merged_args[field])
+        )
+
+    result = _build_fill_workflow(
+        merged_args,
+        modal=_EDIT_PROPERTY_MODAL,
         tool_name="fill_edit_property",
         fields=_EDIT_PROPERTY_FIELDS,
         required=(),
     )
+
+    actions = _with_edit_property_id_on_actions(list(result.actions), int(pid))
+    data = dict(result.data or {})
+    data["property_id"] = int(pid)
+    if property_name:
+        data["property_name"] = property_name
+
+    if result.ok and data.get("submitted"):
+        data["instruction"] = (
+            "The property was saved. The user may change more fields on the same "
+            "property in this chat — call fill_edit_property with only the new "
+            "values (name, location, or monthly_rent_eth) and submit=true. Do not "
+            "call start_set_rent for simple rent updates on the edit form. Only call "
+            "start_edit_property again if they switch to a different property."
+        )
+    elif result.ok and not data.get("submitted"):
+        data.setdefault(
+            "instruction",
+            (
+                "Collect only the fields the user asked to change. Monthly rent is "
+                "updated via monthly_rent_eth on fill_edit_property (under 100 ETH). "
+                "Pass submit=true when applying this round of changes."
+            ),
+        )
+
+    return ToolResult(
+        ok=result.ok,
+        data=data,
+        error=result.error,
+        actions=actions,
+    )
+
+
+async def try_server_edit_property_continuation(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Apply a follow-up field edit (e.g. rent) on the same property without a new start."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+    pid = session.get("property_id")
+    if not pid or session.get("in_progress"):
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or utterance_opens_new_edit_property_flow(utterance):
+        return None
+
+    fields = parse_edit_property_fields_from_utterance(utterance)
+    if not fields:
+        return None
+
+    return await _fill_edit_property({**fields, "submit": True}, user, db)
 
 
 register(ToolSpec(

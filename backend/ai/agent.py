@@ -49,6 +49,7 @@ from backend.ai.tools import (
     set_current_thread_id,
     try_server_create_property_confirmation,
     try_server_create_property_submit,
+    try_server_edit_property_continuation,
 )
 from backend.services.auth import AuthUser, canonical_role
 
@@ -440,8 +441,14 @@ async def run_agent(
     try:
         prepare_copilot_turn(effective_thread, history)
         preflight = await try_server_create_property_confirmation(user, db)
+        if preflight is None:
+            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is not None:
             reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
+            if not reply and preflight.data.get("property_name"):
+                reply = (
+                    f"Applying your update to {preflight.data.get('property_name')}…"
+                )
             transcript = list(history)
             transcript.append(ChatMessage(role="assistant", content=reply))
             return ChatResponse(
@@ -590,8 +597,14 @@ async def stream_agent(
     try:
         prepare_copilot_turn(effective_thread, history)
         preflight = await try_server_create_property_confirmation(user, db)
+        if preflight is None:
+            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is not None:
             reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
+            if not reply and preflight.data.get("property_name"):
+                reply = (
+                    f"Applying your update to {preflight.data.get('property_name')}…"
+                )
             if reply:
                 yield {"type": "token", "content": reply}
             yield {
