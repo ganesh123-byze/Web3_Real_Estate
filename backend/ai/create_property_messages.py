@@ -7,12 +7,12 @@ def create_property_deploying_message(property_name: str | None = None) -> str:
     name = (property_name or "").strip()
     if name:
         return (
-            f"Your details for {name} are submitted. Please hold for a moment "
-            "while we deploy your property on-chain."
+            f"Your property details for {name} were submitted successfully. "
+            "Please hold for a moment while we deploy your listing on-chain."
         )
     return (
-        "Your details are submitted. Please hold for a moment "
-        "while we deploy your property on-chain."
+        "Your property details were submitted successfully. "
+        "Please hold for a moment while we deploy your listing on-chain."
     )
 
 

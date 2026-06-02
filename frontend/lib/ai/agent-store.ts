@@ -308,7 +308,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   assistantMessage = { ...assistantMessage, content: finalReply };
                 }
                 actions = (event.actions || []) as AIAction[];
-                set({ messages: [...history, assistantMessage], actions });
+                set({
+                  messages: [...history, assistantMessage],
+                  actions,
+                  state: "idle",
+                });
               } else if (event.type === "error") {
                 streamError = event.detail || "Stream error";
               }

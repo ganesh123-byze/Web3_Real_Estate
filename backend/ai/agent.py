@@ -36,7 +36,9 @@ from backend.ai.investor_guards import sanitize_investor_wallet_actions
 from backend.ai.prompts import system_prompt_for_role
 from backend.ai.schemas import AgentAction, ChatMessage, ChatResponse, InterruptResponse
 from backend.ai.tools import (
+    create_property_deploy_pending,
     create_property_pending_name,
+    create_property_server_submit_eligible,
     dispatch,
     invest_workflow_session,
     openai_tool_schemas,
@@ -46,6 +48,7 @@ from backend.ai.tools import (
     set_current_messages,
     set_current_thread_id,
     try_server_create_property_confirmation,
+    try_server_create_property_submit,
 )
 from backend.services.auth import AuthUser, canonical_role
 
@@ -598,6 +601,27 @@ async def stream_agent(
             }
             return
 
+        submit_eligible, submit_name = create_property_server_submit_eligible(user)
+        if submit_eligible:
+            deploy_msg = create_property_deploying_message(submit_name or None)
+            yield {
+                "type": "status",
+                "phase": "deploying",
+                "message": deploy_msg,
+            }
+            submit_result = await try_server_create_property_submit(user, db)
+            if submit_result is not None:
+                data = submit_result.data or {}
+                reply = str(data.get("speak_to_user") or data.get("success_message") or "").strip()
+                if reply:
+                    yield {"type": "token", "content": reply}
+                yield {
+                    "type": "complete",
+                    "reply": reply,
+                    "actions": [a.model_dump() for a in submit_result.actions],
+                }
+                return
+
         suppress_tokens = False
         streamed_reply_chars = 0
         async for event in graph.astream_events(
@@ -624,7 +648,9 @@ async def stream_agent(
                 yield {"type": "stream_reset"}
                 name = event.get("name", "")
                 tool_input = (event.get("data") or {}).get("input") or {}
-                if name == "fill_create_property" and tool_input.get("confirm_create"):
+                if name == "fill_create_property" and create_property_deploy_pending(
+                    tool_input
+                ):
                     pname = (
                         str(tool_input.get("name") or "").strip()
                         or create_property_pending_name()

@@ -7,7 +7,7 @@ from backend.ai.create_property_messages import (
 
 def test_deploying_message_without_name():
     msg = create_property_deploying_message()
-    assert "details are submitted" in msg.lower()
+    assert "submitted successfully" in msg.lower()
     assert "hold" in msg.lower()
     assert "deploy" in msg.lower()
 
