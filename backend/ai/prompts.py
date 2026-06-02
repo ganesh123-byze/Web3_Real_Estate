@@ -139,7 +139,8 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
      - location    → "Where is it located?"
      - total_value → "What's the total property value in ETH?"
      - token_supply→ "How many ownership tokens should we mint?"
-     - token_symbol→ "What ticker symbol do you want for the token?"
+     - token_symbol→ read `speak_to_user` verbatim (includes ticker examples such as
+       ETH, USD, or a short code from the property name)
      - monthly_rent_eth (optional) → the tool returns `speak_to_user` with the
        rent question — read it verbatim. Monthly rent must be less than 100 ETH
        (on-chain limit). If the user says "no" / "skip" / "none", treat it as "0".

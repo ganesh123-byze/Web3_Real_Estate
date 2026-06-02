@@ -13,6 +13,8 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return False
     if data.get("speak_verbatim") is True:
         return True
+    if data.get("next_field") == "token_symbol" and (data.get("speak_to_user") or "").strip():
+        return True
     if data.get("awaiting_create_confirmation"):
         return True
     if data.get("confirmation_summary"):

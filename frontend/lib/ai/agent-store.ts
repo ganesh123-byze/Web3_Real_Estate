@@ -166,6 +166,15 @@ function resetTrailingAssistant(messages: AIMessage[]): AIMessage[] {
   return messages;
 }
 
+/** Append a new assistant bubble (keeps prior messages, e.g. deploy status + success). */
+function appendAssistantMessage(messages: AIMessage[], reply: string): AIMessage[] {
+  const text = reply.trim();
+  if (!text) return messages;
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant" && last.content.trim() === text) return messages;
+  return [...messages, msg("assistant", text)];
+}
+
 /** Set the final assistant text (verbatim tool replies, confirmations, success). */
 function finalizeAssistantMessage(messages: AIMessage[], reply: string): AIMessage[] {
   const text = reply.trim();
@@ -259,6 +268,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       if (!reader) throw new Error("No response body");
 
       let streamingText = "";
+      let deployStatusText = "";
       let assistantMessage = msg("assistant", "");
       let actions: AIAction[] = [];
       let finalReply = "";
@@ -290,6 +300,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               } else if (event.type === "status") {
                 const statusText = String(event.message || "").trim();
                 if (statusText) {
+                  deployStatusText = statusText;
                   streamingText = statusText;
                   assistantMessage = { ...assistantMessage, content: statusText };
                   const nextState: AIState =
@@ -303,13 +314,25 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                 set({ messages: [...history, assistantMessage] });
               } else if (event.type === "complete") {
                 finalReply = (event.reply || "").trim();
-                if (finalReply && streamingText !== finalReply) {
-                  streamingText = finalReply;
-                  assistantMessage = { ...assistantMessage, content: finalReply };
+                let nextMessages = [...history];
+                if (
+                  deployStatusText &&
+                  finalReply &&
+                  finalReply !== deployStatusText
+                ) {
+                  nextMessages = [
+                    ...history,
+                    msg("assistant", deployStatusText),
+                    msg("assistant", finalReply),
+                  ];
+                } else if (finalReply) {
+                  nextMessages = [...history, msg("assistant", finalReply)];
+                } else if (deployStatusText) {
+                  nextMessages = [...history, msg("assistant", deployStatusText)];
                 }
                 actions = (event.actions || []) as AIAction[];
                 set({
-                  messages: [...history, assistantMessage],
+                  messages: nextMessages,
                   actions,
                   state: "idle",
                 });
@@ -422,7 +445,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       onComplete: ({ reply }) => {
         const text = (reply || "").trim();
         if (!text) return;
-        set({ messages: finalizeAssistantMessage(get().messages, text) });
+        set({ messages: appendAssistantMessage(get().messages, text) });
       },
       onActions: (actions) => {
         set({ actions: actions as AIAction[] });

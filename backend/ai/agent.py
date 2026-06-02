@@ -613,8 +613,6 @@ async def stream_agent(
             if submit_result is not None:
                 data = submit_result.data or {}
                 reply = str(data.get("speak_to_user") or data.get("success_message") or "").strip()
-                if reply:
-                    yield {"type": "token", "content": reply}
                 yield {
                     "type": "complete",
                     "reply": reply,
@@ -624,6 +622,7 @@ async def stream_agent(
 
         suppress_tokens = False
         streamed_reply_chars = 0
+        deploy_status_emitted = False
         async for event in graph.astream_events(
             AgentState(messages=messages, actions=[]),
             config=config or None,
@@ -656,6 +655,7 @@ async def stream_agent(
                         or create_property_pending_name()
                     )
                     deploy_msg = create_property_deploying_message(pname or None)
+                    deploy_status_emitted = True
                     yield {
                         "type": "status",
                         "phase": "deploying",
@@ -684,7 +684,7 @@ async def stream_agent(
                         "didn't generate a response after tool execution"
                     )
                 LOGGER.info("[stream_agent] Final actions count: %d, actions: %s", len(actions), actions)
-                if reply and streamed_reply_chars == 0:
+                if reply and streamed_reply_chars == 0 and not deploy_status_emitted:
                     yield {"type": "token", "content": reply}
                 payload: dict[str, Any] = {
                     "type": "complete",

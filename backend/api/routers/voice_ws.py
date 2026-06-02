@@ -349,10 +349,12 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
                             prior = full_text.strip()
                             if reply != prior:
                                 if interim_status_text and prior == interim_status_text:
-                                    await _safe_send({"type": "stream_reset"})
-                                await _safe_send({"type": "token", "text": reply})
-                                await text_q.put(reply)
-                                full_text = reply
+                                    full_text = f"{prior}\n\n{reply}".strip()
+                                    await text_q.put(reply)
+                                else:
+                                    await _safe_send({"type": "token", "text": reply})
+                                    await text_q.put(reply)
+                                    full_text = reply
                             elif not prior:
                                 await text_q.put(reply)
                             history.append(ChatMessage(role="assistant", content=reply))

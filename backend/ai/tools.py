@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    create_property_field_collection_speak,
     create_property_monthly_rent_collection_prompt,
     create_property_monthly_rent_is_skip,
     create_property_monthly_rent_over_limit,
@@ -3365,6 +3366,14 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
             AgentAction(type="OPEN_MODAL", modal=_CREATE_PROPERTY_MODAL),
             *actions,
         ]
+    field_speak = create_property_field_collection_speak(
+        str(data.get("next_field") or ""),
+        accumulated,
+    )
+    if field_speak:
+        data["speak_to_user"] = field_speak
+        data["speak_verbatim"] = True
+        data["instruction"] = "Read speak_to_user verbatim — do not rephrase the ticker question."
     return ToolResult(ok=result.ok, data=data, error=result.error, actions=actions)
 
 
