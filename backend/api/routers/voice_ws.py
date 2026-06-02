@@ -294,6 +294,7 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
             nonlocal cur_assistant_replied, turn_completed, partial_reply
             checkpointer = await get_saver()
             full_text = ""
+            interim_status_text = ""
             chunker = SmartChunkBuffer(min_chars=25, max_chars=60)
             db = None
             try:
@@ -312,6 +313,18 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
                 ):
                     if event.get("type") == "stream_reset":
                         await _safe_send({"type": "stream_reset"})
+                    elif event.get("type") == "status":
+                        status_msg = (event.get("message") or "").strip()
+                        if status_msg:
+                            interim_status_text = status_msg
+                            full_text = status_msg
+                            partial_reply = status_msg
+                            await _safe_send({
+                                "type": "status",
+                                "phase": event.get("phase", ""),
+                                "message": status_msg,
+                            })
+                            await text_q.put(status_msg)
                     elif event.get("type") == "token":
                         delta = event.get("content") or ""
                         if delta:
@@ -335,8 +348,13 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
                         if reply:
                             prior = full_text.strip()
                             if reply != prior:
-                                await _safe_send({"type": "token", "text": reply})
-                                await text_q.put(reply)
+                                if interim_status_text and prior == interim_status_text:
+                                    full_text = f"{prior}\n\n{reply}".strip()
+                                    await text_q.put(reply)
+                                else:
+                                    await _safe_send({"type": "token", "text": reply})
+                                    await text_q.put(reply)
+                                    full_text = reply
                             elif not prior:
                                 await text_q.put(reply)
                             history.append(ChatMessage(role="assistant", content=reply))

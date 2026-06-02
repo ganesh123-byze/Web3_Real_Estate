@@ -250,6 +250,45 @@ def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[s
 CREATE_PROPERTY_MAX_MONTHLY_RENT_ETH = Decimal("100")
 
 
+def _suggest_token_symbol_from_property_name(property_name: str) -> str:
+    """Short uppercase hint from the property name (e.g. Sunset Villas → SV)."""
+    parts = re.findall(r"[A-Za-z0-9]+", (property_name or "").strip())
+    if len(parts) >= 2:
+        return "".join(p[0] for p in parts[:4]).upper()[:8]
+    if parts:
+        return parts[0][:6].upper()
+    return ""
+
+
+def create_property_token_symbol_prompt(property_name: str = "") -> str:
+    """Ask for token ticker with examples so admins understand the field."""
+    suggested = _suggest_token_symbol_from_property_name(property_name)
+    if suggested and len(suggested) >= 2:
+        examples = f"{suggested}, OCEAN, or VILLA"
+        from_name = f" ({suggested} is a short code from the property name)"
+    else:
+        examples = "OCEAN, VILLA, or ETH"
+        from_name = ""
+    return (
+        "What ticker symbol do you want for the token? "
+        f"A ticker is a short trading-style code (2–10 letters) for this property's "
+        f"token on your dashboard — for example {examples}{from_name}. "
+        "You can use a well-known style like ETH or USD, or a custom code based on "
+        "the property name."
+    )
+
+
+def create_property_field_collection_speak(
+    field: str, filled: dict[str, str] | None = None
+) -> str | None:
+    """Authoritative question text for the next create-property field (when set)."""
+    if field == "token_symbol":
+        return create_property_token_symbol_prompt(
+            str((filled or {}).get("name") or "")
+        )
+    return None
+
+
 def create_property_monthly_rent_collection_prompt() -> str:
     """Shown before collecting optional monthly rent during create-property."""
     return (

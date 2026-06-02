@@ -114,6 +114,8 @@ async def ai_chat_stream(
 
     Each event is a JSON payload with a ``type`` field:
     - ``token`` — a streamed LLM token
+    - ``status`` — interim workflow message (e.g. ``phase: deploying``)
+    - ``stream_reset`` — clear partial LLM text before tool output
     - ``tool_start`` / ``tool_end`` — tool execution lifecycle
     - ``complete`` — final reply + actions (+ optional interrupt)
     """

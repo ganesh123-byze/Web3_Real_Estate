@@ -31,11 +31,14 @@ from backend.ai.agent_reply import (
     pick_verbatim_speak_to_user,
     tool_data_requires_verbatim_reply,
 )
-from backend.ai.tools import try_server_create_property_confirmation
+from backend.ai.create_property_messages import create_property_deploying_message
 from backend.ai.investor_guards import sanitize_investor_wallet_actions
 from backend.ai.prompts import system_prompt_for_role
 from backend.ai.schemas import AgentAction, ChatMessage, ChatResponse, InterruptResponse
 from backend.ai.tools import (
+    create_property_deploy_pending,
+    create_property_pending_name,
+    create_property_server_submit_eligible,
     dispatch,
     invest_workflow_session,
     openai_tool_schemas,
@@ -44,6 +47,8 @@ from backend.ai.tools import (
     reset_current_thread_id,
     set_current_messages,
     set_current_thread_id,
+    try_server_create_property_confirmation,
+    try_server_create_property_submit,
 )
 from backend.services.auth import AuthUser, canonical_role
 
@@ -596,8 +601,28 @@ async def stream_agent(
             }
             return
 
+        submit_eligible, submit_name = create_property_server_submit_eligible(user)
+        if submit_eligible:
+            deploy_msg = create_property_deploying_message(submit_name or None)
+            yield {
+                "type": "status",
+                "phase": "deploying",
+                "message": deploy_msg,
+            }
+            submit_result = await try_server_create_property_submit(user, db)
+            if submit_result is not None:
+                data = submit_result.data or {}
+                reply = str(data.get("speak_to_user") or data.get("success_message") or "").strip()
+                yield {
+                    "type": "complete",
+                    "reply": reply,
+                    "actions": [a.model_dump() for a in submit_result.actions],
+                }
+                return
+
         suppress_tokens = False
         streamed_reply_chars = 0
+        deploy_status_emitted = False
         async for event in graph.astream_events(
             AgentState(messages=messages, actions=[]),
             config=config or None,
@@ -622,13 +647,20 @@ async def stream_agent(
                 yield {"type": "stream_reset"}
                 name = event.get("name", "")
                 tool_input = (event.get("data") or {}).get("input") or {}
-                if name == "fill_create_property" and tool_input.get("confirm_create"):
-                    status = (
-                        "Creating your property now — deploying the token and setting up "
-                        "rent on-chain. This may take a minute…"
+                if name == "fill_create_property" and create_property_deploy_pending(
+                    tool_input
+                ):
+                    pname = (
+                        str(tool_input.get("name") or "").strip()
+                        or create_property_pending_name()
                     )
-                    streamed_reply_chars += len(status)
-                    yield {"type": "token", "content": status}
+                    deploy_msg = create_property_deploying_message(pname or None)
+                    deploy_status_emitted = True
+                    yield {
+                        "type": "status",
+                        "phase": "deploying",
+                        "message": deploy_msg,
+                    }
                 yield {
                     "type": "tool_start",
                     "name": name,
@@ -652,7 +684,7 @@ async def stream_agent(
                         "didn't generate a response after tool execution"
                     )
                 LOGGER.info("[stream_agent] Final actions count: %d, actions: %s", len(actions), actions)
-                if reply and streamed_reply_chars == 0:
+                if reply and streamed_reply_chars == 0 and not deploy_status_emitted:
                     yield {"type": "token", "content": reply}
                 payload: dict[str, Any] = {
                     "type": "complete",

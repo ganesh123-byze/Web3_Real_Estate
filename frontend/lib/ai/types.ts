@@ -40,5 +40,6 @@ export type AIState =
   | "recording"
   | "transcribing"
   | "thinking"
+  | "deploying"
   | "speaking"
   | "error";

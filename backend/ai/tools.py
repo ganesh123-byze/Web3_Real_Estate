@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    create_property_field_collection_speak,
     create_property_monthly_rent_collection_prompt,
     create_property_monthly_rent_is_skip,
     create_property_monthly_rent_over_limit,
@@ -2478,11 +2479,93 @@ def _property_create_payload_from_accumulated(accumulated: dict) -> PropertyCrea
     )
 
 
-def _create_property_success_message(name: str) -> str:
-    clean = (name or "").strip()
-    if clean:
-        return f"Property '{clean}' created successfully."
-    return "Property created successfully."
+def create_property_pending_name() -> str:
+    """Property name from the in-flight create workflow session (for status messages)."""
+    session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    return str((session.get("filled") or {}).get("name") or "").strip()
+
+
+def _parse_confirm_create_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
+
+
+def create_property_deploy_pending(tool_input: dict | None = None) -> bool:
+    """True when fill_create_property is about to run server-side create + deploy."""
+    args = dict(tool_input or {})
+    explicit = _parse_confirm_create_arg(args.get("confirm_create"))
+    if explicit is True:
+        return True
+    if explicit is False:
+        return False
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return False
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    awaiting = bool(
+        pre_session.get("awaiting_create_confirmation")
+        or pre_session.get("submit_failed")
+    )
+    complete = _create_property_required_fields_present(filled)
+    if not awaiting and not complete:
+        return False
+    confirm = _create_property_confirmation_reply(args)
+    return confirm is True and complete
+
+
+def create_property_server_submit_eligible(user: AuthUser) -> tuple[bool, str]:
+    """True when the latest user turn is Yes and the server should submit now."""
+    if canonical_role(user.role) != "property_owner":
+        return False, ""
+    if _latest_human_yes_no_reply() is not True:
+        return False, ""
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("chat_property_limit_reached"):
+        return False, ""
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return False, ""
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    awaiting = bool(
+        pre_session.get("awaiting_create_confirmation")
+        or pre_session.get("submit_failed")
+    )
+    if not awaiting and not _create_property_required_fields_present(filled):
+        return False, ""
+    if not _create_property_required_fields_present(filled):
+        return False, ""
+
+    return True, str(filled.get("name") or "").strip()
+
+
+def _create_property_success_message(
+    name: str,
+    *,
+    rent_sync_warning: str | None = None,
+) -> str:
+    from backend.ai.create_property_messages import create_property_success_message
+
+    return create_property_success_message(name, rent_sync_warning=rent_sync_warning)
 
 
 def _create_property_args_change_fields(
@@ -2864,7 +2947,11 @@ def _create_property_submit_result(
         )
         row = create_property_record(db, user, payload)
         pid = int(row["id"])
-        success = _create_property_success_message(property_name)
+        rent_sync_warning = str(row.pop("_rent_sync_warning", "") or "").strip() or None
+        success = _create_property_success_message(
+            property_name,
+            rent_sync_warning=rent_sync_warning,
+        )
         _mark_create_property_completed(property_name)
         _set_workflow_session(
             _CREATE_PROPERTY_MODAL,
@@ -3103,6 +3190,16 @@ async def try_server_create_property_confirmation(
     return result
 
 
+async def try_server_create_property_submit(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Submit after the user said Yes without waiting for the LLM tool round-trip."""
+    eligible, _ = create_property_server_submit_eligible(user)
+    if not eligible:
+        return None
+    return await _fill_create_property({}, user, db)
+
+
 async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     """Drive the Create Property workflow and create the listing on submit.
 
@@ -3269,6 +3366,14 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
             AgentAction(type="OPEN_MODAL", modal=_CREATE_PROPERTY_MODAL),
             *actions,
         ]
+    field_speak = create_property_field_collection_speak(
+        str(data.get("next_field") or ""),
+        accumulated,
+    )
+    if field_speak:
+        data["speak_to_user"] = field_speak
+        data["speak_verbatim"] = True
+        data["instruction"] = "Read speak_to_user verbatim — do not rephrase the ticker question."
     return ToolResult(ok=result.ok, data=data, error=result.error, actions=actions)
 
 
