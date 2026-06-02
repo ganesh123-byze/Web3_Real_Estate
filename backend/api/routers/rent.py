@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 LOGGER = logging.getLogger(__name__)
 
 from backend.api._helpers import (
+    backfill_missed_rent_accruals,
     build_rent_distribution_preview_from_db,
     ensure_rent_property_registered,
     enrich_property_with_supply,
@@ -216,7 +217,16 @@ def sync_rent_chain(
         require_property_token(property_item)
         ensure_rent_property_registered(cursor, property_item, property_id)
         rent_wei = sync_rent_amount_to_contract(cursor, property_item, property_id)
-        sync_investors_to_contract(cursor, property_id)
+        synced_new = sync_investors_to_contract(cursor, property_id)
+        backfilled: list[dict] = []
+        try:
+            backfilled = backfill_missed_rent_accruals(cursor, property_id, None)
+        except Exception as backfill_exc:
+            LOGGER.warning(
+                "sync_rent_chain stage=rent_backfill_failed property_id=%s err=%s",
+                property_id,
+                backfill_exc,
+            )
         db.commit()
 
         info = get_rent_property_info(property_id)
@@ -226,6 +236,8 @@ def sync_rent_chain(
             "registered": bool(info.get("active")),
             "monthly_rent_wei": str(info.get("monthly_rent_wei") or rent_wei or 0),
             "investor_count": int(info.get("investor_count") or 0),
+            "investors_newly_synced": len(synced_new),
+            "rent_backfill_credits": len(backfilled),
         }
     except HTTPException:
         db.rollback()

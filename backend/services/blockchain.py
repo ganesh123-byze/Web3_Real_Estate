@@ -468,6 +468,32 @@ def add_investors_to_rent(property_id: int, investor_addresses: list[str]) -> di
     return send_contract_tx(contract, "addInvestors", [int(property_id), investor_addresses])
 
 
+def rent_contract_supports_accrue() -> bool:
+    """True when deployed RentDistribution exposes admin backfill accrual."""
+    try:
+        contract = get_rent_distribution_contract()
+        return hasattr(contract.functions, "accrueInvestorRewards")
+    except Exception:
+        return False
+
+
+def accrue_investor_rewards(property_id: int, investor_address: str, amount_wei: int) -> dict | None:
+    """Credit claimable rent for an investor who missed a past distribution (e.g. bought after payRent)."""
+    if amount_wei <= 0:
+        return None
+    contract = get_rent_distribution_contract()
+    if not hasattr(contract.functions, "accrueInvestorRewards"):
+        LOGGER.warning(
+            "[blockchain:accrue] RentDistribution missing accrueInvestorRewards — redeploy contracts"
+        )
+        return None
+    return send_contract_tx(
+        contract,
+        "accrueInvestorRewards",
+        [int(property_id), investor_address, int(amount_wei)],
+    )
+
+
 def get_rent_property_info(property_id: int) -> dict:
     contract = get_rent_distribution_contract()
     token_addr, rent_wei, active, inv_count = contract.functions.getPropertyInfo(int(property_id)).call()

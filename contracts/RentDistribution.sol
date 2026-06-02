@@ -205,6 +205,22 @@ contract RentDistribution is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+  // ── Admin: credit missed yield when an investor buys after rent was paid ──
+    function accrueInvestorRewards(
+        uint256 propertyId,
+        address investor,
+        uint256 amount
+    ) external onlyOwner {
+        require(properties[propertyId].active, "Property not registered");
+        require(investor != address(0), "Invalid investor address");
+        require(amount > 0, "Amount must be positive");
+        require(_isInvestor[propertyId][investor], "Investor not registered");
+
+        claimableRewards[investor] += amount;
+        propertyClaimableRewards[propertyId][investor] += amount;
+        emit RewardsAccrued(propertyId, investor, amount, 0);
+    }
+
     function claimRewards(uint256 propertyId) external nonReentrant whenNotPaused {
         PropertyInfo storage prop = properties[propertyId];
         require(prop.active, "Property not registered");
