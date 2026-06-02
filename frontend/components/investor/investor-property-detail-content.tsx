@@ -91,8 +91,8 @@ export function InvestorPropertyDetailContent({ property }: { property: Property
         title={property.name}
       />
 
-      <div className="rounded-lg border border-border bg-card px-4 py-3 shadow-sm">
-        <div className="grid grid-flow-col auto-cols-max items-start justify-between gap-x-4">
+      <div className="rounded-lg border border-border bg-card px-3 py-3 shadow-sm sm:px-4">
+        <div className="grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-3 sm:grid-cols-3">
           <DetailMetric
             label="Monthly rent"
             value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "—"}
@@ -259,18 +259,18 @@ function DetailMetric({
 }) {
   return (
     <div className={cn("min-w-0", className)}>
-      <div className="whitespace-nowrap text-[10px] font-semibold uppercase leading-none tracking-wide text-muted-foreground">
+      <div className="break-words text-[10px] font-semibold uppercase leading-tight tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div className="mt-1.5 max-w-[7.25rem] truncate text-[18px] font-semibold leading-tight tabular-nums text-foreground">{value}</div>
-      {subValue ? <div className="mt-0.5 truncate text-xs font-medium text-muted-foreground">{subValue}</div> : null}
+      <div className="mt-1.5 min-w-0 break-words text-[15px] font-semibold leading-tight tabular-nums text-foreground sm:text-[17px]">{value}</div>
+      {subValue ? <div className="mt-0.5 min-w-0 break-words text-xs font-medium text-muted-foreground">{subValue}</div> : null}
     </div>
   );
 }
 
 function Panel({ title, children, className }: { title: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("rounded-lg border border-border bg-muted/20 p-2.5", className)}>
+    <div className={cn("min-w-0 rounded-lg border border-border bg-muted/20 p-2.5", className)}>
       <h3 className="text-xs font-semibold text-foreground">{title}</h3>
       <div className="mt-1.5 space-y-1.5">{children}</div>
     </div>
@@ -287,11 +287,11 @@ function Row({
   emphasize?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 text-xs">
-      <span className="text-muted-foreground">{label}</span>
+    <div className="grid min-w-0 grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] items-start gap-2 text-xs">
+      <span className="min-w-0 text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "shrink-0 text-right font-medium text-foreground",
+          "min-w-0 break-words text-right font-medium text-foreground",
           emphasize && "font-semibold tabular-nums",
         )}
       >
@@ -345,16 +345,16 @@ function CopyField({
   }
 
   return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <div className="flex min-w-0 items-center gap-0.5">
+    <div className="grid min-w-0 grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] items-start gap-2 text-xs">
+      <span className="min-w-0 text-muted-foreground">{label}</span>
+      <div className="flex min-w-0 items-start justify-end gap-0.5">
         {explorer && raw ? (
           <a
             href={explorer}
             target="_blank"
             rel="noreferrer"
             className={cn(
-              "font-medium hover:underline",
+              "min-w-0 break-all text-right font-medium hover:underline",
               linkStyle ? "text-primary" : "text-foreground",
               mono && "font-mono text-xs",
             )}
@@ -365,7 +365,7 @@ function CopyField({
         ) : (
           <span
             className={cn(
-              "font-medium",
+              "min-w-0 break-all text-right font-medium",
               linkStyle && raw ? "text-primary" : "text-foreground",
               mono && "font-mono text-xs",
             )}
