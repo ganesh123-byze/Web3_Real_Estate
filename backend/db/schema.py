@@ -141,9 +141,16 @@ def init_db() -> None:
         _ensure_column(cursor, "users", "active", "BOOLEAN NOT NULL DEFAULT TRUE")
         _ensure_column(cursor, "users", "created_at", "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
         _ensure_column(cursor, "users", "last_login", "TIMESTAMP NULL")
+        _ensure_column(cursor, "users", "full_name", "VARCHAR(160) NULL")
+        _ensure_column(cursor, "users", "display_id", "VARCHAR(16) NULL")
+        _ensure_column(cursor, "users", "profile_role", "VARCHAR(20) NULL")
         cursor.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wallet_lower "
             "ON users (LOWER(wallet_address))"
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_id "
+            "ON users (display_id) WHERE display_id IS NOT NULL AND display_id <> ''"
         )
         _schema_checkpoint(conn, "users")
 

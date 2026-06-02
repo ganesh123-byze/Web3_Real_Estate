@@ -154,6 +154,9 @@ class UserRead(BaseModel):
     wallet_address: str
     email: Optional[str] = None
     kyc_status: str
+    full_name: Optional[str] = None
+    display_id: Optional[str] = None
+    profile_role: Optional[str] = None
 
 
 class OwnerInvestorPositionRead(BaseModel):
@@ -169,6 +172,9 @@ class OwnerInvestorRead(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
     kyc_status: Optional[str] = None
+    full_name: Optional[str] = None
+    display_id: Optional[str] = None
+    profile_role: Optional[str] = None
     positions: list[OwnerInvestorPositionRead]
     properties_count: int
     avg_ownership_pct: float
@@ -244,6 +250,9 @@ class ClaimRewardsConfirmResponse(BaseModel):
 class RentPaymentRead(BaseModel):
     id: int
     tenant_wallet: str
+    tenant_full_name: Optional[str] = None
+    tenant_display_id: Optional[str] = None
+    tenant_profile_role: Optional[str] = None
     property_id: int
     property_name: Optional[str] = None
     amount_wei: str

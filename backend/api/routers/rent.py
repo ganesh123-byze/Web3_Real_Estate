@@ -279,6 +279,10 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
         cursor.execute(
             """
             SELECT u.id AS user_id, u.wallet_address, u.email, u.kyc_status,
+                   u.full_name,
+                   COALESCE(NULLIF(u.display_id, ''),
+                     CASE WHEN u.role = 'property_owner' THEN 'ADM-' WHEN u.role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(u.id::text, 3, '0')) AS display_id,
+                   COALESCE(u.profile_role, u.role) AS profile_role,
                    p.id AS property_id, p.name AS property_name, p.token_symbol,
                    p.token_supply, o.token_amount AS token_amount_base
             FROM token_ownerships o
@@ -309,6 +313,9 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
                 "user_id": row.get("user_id"),
                 "email": row.get("email"),
                 "kyc_status": row.get("kyc_status"),
+                "full_name": row.get("full_name"),
+                "display_id": row.get("display_id"),
+                "profile_role": row.get("profile_role"),
                 "positions": [],
             },
         )
@@ -336,6 +343,9 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
                 user_id=bucket.get("user_id"),
                 email=bucket.get("email"),
                 kyc_status=bucket.get("kyc_status"),
+                full_name=bucket.get("full_name"),
+                display_id=bucket.get("display_id"),
+                profile_role=bucket.get("profile_role"),
                 positions=positions,
                 properties_count=len(positions),
                 avg_ownership_pct=avg_pct,
@@ -376,10 +386,14 @@ def admin_rent_payments(db=Depends(get_db)):
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT rp.*, p.name AS property_name, t.wallet_address AS tenant_wallet "
+            "SELECT rp.*, p.name AS property_name, t.wallet_address AS tenant_wallet, "
+            "u.full_name AS tenant_full_name, "
+            "COALESCE(NULLIF(u.display_id, ''), CASE WHEN u.role = 'property_owner' THEN 'ADM-' WHEN u.role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(u.id::text, 3, '0')) AS tenant_display_id, "
+            "COALESCE(u.profile_role, u.role) AS tenant_profile_role "
             "FROM rent_payments rp "
             "JOIN tenants t ON t.id = rp.tenant_id "
             "JOIN properties p ON p.id = rp.property_id "
+            "LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address) "
             "ORDER BY rp.payment_date DESC"
         )
         rows = cursor.fetchall()
@@ -716,9 +730,14 @@ def confirm_rent_payment(
         cursor.execute(
             "SELECT rp.id, rp.amount_wei, rp.amount_eth, rp.tx_hash, rp.block_number, "
             "rp.payment_date, rp.payment_status, rp.tenant_id, rp.property_id, "
-            "p.name AS property_name, t.wallet_address AS tenant_wallet "
+            "p.name AS property_name, t.wallet_address AS tenant_wallet, "
+            "u.full_name AS tenant_full_name, "
+            "COALESCE(NULLIF(u.display_id, ''), CASE WHEN u.role = 'property_owner' THEN 'ADM-' WHEN u.role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(u.id::text, 3, '0')) AS tenant_display_id, "
+            "COALESCE(u.profile_role, u.role) AS tenant_profile_role "
             "FROM rent_payments rp JOIN tenants t ON t.id = rp.tenant_id "
-            "JOIN properties p ON p.id = rp.property_id WHERE rp.tx_hash = %s",
+            "JOIN properties p ON p.id = rp.property_id "
+            "LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address) "
+            "WHERE rp.tx_hash = %s",
             (tx_hash_normalized,),
         )
         rent_payment = cursor.fetchone()
@@ -780,10 +799,14 @@ def tenant_payment_history(
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT rp.*, p.name AS property_name, t.wallet_address AS tenant_wallet "
+            "SELECT rp.*, p.name AS property_name, t.wallet_address AS tenant_wallet, "
+            "u.full_name AS tenant_full_name, "
+            "COALESCE(NULLIF(u.display_id, ''), CASE WHEN u.role = 'property_owner' THEN 'ADM-' WHEN u.role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(u.id::text, 3, '0')) AS tenant_display_id, "
+            "COALESCE(u.profile_role, u.role) AS tenant_profile_role "
             "FROM rent_payments rp "
             "JOIN tenants t ON t.id = rp.tenant_id "
             "JOIN properties p ON p.id = rp.property_id "
+            "LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address) "
             "WHERE LOWER(t.wallet_address) = LOWER(%s) "
             "ORDER BY rp.payment_date DESC",
             (checksum,),

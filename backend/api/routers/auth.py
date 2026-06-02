@@ -68,6 +68,7 @@ class RegisterRequest(BaseModel):
     nonce: str = Field(..., min_length=8)
     role: str
     email: Optional[str] = None
+    full_name: str = Field(..., min_length=1, max_length=160)
 
 
 class MeResponse(BaseModel):
@@ -76,6 +77,9 @@ class MeResponse(BaseModel):
     email: Optional[str] = None
     kyc_status: str
     active: bool
+    full_name: Optional[str] = None
+    display_id: Optional[str] = None
+    profile_role: Optional[str] = None
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -88,6 +92,9 @@ def _user_to_public_dict(user: AuthUser) -> dict:
         "email": user.email,
         "kyc_status": user.kyc_status,
         "active": user.active,
+        "full_name": user.full_name,
+        "display_id": user.display_id,
+        "profile_role": user.profile_role,
     }
 
 
@@ -182,7 +189,13 @@ def post_register(payload: RegisterRequest, request: Request, db=Depends(get_db)
 
     role = (payload.role or "").strip().lower()
     try:
-        user = register_user(db, wallet_address=recovered, role=role, email=payload.email)
+        user = register_user(
+            db,
+            wallet_address=recovered,
+            role=role,
+            email=payload.email,
+            full_name=payload.full_name,
+        )
     except AuthError as exc:
         msg = str(exc)
         if "already registered" in msg:
@@ -213,6 +226,9 @@ def get_me(user: AuthUser = Depends(get_current_user)):
         email=user.email,
         kyc_status=user.kyc_status,
         active=user.active,
+        full_name=user.full_name,
+        display_id=user.display_id,
+        profile_role=user.profile_role,
     )
 
 

@@ -286,6 +286,34 @@ class AuthUser:
     email: Optional[str]
     kyc_status: str
     active: bool
+    full_name: Optional[str] = None
+    display_id: Optional[str] = None
+    profile_role: Optional[str] = None
+
+
+def _clean_full_name(value: Optional[str]) -> Optional[str]:
+    cleaned = " ".join(str(value or "").strip().split())
+    return cleaned[:160] or None
+
+
+def _role_prefix(role: str) -> str:
+    role = canonical_role(role)
+    if role == "property_owner":
+        return "ADM"
+    if role == "tenant":
+        return "TEN"
+    return "INV"
+
+
+def _next_display_id(cursor, role: str) -> str:
+    prefix = _role_prefix(role)
+    cursor.execute(
+        "SELECT COALESCE(MAX(CAST(SUBSTRING(display_id FROM 5) AS INTEGER)), 0) "
+        "FROM users WHERE display_id LIKE %s",
+        (f"{prefix}-%",),
+    )
+    next_num = int(cursor.fetchone()[0] or 0) + 1
+    return f"{prefix}-{next_num:03d}"
 
 
 def get_user_by_wallet(db, wallet_address: str) -> Optional[AuthUser]:
@@ -293,7 +321,7 @@ def get_user_by_wallet(db, wallet_address: str) -> Optional[AuthUser]:
     cursor = db.cursor()
     try:
         cursor.execute(
-            "SELECT id, wallet_address, role, email, kyc_status, active "
+            "SELECT id, wallet_address, role, email, kyc_status, active, full_name, display_id, profile_role "
             "FROM users WHERE LOWER(wallet_address) = %s",
             (wallet_lc,),
         )
@@ -311,6 +339,16 @@ def get_user_by_wallet(db, wallet_address: str) -> Optional[AuthUser]:
             )
             db.commit()
             raw_role = "property_owner"
+        full_name = row[6]
+        display_id = row[7]
+        profile_role = row[8] or canonical_role(raw_role)
+        if not display_id or not row[8]:
+            display_id = display_id or _next_display_id(cursor, canonical_role(raw_role))
+            cursor.execute(
+                "UPDATE users SET display_id = %s, profile_role = %s WHERE id = %s",
+                (display_id, profile_role, user_id),
+            )
+            db.commit()
         return AuthUser(
             id=user_id,
             wallet_address=wallet_addr,
@@ -318,12 +356,22 @@ def get_user_by_wallet(db, wallet_address: str) -> Optional[AuthUser]:
             email=row[3],
             kyc_status=row[4],
             active=bool(row[5]),
+            full_name=full_name,
+            display_id=display_id,
+            profile_role=profile_role,
         )
     finally:
         cursor.close()
 
 
-def register_user(db, *, wallet_address: str, role: str, email: Optional[str] = None) -> AuthUser:
+def register_user(
+    db,
+    *,
+    wallet_address: str,
+    role: str,
+    email: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> AuthUser:
     """Create a new ``users`` row for ``wallet_address`` with ``role``.
 
     Any verified MetaMask wallet can self-register as property_owner, investor,
@@ -334,6 +382,9 @@ def register_user(db, *, wallet_address: str, role: str, email: Optional[str] = 
         raise AuthError(f"Invalid role: {role}. Must be one of: {', '.join(sorted(VALID_ROLES))}")
     if not is_valid_eth_address(wallet_address):
         raise AuthError("Invalid wallet address")
+    cleaned_name = _clean_full_name(full_name)
+    if not cleaned_name:
+        raise AuthError("Full name is required")
 
     existing = get_user_by_wallet(db, wallet_address)
     if existing:
@@ -342,11 +393,13 @@ def register_user(db, *, wallet_address: str, role: str, email: Optional[str] = 
     wallet_lc = normalize_address(wallet_address)
     cursor = db.cursor()
     try:
+        profile_role = canonical_role(role)
+        display_id = _next_display_id(cursor, profile_role)
         cursor.execute(
-            "INSERT INTO users (wallet_address, role, email, active, created_at, last_login) "
-            "VALUES (%s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
-            "RETURNING id, wallet_address, role, email, kyc_status, active",
-            (wallet_lc, role, email),
+            "INSERT INTO users (wallet_address, role, email, full_name, display_id, profile_role, active, created_at, last_login) "
+            "VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+            "RETURNING id, wallet_address, role, email, kyc_status, active, full_name, display_id, profile_role",
+            (wallet_lc, role, email, cleaned_name, display_id, profile_role),
         )
         row = cursor.fetchone()
         db.commit()
@@ -357,6 +410,9 @@ def register_user(db, *, wallet_address: str, role: str, email: Optional[str] = 
             email=row[3],
             kyc_status=row[4],
             active=bool(row[5]),
+            full_name=row[6],
+            display_id=row[7],
+            profile_role=row[8],
         )
     except Exception:
         db.rollback()
