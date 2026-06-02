@@ -21,6 +21,7 @@ import { getConnectedWallet, lookupWalletRegistration, signIn, registerWallet } 
 import { clearSession, getSession } from "@/lib/api";
 import { toast } from "sonner";
 import { cn, shortAddress } from "@/lib/utils";
+import { formatWalletTransactionError } from "@/lib/wallet-errors";
 
 type Role = "investor" | "property_owner" | "tenant";
 type PendingAction = "signin" | "signup" | "register" | null;
@@ -106,7 +107,11 @@ export default function LandingPage() {
     } catch (e: any) {
       const msg = e?.message || "Sign-in failed.";
       const isReject = /denied|rejected/i.test(msg);
-      setError(isReject ? "Signature canceled in MetaMask." : msg);
+      setError(
+        isReject
+          ? "Signature canceled in MetaMask."
+          : formatWalletTransactionError(e, "MetaMask request failed. Please try again."),
+      );
     } finally {
       setPendingAction(null);
     }
@@ -127,7 +132,7 @@ export default function LandingPage() {
       setView("redirect");
       router.push(`/${session.user.role}`);
     } catch (e: any) {
-      setError(e?.message || "Registration failed.");
+      setError(formatWalletTransactionError(e, "Registration failed. Please try again."));
     } finally {
       setPendingAction(null);
     }

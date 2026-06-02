@@ -5,8 +5,7 @@ import { MetaMaskIcon } from "@/components/icons/metamask";
 import { Button } from "@/components/ui/button";
 import { logout } from "@/lib/auth";
 import { AccountSetNameForm } from "@/components/layout/account-set-name-form";
-import { AccountWalletCopy } from "@/components/layout/account-wallet-copy";
-import { accountPrimaryLabel, accountRoleLabel, identityFromSessionUser } from "@/lib/identity";
+import { accountPrimaryLabel, identityFromSessionUser } from "@/lib/identity";
 import { useSessionAccount } from "@/lib/hooks/use-session-account";
 
 export function SidebarWalletPanel() {
@@ -14,7 +13,6 @@ export function SidebarWalletPanel() {
   const [open, setOpen] = useState(false);
   const identity = identityFromSessionUser(session?.user);
   const primary = accountPrimaryLabel(identity);
-  const role = accountRoleLabel(identity);
 
   return (
     <div className="mt-auto rounded-2xl border border-border/70 bg-background/70 p-2 shadow-none transition-shadow hover:shadow-sm">
@@ -32,13 +30,11 @@ export function SidebarWalletPanel() {
               <span className="block truncate text-xs font-medium text-foreground" title={primary}>
                 {primary}
               </span>
-              <span className="block truncate text-[11px] text-muted-foreground">{role}</span>
             </span>
           </button>
           {open ? (
             <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
               {!identity?.full_name?.trim() ? <AccountSetNameForm /> : null}
-              <AccountWalletCopy user={identity} />
               <Button
                 type="button"
                 variant="outline"
