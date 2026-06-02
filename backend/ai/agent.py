@@ -644,12 +644,13 @@ async def stream_agent(
                     yield {"type": "token", "content": chunk.content}
             elif kind == "on_tool_start":
                 suppress_tokens = True
-                yield {"type": "stream_reset"}
                 name = event.get("name", "")
                 tool_input = (event.get("data") or {}).get("input") or {}
-                if name == "fill_create_property" and create_property_deploy_pending(
-                    tool_input
-                ):
+                deploy_pending = (
+                    name == "fill_create_property"
+                    and create_property_deploy_pending(tool_input)
+                )
+                if deploy_pending:
                     pname = (
                         str(tool_input.get("name") or "").strip()
                         or create_property_pending_name()
@@ -661,6 +662,8 @@ async def stream_agent(
                         "phase": "deploying",
                         "message": deploy_msg,
                     }
+                else:
+                    yield {"type": "stream_reset"}
                 yield {
                     "type": "tool_start",
                     "name": name,

@@ -71,3 +71,48 @@ def test_server_submit_not_eligible_while_collecting_fields():
     finally:
         _clear_workflow_session("CREATE_PROPERTY")
         reset_current_thread_id(token)
+
+
+def test_server_submit_eligible_on_voice_create_phrases():
+    phrases = (
+        "Ok, create this property.",
+        "Please create this property.",
+        "Go ahead and create the listing.",
+    )
+    for phrase in phrases:
+        token = set_current_thread_id(f"test:voice-submit:{phrase[:12]}")
+        msg_token = set_current_messages([{"type": "human", "content": phrase}])
+        try:
+            _clear_workflow_session("CREATE_PROPERTY")
+            from backend.ai import tools
+
+            tools._set_workflow_session(
+                "CREATE_PROPERTY",
+                {
+                    "in_progress": True,
+                    "filled": _complete_filled(),
+                    "awaiting_create_confirmation": True,
+                },
+            )
+            eligible, name = create_property_server_submit_eligible(_owner())
+            assert eligible is True, phrase
+            assert name == "Mega Estate", phrase
+        finally:
+            _clear_workflow_session("CREATE_PROPERTY")
+            reset_current_messages(msg_token)
+            reset_current_thread_id(token)
+
+
+def test_voice_create_phrase_not_confirm_before_summary():
+    token = set_current_thread_id("test:voice-submit-no-await")
+    msg_token = set_current_messages(
+        [{"type": "human", "content": "Please create this property."}]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        eligible, _ = create_property_server_submit_eligible(_owner())
+        assert eligible is False
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)

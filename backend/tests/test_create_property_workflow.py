@@ -226,6 +226,44 @@ def test_repeated_second_create_attempts_return_same_refresh_message():
         reset_current_thread_id(token)
 
 
+def test_edit_name_after_confirmation_does_not_reask_monthly_rent():
+    token = set_current_thread_id("test:create:edit-name-after-summary")
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        from backend.ai import tools
+
+        filled = {
+            "name": "Old Name",
+            "location": "Hyderabad",
+            "total_value": "100000",
+            "token_supply": "1000",
+            "token_symbol": "SVR",
+            "monthly_rent_eth": "1",
+        }
+        tools._set_workflow_session(
+            "CREATE_PROPERTY",
+            {
+                "in_progress": True,
+                "filled": filled,
+                "awaiting_create_confirmation": True,
+            },
+        )
+        result = asyncio.run(
+            _fill_create_property({"name": "SVR XQ2 Hostel"}, _dummy_owner(), None)
+        )
+        assert result.ok
+        assert result.data.get("awaiting_create_confirmation") is True
+        assert result.data.get("next_field") is None
+        assert result.data.get("filled", {}).get("monthly_rent_eth") == "1"
+        assert result.data.get("filled", {}).get("name") == "SVR XQ2 Hostel"
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "SVR XQ2 Hostel" in speak
+        assert "monthly rent" not in speak.lower() or "monthly rent (eth): 1" in speak.lower()
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_thread_id(token)
+
+
 def test_submit_create_active_session_keeps_fill_and_submit_actions():
     token = set_current_thread_id("test:create:active-submit")
     try:

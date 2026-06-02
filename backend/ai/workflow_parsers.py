@@ -358,6 +358,36 @@ def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
     )
 
 
+_CREATE_PROPERTY_SUBMIT_RE = re.compile(
+    r"(?:"
+    r"\b(?:please\s+)?(?:go\s+ahead\s+and\s+)?create\s+(?:this\s+)?(?:property|listing)\b"
+    r"|\b(?:ok|okay)[,.]?\s*(?:please\s+)?create\b"
+    r"|\b(?:submit|deploy)\s+(?:this\s+)?(?:property|listing)\b"
+    r"|\bcreate\s+and\s+deploy\b"
+    r"|\b(?:please\s+)?create\s+it\b"
+    r"|\blet'?s\s+create\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def parse_create_property_submit_intent(text: str) -> bool | None:
+    """True when the user confirms create-property after the summary (voice-friendly).
+
+    Only treats explicit create/submit phrases as Yes — not \"create a new property\"
+  at workflow start (callers must gate on ``awaiting_create_confirmation``).
+    """
+    yn = parse_yes_no_confirmation(text)
+    if yn is not None:
+        return yn
+    t = _strip_noise(text).lower()
+    if not t:
+        return None
+    if _CREATE_PROPERTY_SUBMIT_RE.search(t):
+        return True
+    return None
+
+
 def parse_yes_no_confirmation(text: str) -> bool | None:
     """Parse explicit yes/no answers (e.g. skip accidental yes/no as field values)."""
     t = _strip_noise(text).lower().strip("'\".,!? ")

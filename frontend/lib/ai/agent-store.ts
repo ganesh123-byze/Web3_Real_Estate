@@ -432,6 +432,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         set({ messages: appendOrUpdateAssistant(get().messages, delta) });
       },
       onStreamReset: () => {
+        // Keep the deploy "please hold" line visible through tool execution.
+        if (get().state === "deploying") return;
         set({ messages: resetTrailingAssistant(get().messages) });
       },
       onStatus: ({ phase, message }) => {
