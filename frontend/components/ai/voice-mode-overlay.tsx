@@ -31,9 +31,11 @@ export function VoiceModeOverlay() {
 
   if (!voiceMode) return null;
 
+  const isDeploying = state === "deploying";
   const isSpeaking = state === "speaking" || aiSpeaking;
   const isThinking = state === "thinking" || state === "transcribing";
-  const isListening = !isSpeaking && (state === "listening" || state === "recording");
+  const isListening =
+    !isSpeaking && !isDeploying && (state === "listening" || state === "recording");
 
   // Orb scale follows mic level when listening; gentle breathing pulse when AI speaks.
   const orbScale = isListening ? 1 + smoothLevel * 0.55 : 1;
@@ -79,7 +81,11 @@ export function VoiceModeOverlay() {
           />
 
           <div className="flex min-h-[46px] max-w-md flex-col items-center justify-center gap-2 text-center">
-            {isThinking || isSpeaking ? (
+            {isDeploying ? (
+              <span className="text-sm leading-relaxed text-primary">
+                Deploying your listing…
+              </span>
+            ) : isThinking || isSpeaking ? (
               <VoiceDots />
             ) : error ? (
               <span className="text-sm leading-relaxed text-destructive">{error}</span>
@@ -101,7 +107,7 @@ export function VoiceModeOverlay() {
                 {recent.lastUser}
               </motion.div>
             )}
-            {recent.lastAssistant && !isThinking && !isSpeaking && (
+            {recent.lastAssistant && (!isThinking || isDeploying) && !isSpeaking && (
               <motion.div
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}

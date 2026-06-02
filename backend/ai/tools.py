@@ -261,15 +261,44 @@ def _create_property_session_preserves_filled(session: dict[str, Any] | None) ->
     )
 
 
-def _latest_human_yes_no_reply() -> bool | None:
+def _latest_human_utterance() -> str:
     for msg in reversed(_current_history() or []):
         if _message_role(msg) not in ("human", "user"):
             continue
-        text = _message_content(msg)
-        if not text:
-            continue
-        return parse_yes_no_confirmation(text)
-    return None
+        return _message_content(msg)
+    return ""
+
+
+def _latest_human_yes_no_reply() -> bool | None:
+    text = _latest_human_utterance()
+    if not text:
+        return None
+    return parse_yes_no_confirmation(text)
+
+
+def _create_property_awaiting_user_confirmation() -> bool:
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    return bool(
+        pre_session.get("awaiting_create_confirmation")
+        or pre_session.get("submit_failed")
+    )
+
+
+def _latest_human_create_property_confirm() -> bool | None:
+    """Yes/no or voice phrases like \"create this property\" after the summary."""
+    text = _latest_human_utterance()
+    if not text:
+        return None
+    yn = parse_yes_no_confirmation(text)
+    if yn is not None:
+        return yn
+    if not _create_property_awaiting_user_confirmation():
+        return None
+    from backend.ai.workflow_parsers import parse_create_property_submit_intent
+
+    return parse_create_property_submit_intent(text)
 
 
 def _merge_last_user_utterance(
@@ -280,7 +309,7 @@ def _merge_last_user_utterance(
 ) -> dict[str, str]:
     """If the LLM omitted the field the user just answered, use the last human line."""
     session = _get_workflow_session(modal)
-    if modal == _CREATE_PROPERTY_MODAL and _latest_human_yes_no_reply() is not None:
+    if modal == _CREATE_PROPERTY_MODAL and _latest_human_create_property_confirm() is not None:
         return accumulated
     next_field = session.get("next_field")
     missing = [f for f in required if f not in accumulated or not accumulated.get(f)]
@@ -2532,7 +2561,7 @@ def create_property_server_submit_eligible(user: AuthUser) -> tuple[bool, str]:
     """True when the latest user turn is Yes and the server should submit now."""
     if canonical_role(user.role) != "property_owner":
         return False, ""
-    if _latest_human_yes_no_reply() is not True:
+    if _latest_human_create_property_confirm() is not True:
         return False, ""
 
     pre_session = _reconcile_create_property_session_after_outcome(
@@ -2546,10 +2575,7 @@ def create_property_server_submit_eligible(user: AuthUser) -> tuple[bool, str]:
     filled = _backfill_create_property_filled_from_history(
         normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
     )
-    awaiting = bool(
-        pre_session.get("awaiting_create_confirmation")
-        or pre_session.get("submit_failed")
-    )
+    awaiting = _create_property_awaiting_user_confirmation()
     if not awaiting and not _create_property_required_fields_present(filled):
         return False, ""
     if not _create_property_required_fields_present(filled):
@@ -2593,7 +2619,7 @@ def _create_property_confirmation_reply(args: dict) -> bool | None:
     confirm = args.get("confirm_create")
     if confirm is not None:
         return bool(confirm)
-    return _latest_human_yes_no_reply()
+    return _latest_human_create_property_confirm()
 
 
 def _create_property_pre_submit_block(accumulated: dict[str, str]) -> ToolResult | None:
@@ -3149,7 +3175,7 @@ async def try_server_create_property_confirmation(
     """
     if canonical_role(user.role) != "property_owner":
         return None
-    if _latest_human_yes_no_reply() is not None:
+    if _latest_human_create_property_confirm() is not None:
         return None
 
     pre_session = _reconcile_create_property_session_after_outcome(
@@ -3255,6 +3281,8 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
         and session_name
         and incoming_name.lower() != session_name.lower()
         and pre_session.get("in_progress")
+        and not pre_session.get("awaiting_create_confirmation")
+        and not pre_session.get("submit_failed")
         and not _create_property_chat_limit_reached(pre_session)
     ):
         _clear_workflow_session(_CREATE_PROPERTY_MODAL)
@@ -3314,6 +3342,24 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     )
     if rent_gated is not None:
         return rent_gated
+
+    if (
+        pre_session.get("awaiting_create_confirmation")
+        and _create_property_args_change_fields(args, pre_session.get("filled"))
+        and not missing
+        and _create_property_required_fields_present(accumulated)
+        and not _create_property_needs_monthly_rent_collection(accumulated)
+        and _create_property_confirmation_reply(args) is None
+    ):
+        return _create_property_confirmation_prompt(
+            accumulated,
+            actions=actions,
+            data=data,
+            bootstrap_for_turn=bootstrap_for_turn,
+            needs_ui_bootstrap=needs_ui_bootstrap,
+            had_active_session=had_active_session,
+            pre_session=pre_session,
+        )
 
     if _create_property_needs_monthly_rent_collection(accumulated) and not args.get(
         "monthly_rent_eth"

@@ -152,9 +152,12 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
 5. When the tool reports `awaiting_create_confirmation: true`, it returns
    `speak_to_user` with a summary of every collected value plus Edit and Delete
    options. Read `speak_to_user` to the user verbatim — do NOT rewrite the
-   summary yourself. Wait for their reply, then ALWAYS call fill_create_property:
-     - Yes → call fill_create_property with confirm_create=true only (do not re-send
-       all field values — the server already has them).
+   summary yourself and do NOT ask a second confirmation question. Wait for
+   their reply, then ALWAYS call fill_create_property:
+     - Yes / "create this property" / "please create" → call fill_create_property
+       with confirm_create=true only (do not re-send all field values — the
+       server already has them). The server deploys and speaks the hold/success
+       messages; do not paraphrase.
      - Edit → pass only the updated field(s); the server updates the draft and
        shows the summary again (with Edit and Delete options).
      - Delete or No → call fill_create_property with confirm_create=false (clears
