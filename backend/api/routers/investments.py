@@ -35,6 +35,7 @@ from backend.services.blockchain import (
 )
 from backend.services.investment_funding import (
     InvestmentFundingError,
+    check_investor_can_fund_investment,
     investment_required_wei,
     read_sale_price_per_token_wei,
 )
@@ -170,6 +171,14 @@ def prepare_investment(
         except InvestmentFundingError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         eth_amount = from_wei(required_wei)
+
+        funding = check_investor_can_fund_investment(
+            checksum,
+            property_item,
+            int(payload.token_amount),
+        )
+        if not funding.ok:
+            raise HTTPException(status_code=402, detail=funding.speak_to_user)
 
         cursor.execute(
             "INSERT INTO investments (property_id, investor_wallet, token_amount_base, "

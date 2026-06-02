@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CheckCircle2, ShieldCheck, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
+import { formatWalletTransactionError } from "@/lib/wallet-errors";
 import { queryKeys } from "@/lib/queries";
 import {
   Dialog,
@@ -93,9 +94,10 @@ export function InvestorInvestDialog({
       queryClient.invalidateQueries({ queryKey: queryKeys.properties });
       onOpenChange(false);
       setStep("idle");
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearPendingWorkflowActions("INVEST_PROPERTY");
-      const errMsg = err?.message || "Investment failed.";
+      setStep("idle");
+      const errMsg = formatWalletTransactionError(err, "Investment failed. Please try again.");
       toast.error(errMsg);
       emitWorkflowCompletion({ modal: "INVEST_PROPERTY", status: "error", message: errMsg });
     } finally {

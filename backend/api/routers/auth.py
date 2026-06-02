@@ -4,8 +4,10 @@ Routes:
 - ``POST /auth/nonce``     issue a SIWE-style signing challenge
 - ``POST /auth/verify``    verify signed nonce + issue session JWT
 - ``POST /auth/register``  register a new wallet → role
-- ``GET  /auth/me``        return the authenticated wallet + role
-- ``POST /auth/logout``    revoke the current session
+- ``GET  /auth/me``            return the authenticated wallet + role
+- ``POST /auth/me/name``       update display name (legacy accounts)
+- ``PATCH /auth/me``           same as POST /auth/me/name
+- ``POST /auth/logout``        revoke the current session
 
 All other (business) endpoints remain functionally unchanged. Authorization is
 applied at the router layer via the ``backend.api.deps`` helpers.
@@ -30,6 +32,7 @@ from backend.services.auth import (
     register_user,
     revoke_session,
     touch_last_login,
+    update_user_full_name,
     verify_signature,
 )
 
@@ -72,6 +75,7 @@ class RegisterRequest(BaseModel):
 
 
 class MeResponse(BaseModel):
+    id: int
     wallet_address: str
     role: str
     email: Optional[str] = None
@@ -80,6 +84,10 @@ class MeResponse(BaseModel):
     full_name: Optional[str] = None
     display_id: Optional[str] = None
     profile_role: Optional[str] = None
+
+
+class UpdateMeRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=160)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -96,6 +104,20 @@ def _user_to_public_dict(user: AuthUser) -> dict:
         "display_id": user.display_id,
         "profile_role": user.profile_role,
     }
+
+
+def _me_response(user: AuthUser) -> MeResponse:
+    return MeResponse(
+        id=user.id,
+        wallet_address=user.wallet_address,
+        role=user.role,
+        email=user.email,
+        kyc_status=user.kyc_status,
+        active=user.active,
+        full_name=user.full_name,
+        display_id=user.display_id,
+        profile_role=user.profile_role,
+    )
 
 
 def _client_meta(request: Request) -> tuple[str, str]:
@@ -164,6 +186,8 @@ def post_verify(payload: VerifyRequest, request: Request, db=Depends(get_db)):
             ip_address=ip,
         )
         touch_last_login(db, user.wallet_address)
+        # Re-load so display_id / profile_role backfills from get_user_by_wallet are included.
+        user = get_user_by_wallet(db, recovered) or user
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -220,16 +244,39 @@ def post_register(payload: RegisterRequest, request: Request, db=Depends(get_db)
 
 @router.get("/me", response_model=MeResponse)
 def get_me(user: AuthUser = Depends(get_current_user)):
-    return MeResponse(
-        wallet_address=user.wallet_address,
-        role=user.role,
-        email=user.email,
-        kyc_status=user.kyc_status,
-        active=user.active,
-        full_name=user.full_name,
-        display_id=user.display_id,
-        profile_role=user.profile_role,
-    )
+    return _me_response(user)
+
+
+def _update_display_name(
+    payload: UpdateMeRequest,
+    user: AuthUser,
+    db,
+) -> MeResponse:
+    try:
+        updated = update_user_full_name(db, user.wallet_address, payload.full_name)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _me_response(updated)
+
+
+@router.post("/me/name", response_model=MeResponse)
+def post_me_name(
+    payload: UpdateMeRequest,
+    user: AuthUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Update the signed-in user's display name (POST alias for clients / proxies that block PATCH)."""
+    return _update_display_name(payload, user, db)
+
+
+@router.patch("/me", response_model=MeResponse)
+def patch_me(
+    payload: UpdateMeRequest,
+    user: AuthUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Update the signed-in user's display name (e.g. legacy accounts missing full_name)."""
+    return _update_display_name(payload, user, db)
 
 
 @router.post("/logout")

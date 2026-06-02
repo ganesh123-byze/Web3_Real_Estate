@@ -364,6 +364,35 @@ def get_user_by_wallet(db, wallet_address: str) -> Optional[AuthUser]:
         cursor.close()
 
 
+def update_user_full_name(db, wallet_address: str, full_name: str) -> AuthUser:
+    """Persist a display name for an existing user."""
+    cleaned = _clean_full_name(full_name)
+    if not cleaned:
+        raise AuthError("Full name is required.")
+    wallet_lc = normalize_address(wallet_address)
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "UPDATE users SET full_name = %s WHERE LOWER(wallet_address) = %s",
+            (cleaned, wallet_lc),
+        )
+        if cursor.rowcount == 0:
+            raise AuthError("User not found")
+        db.commit()
+    except AuthError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cursor.close()
+    user = get_user_by_wallet(db, wallet_address)
+    if user is None:
+        raise AuthError("User not found")
+    return user
+
+
 def register_user(
     db,
     *,

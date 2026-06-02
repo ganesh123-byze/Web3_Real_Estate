@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
@@ -19,7 +20,10 @@ from backend.services.auth import normalize_address
 if TYPE_CHECKING:
     from backend.services.auth import AuthUser
 from backend.config.settings import RENT_TOKEN_DECIMALS, TOKEN_DECIMALS
+LOGGER = logging.getLogger(__name__)
+
 from backend.services.blockchain import (
+    accrue_investor_rewards,
     add_investors_to_rent,
     decode_contract_events_from_receipt,
     deploy_security_token,
@@ -27,6 +31,7 @@ from backend.services.blockchain import (
     get_contract,
     get_rent_investors,
     get_rent_property_info,
+    rent_contract_supports_accrue,
     get_transaction,
     get_transaction_receipt,
     get_web3,
@@ -787,7 +792,149 @@ def sync_investors_to_contract(cursor, property_id: int) -> list[str]:
     new_investors = [a for a in addresses if a not in already]
     if new_investors:
         add_investors_to_rent(property_id, new_investors)
+        try:
+            backfill_missed_rent_accruals(cursor, property_id, new_investors)
+        except Exception as exc:
+            LOGGER.warning(
+                "sync_investors stage=rent_backfill_failed property_id=%s investors=%s err=%s",
+                property_id,
+                new_investors,
+                exc,
+            )
     return new_investors
+
+
+def backfill_missed_rent_accruals(
+    cursor,
+    property_id: int,
+    investor_wallets: list[str] | None = None,
+) -> list[dict]:
+    """Credit past rent yield to investors who bought after ``payRent`` (late co-investors).
+
+    When only one investor held tokens at payment time, ``payRent`` accrues their share only;
+    unsold inventory tokens are skipped, leaving part of the rent unallocated. After the
+    second investor buys, this backfill accrues their proportional share for each prior
+    distribution they missed in the DB/indexer.
+    """
+    if not rent_contract_supports_accrue():
+        LOGGER.warning(
+            "backfill_missed_rent_accruals skipped property_id=%s — "
+            "Redeploy RentDistribution with accrueInvestorRewards",
+            property_id,
+        )
+        return []
+
+    try:
+        info = get_rent_property_info(property_id)
+    except Exception:
+        return []
+    if not info.get("active"):
+        return []
+
+    web3 = get_web3()
+    wallet_filter: set[str] | None = None
+    if investor_wallets:
+        wallet_filter = {web3.to_checksum_address(w) for w in investor_wallets}
+
+    cursor.execute(
+        "SELECT rd.id AS distribution_id, rd.total_rent_collected, rd.distribution_tx_hash, "
+        "rd.distributed_at "
+        "FROM rent_distributions rd "
+        "WHERE rd.property_id = %s "
+        "ORDER BY rd.distributed_at ASC",
+        (property_id,),
+    )
+    distributions = cursor.fetchall()
+    if not distributions:
+        return []
+
+    credited: list[dict] = []
+    for dist in distributions:
+        rent_wei = int(dist.get("total_rent_collected") or 0)
+        if rent_wei <= 0:
+            continue
+        distribution_id = int(dist["distribution_id"])
+        dist_tx = dist.get("distribution_tx_hash") or ""
+        distributed_at = dist.get("distributed_at")
+
+        breakdown = build_rent_distribution_preview_from_db(cursor, property_id, rent_wei)
+        for row in breakdown:
+            wallet_raw = row.get("investor")
+            if not wallet_raw:
+                continue
+            wallet = web3.to_checksum_address(wallet_raw)
+            if wallet_filter is not None and wallet not in wallet_filter:
+                continue
+
+            expected_wei = int(row.get("payout_wei") or 0)
+            if expected_wei <= 0:
+                continue
+
+            cursor.execute(
+                "SELECT payout_amount_wei FROM investor_rent_payouts "
+                "WHERE distribution_id = %s AND LOWER(investor_wallet) = LOWER(%s)",
+                (distribution_id, wallet),
+            )
+            existing = cursor.fetchone()
+            already_wei = int(existing["payout_amount_wei"] or 0) if existing else 0
+            shortfall_wei = expected_wei - already_wei
+            if shortfall_wei <= 0:
+                continue
+
+            accrue_investor_rewards(property_id, wallet, shortfall_wei)
+
+            ownership_pct = float(row.get("ownership_pct") or 0)
+            if existing:
+                cursor.execute(
+                    "UPDATE investor_rent_payouts SET "
+                    "payout_amount_wei = %s, payout_amount_eth = %s, "
+                    "ownership_percentage = %s, claim_status = 'claimable' "
+                    "WHERE distribution_id = %s AND LOWER(investor_wallet) = LOWER(%s)",
+                    (
+                        str(expected_wei),
+                        str(from_wei(expected_wei)),
+                        ownership_pct,
+                        distribution_id,
+                        wallet,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO investor_rent_payouts ("
+                    "distribution_id, investor_wallet, property_id, ownership_percentage, "
+                    "payout_amount_wei, payout_amount_eth, tx_hash, distributed_at, claim_status"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'claimable') "
+                    "ON CONFLICT (distribution_id, investor_wallet) DO NOTHING",
+                    (
+                        distribution_id,
+                        wallet,
+                        property_id,
+                        ownership_pct,
+                        str(expected_wei),
+                        str(from_wei(expected_wei)),
+                        dist_tx,
+                        distributed_at,
+                    ),
+                )
+
+            credited.append(
+                {
+                    "investor_wallet": wallet,
+                    "distribution_id": distribution_id,
+                    "amount_wei": str(shortfall_wei),
+                    "amount_eth": str(from_wei(shortfall_wei)),
+                }
+            )
+            LOGGER.info(
+                "backfill_missed_rent_accruals property_id=%s distribution_id=%s "
+                "investor=%s shortfall_wei=%s",
+                property_id,
+                distribution_id,
+                wallet,
+                shortfall_wei,
+            )
+
+    return credited
 
 
 def rent_sync_error_is_non_fatal(exc: HTTPException) -> str | None:

@@ -198,6 +198,7 @@ export async function apiPostMultipart<T = unknown>(path: string, formData: Form
 export const api = {
   get: <T>(path: string, query?: RequestOptions["query"]) => apiRequest<T>(path, { method: "GET", query }),
   post: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "POST", body }),
+  patch: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "PATCH", body }),
   postMultipart: <T>(path: string, formData: FormData) => apiPostMultipart<T>(path, formData),
   put: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "PUT", body }),
   del: <T>(path: string) => apiRequest<T>(path, { method: "DELETE" }),

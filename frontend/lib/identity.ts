@@ -9,6 +9,8 @@ export type IdentityLike = {
   full_name?: string | null;
   display_id?: string | null;
   profile_role?: string | null;
+  /** Canonical role from session / API (`property_owner`, `investor`, `tenant`). */
+  role?: string | null;
   email?: string | null;
   user_id?: number | null;
 };
@@ -34,10 +36,70 @@ function writeEnsCache(cache: Record<string, string>) {
 }
 
 export function roleLabel(role?: string | null): string {
-  if (role === "property_owner") return "Admin";
-  if (role === "investor") return "Investor";
-  if (role === "tenant") return "Tenant";
+  const key = clean(role).toLowerCase();
+  if (key === "property_owner" || key === "admin") return "Admin";
+  if (key === "investor") return "Investor";
+  if (key === "tenant") return "Tenant";
   return "User";
+}
+
+function resolveRoleKey(identity?: IdentityLike | null): string {
+  return clean(identity?.profile_role) || clean(identity?.role);
+}
+
+/** Role line for account menus — never falls back to generic “User” when role is known. */
+export function accountRoleLabel(identity?: IdentityLike | null): string {
+  return roleLabel(resolveRoleKey(identity));
+}
+
+function readStoredFullName(identity?: IdentityLike | null): string {
+  return clean(identity?.full_name);
+}
+
+function sessionNumericId(identity?: IdentityLike | null): number | null {
+  if (identity?.user_id && identity.user_id > 0) return identity.user_id;
+  const raw = (identity as { id?: number | null } | null | undefined)?.id;
+  return typeof raw === "number" && raw > 0 ? raw : null;
+}
+
+/** Map API session user fields onto {@link IdentityLike} for account UI. */
+export function identityFromSessionUser(
+  user?: SessionRecord["user"] | IdentityLike | null,
+): IdentityLike | null {
+  if (!user) return null;
+  const numericId = sessionNumericId(user);
+  return {
+    wallet_address: user.wallet_address,
+    full_name: user.full_name,
+    display_id: user.display_id,
+    profile_role: user.profile_role,
+    role: user.role,
+    email: user.email,
+    user_id: numericId ?? undefined,
+  };
+}
+
+/**
+ * Primary label for dashboard account cards (sidebar / header).
+ * Uses stored full name only — never role or email guesses (avoids "Investor" twice).
+ */
+export function accountPrimaryLabel(identity?: IdentityLike | null): string {
+  const name = readStoredFullName(identity);
+  if (name) return name;
+
+  const memberId = clean(identity?.display_id);
+  if (memberId) return memberId;
+
+  const numericId = sessionNumericId(identity);
+  if (numericId) return `Member #${numericId}`;
+  return "My account";
+}
+
+/** Wallet address for expanded account panels (truncated for display). */
+export function accountWalletLine(identity?: IdentityLike | null): string {
+  const wallet = clean(identity?.wallet_address);
+  if (!wallet) return "";
+  return shortAddress(wallet, 6, 4);
 }
 
 export function identityDisplayName(identity?: IdentityLike | null, fallbackWallet?: string | null): string {
@@ -53,7 +115,7 @@ export function identityDisplayName(identity?: IdentityLike | null, fallbackWall
 }
 
 export function identityDisplayId(identity?: IdentityLike | null): string {
-  return clean(identity?.display_id) || roleLabel(identity?.profile_role);
+  return clean(identity?.display_id) || roleLabel(resolveRoleKey(identity));
 }
 
 export function identityInitials(identity?: IdentityLike | null, fallbackWallet?: string | null): string {
