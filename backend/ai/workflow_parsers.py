@@ -388,6 +388,63 @@ def parse_create_property_submit_intent(text: str) -> bool | None:
     return None
 
 
+_EDIT_RENT_RE = re.compile(
+    r"(?:"
+    r"(?:set|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\s+(?:to\s+)?([\d.,]+(?:\s*(?:eth))?)"
+    r"|(?:also\s+)?(?:set\s+)?rent\s+(?:to\s+)?([\d.,]+)"
+    r"|monthly\s+rent\s+(?:to\s+)?([\d.,]+)"
+    r")",
+    re.IGNORECASE,
+)
+_EDIT_LOCATION_RE = re.compile(
+    r"(?:location|located)\s+(?:as|to|in)\s+(.+?)(?:\.|$)",
+    re.IGNORECASE,
+)
+_EDIT_NAME_RE = re.compile(
+    r"(?:name|rename)\s+(?:to|as)\s+(.+?)(?:\.|$)",
+    re.IGNORECASE,
+)
+
+
+def parse_edit_property_fields_from_utterance(text: str) -> dict[str, str]:
+    """Extract edit-property field updates from a follow-up line in the same chat."""
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    fields: dict[str, str] = {}
+    rent_match = _EDIT_RENT_RE.search(raw)
+    if rent_match:
+        token = next((g for g in rent_match.groups() if g), "")
+        rent = normalize_create_property_field("monthly_rent_eth", token)
+        if rent:
+            fields["monthly_rent_eth"] = rent
+    loc_match = _EDIT_LOCATION_RE.search(raw)
+    if loc_match:
+        loc = normalize_create_property_field("location", loc_match.group(1).strip())
+        if loc:
+            fields["location"] = loc
+    name_match = _EDIT_NAME_RE.search(raw)
+    if name_match:
+        name = normalize_create_property_field("name", name_match.group(1).strip())
+        if name:
+            fields["name"] = name
+    return fields
+
+
+def utterance_opens_new_edit_property_flow(text: str) -> bool:
+    """True when the user is starting a new edit, not a field-only follow-up."""
+    if parse_edit_property_fields_from_utterance(text):
+        return False
+    t = _strip_noise(text).lower()
+    if re.search(r"\b(edit|update|change)\b", t) and re.search(
+        r"\b(property|listing|name|location|rent)\b", t
+    ):
+        return True
+    if re.match(r"^edit\s+\S", t):
+        return True
+    return False
+
+
 def parse_yes_no_confirmation(text: str) -> bool | None:
     """Parse explicit yes/no answers (e.g. skip accidental yes/no as field values)."""
     t = _strip_noise(text).lower().strip("'\".,!? ")

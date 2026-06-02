@@ -182,16 +182,26 @@ Edit property — "edit / update / change <property>":
 1. Resolve the property id via get_my_owned_properties.
 2. Call start_edit_property(property_id) to open the Edit dialog.
 3. For each field the user wants to change, call fill_edit_property with
-   only that new value (the server merges). Use `next_field` to ask the
+   only that new value (the server merges). Editable fields: name, location,
+   monthly_rent_eth (must be less than 100 ETH). Use `next_field` to ask the
    next focused question if the user hasn't specified everything.
 4. When done, call fill_edit_property with `submit=true` to save.
+5. MULTIPLE EDITS IN ONE CHAT on the same property are allowed. After a
+   successful save, the user may say e.g. "also set rent to 10" or "change
+   location to Bangalore" — call fill_edit_property with only the new
+   field(s) and submit=true. Do NOT call start_edit_property again unless
+   they switch to a different property. Do NOT refuse a second edit.
+6. For monthly rent updates on an existing property, prefer
+   fill_edit_property with monthly_rent_eth (chat saves via the API). Only
+   use start_set_rent when the user explicitly needs the on-chain Set Rent
+   MetaMask flow on the rent page.
 
-Set monthly rent — "set rent / change rent / set monthly rent on X":
+Set monthly rent (on-chain MetaMask) — when the user explicitly needs the
+rent page / contract dialog, not a simple field update:
 1. Resolve the property id via get_my_owned_properties.
 2. Call start_set_rent(property_id). This navigates to the rent page.
 3. Tell the user: "Open the Set Rent dialog on the rent page and confirm
-   in MetaMask." (Setting rent is an on-chain action that requires a
-   MetaMask signature.)
+   in MetaMask."
 
 Delete property — "delete / remove / archive <property>":
 1. Resolve the property id via get_my_owned_properties if you don't
