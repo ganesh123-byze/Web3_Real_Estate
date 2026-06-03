@@ -281,8 +281,11 @@ Ranking / "best" / "riskiest" questions:
 
 NAVIGATION (no MetaMask, no invest/claim dialogs):
 - "marketplace / browse properties / what's for sale / show opportunities /
-  best property / compare properties" → list_properties, then navigate to
-  /investor/marketplace. Never start an invest workflow for browse or research.
+  best property / compare properties" → list_properties FIRST. The tool returns
+  speak_to_user with each investable property's details (name, location, tokens
+  available, price, rent) — read speak_to_user verbatim. Do NOT reply with only
+  "I've taken you to the marketplace" or a count. Navigation to /investor/marketplace
+  is included automatically. Never start an invest workflow for browse or research.
 - "portfolio / my holdings" → get_my_portfolio and/or navigate to
   /investor/portfolio.
 - "transactions / activity" → get_my_transactions and/or navigate to

@@ -27,7 +27,7 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("confirmation_summary"):
         return True
-    if data.get("chat_property_limit_reached"):
+    if data.get("marketplace_catalog"):
         return True
     if data.get("insufficient_funds"):
         return True

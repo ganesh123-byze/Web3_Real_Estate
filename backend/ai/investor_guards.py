@@ -176,6 +176,33 @@ def has_explicit_claim_intent(text: str) -> bool:
     return False
 
 
+def has_marketplace_browse_intent(text: str) -> bool:
+    """True when the user wants to browse/list marketplace listings (not buy yet)."""
+    t = _normalize_text(text).lower()
+    if not t:
+        return False
+    if has_explicit_invest_intent(text):
+        return False
+    if re.search(
+        r"\b(?:take\s+me\s+to|go\s+to|open)\s+(?:the\s+)?marketplace\b",
+        t,
+    ):
+        return True
+    if re.search(r"\bbrowse\s+(?:the\s+)?marketplace\b", t):
+        return True
+    if re.search(r"\bmarketplace\b", t) and re.search(
+        r"\b(?:show|available|properties|opportunities|invest)\b", t
+    ):
+        return True
+    if re.search(r"\b(?:show|list|what).*\b(?:available|for\s+sale|opportunities)\b", t):
+        return True
+    if re.search(r"\bproperties?\s+(?:to\s+)?invest\s+in\b", t):
+        return True
+    if re.search(r"\bbrowse\b", t) and re.search(r"\bpropert", t):
+        return True
+    return False
+
+
 def wallet_ui_allowed(modal: str, user_text: str, *, invest_session: dict | None = None) -> bool:
     if modal == "INVEST_PROPERTY":
         return investor_invest_wallet_permitted(user_text, invest_session)
@@ -234,3 +261,67 @@ def claim_tool_blocked_message() -> str:
         "get_my_claimable_rewards or get_my_claim_history. If they want to claim later, "
         "they can use Claim via MetaMask on the dashboard."
     )
+
+
+def _format_token_count(raw: Any) -> str:
+    try:
+        value = float(str(raw or "0"))
+    except (TypeError, ValueError):
+        return "0"
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def format_investor_marketplace_catalog_speak(
+    investable: list[dict[str, Any]],
+    *,
+    total_listed: int,
+) -> str:
+    """Verbatim marketplace summary for investor browse turns."""
+    if not investable:
+        if total_listed <= 0:
+            return (
+                "There are no properties on the marketplace yet. "
+                "Check back after new listings are deployed."
+            )
+        return (
+            f"There are {total_listed} listing(s) on the marketplace, but none have "
+            "tokens available to buy right now. Ask again later or say which property "
+            "you want details on."
+        )
+
+    lines = [
+        "Here are the properties open for investment right now:",
+        "",
+    ]
+    for index, prop in enumerate(investable, start=1):
+        name = str(prop.get("name") or f"Property {prop.get('id')}")
+        pid = prop.get("id")
+        location = str(prop.get("location") or "").strip()
+        symbol = str(prop.get("token_symbol") or "").strip()
+        sold = str(prop.get("sold_percentage") or "0").strip()
+        available = _format_token_count(prop.get("tokens_available"))
+        price = str(prop.get("token_sale_price_eth") or "").strip()
+        rent = prop.get("monthly_rent_eth")
+        parts = [f"{index}. {name} (#{pid})"]
+        detail_bits: list[str] = []
+        if location:
+            detail_bits.append(location)
+        if symbol:
+            detail_bits.append(symbol)
+        detail_bits.append(f"{sold}% sold")
+        detail_bits.append(f"{available} tokens available")
+        if price and price not in ("0", "0.0"):
+            detail_bits.append(f"{price} ETH/token")
+        if rent not in (None, "", "0", "0.0"):
+            detail_bits.append(f"monthly rent {rent} ETH")
+        lines.append(f"   {parts[0]} - {', '.join(detail_bits)}")
+    lines.extend(
+        [
+            "",
+            "I've opened the marketplace page. Say which property you'd like to invest in, "
+            "or ask for more details on any listing above.",
+        ]
+    )
+    return "\n".join(lines)

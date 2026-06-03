@@ -52,6 +52,7 @@ from backend.ai.tools import (
     try_server_create_property_submit,
     try_server_delete_property_continuation,
     try_server_edit_property_continuation,
+    try_server_investor_marketplace_browse,
 )
 from backend.services.auth import AuthUser, canonical_role
 
@@ -442,7 +443,11 @@ async def run_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_edit_property_continuation(user, db)
+        preflight = None
+        if role == "investor":
+            preflight = await try_server_investor_marketplace_browse(user, db)
+        if preflight is None:
+            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is None:
             preflight = await try_server_apply_create_property_field_answer(user, db)
         if preflight is None:
@@ -602,7 +607,11 @@ async def stream_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_edit_property_continuation(user, db)
+        preflight = None
+        if role == "investor":
+            preflight = await try_server_investor_marketplace_browse(user, db)
+        if preflight is None:
+            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is None:
             preflight = await try_server_apply_create_property_field_answer(user, db)
         if preflight is None:

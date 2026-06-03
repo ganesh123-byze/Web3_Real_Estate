@@ -65,9 +65,12 @@ from backend.ai.copilot_property_scope import (
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_last_human_utterance,
+    format_investor_marketplace_catalog_speak,
     has_explicit_claim_intent,
     has_explicit_invest_intent,
+    has_marketplace_browse_intent,
     invest_tool_blocked_message,
+    invest_workflow_active,
     wants_to_begin_invest_workflow,
 )
 from backend.ai.schemas import AgentAction, ToolResult
@@ -590,6 +593,7 @@ def _serialize_property(row: dict) -> dict:
         "rent_enabled": str(row.get("monthly_rent_wei") or "0") not in ("", "0"),
         "owner_wallet": row.get("owner_wallet"),
         "token_address": row.get("token_address"),
+        "token_sale_price_eth": str(row.get("token_sale_price_eth") or "0"),
     }
 
 
@@ -619,6 +623,36 @@ def _list_properties(cursor) -> list[dict]:
     )
     rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
     return [_serialize_property(r) for r in rows]
+
+
+def _filter_investable_marketplace_properties(items: list[dict]) -> list[dict]:
+    investable: list[dict] = []
+    for prop in items:
+        if _validate_property_investable(prop) is None:
+            investable.append(prop)
+    return investable
+
+
+def _investor_marketplace_catalog_data(items: list[dict]) -> dict[str, Any]:
+    investable = _filter_investable_marketplace_properties(items)
+    speak = format_investor_marketplace_catalog_speak(
+        investable,
+        total_listed=len(items),
+    )
+    return {
+        **copilot_property_list_meta(items),
+        "properties": items[:25],
+        "investable_properties": investable,
+        "investable_count": len(investable),
+        "marketplace_catalog": True,
+        "speak_to_user": speak,
+        "speak_verbatim": True,
+        "instruction": (
+            "Read speak_to_user verbatim — it lists each investable property with "
+            "location, sale progress, tokens available, price, and rent. Do NOT "
+            "replace it with a generic navigation-only sentence."
+        ),
+    }
 
 
 def _normalize_match_text(value: Any) -> str:
@@ -810,8 +844,28 @@ async def _list_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResu
     rent_only = bool(args.get("rent_enabled_only"))
     if rent_only:
         items = [p for p in items if p["rent_enabled"]]
+    if canonical_role(user.role) == "investor":
+        payload = _investor_marketplace_catalog_data(items)
+        actions = [AgentAction(type="NAVIGATE", route="/investor/marketplace")]
+        return ToolResult(ok=True, data=payload, actions=actions)
     payload = {"properties": items[:25], **copilot_property_list_meta(items)}
     return ToolResult(ok=True, data=payload)
+
+
+async def try_server_investor_marketplace_browse(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return investable property details when the user browses the marketplace."""
+    if canonical_role(user.role) != "investor":
+        return None
+    if invest_workflow_active(_get_workflow_session(_INVEST_MODAL)):
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or not has_marketplace_browse_intent(utterance):
+        return None
+
+    return await _list_properties_tool({}, user, db)
 
 
 async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
@@ -853,7 +907,9 @@ register(ToolSpec(
     description=(
         "List dashboard-visible properties. For property owners this returns only "
         "listings they created (same as get_my_owned_properties). For investors "
-        "it returns the marketplace catalog. Use count and property_names — do not guess. "
+        "returns the marketplace catalog with speak_to_user listing each investable "
+        "property (location, tokens available, price, rent) — read speak_to_user "
+        "verbatim. Use count and property_names — do not guess. "
         "Tenants must use list_tenant_properties instead."
     ),
     parameters={
