@@ -36,10 +36,16 @@ import {
   useRentPayments,
 } from "@/lib/queries";
 import { useSetRent } from "@/lib/mutations";
-import { formatDateTime, formatEth, shortAddress } from "@/lib/utils";
+import { formatDateTime, formatEth } from "@/lib/utils";
 import { identityDisplayName } from "@/lib/identity";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
+
+const scrollTableViewportClass =
+  "[&>div]:max-h-[360px] [&>div]:overflow-auto [&>div]:scrollbar-thin";
+const stickyHeadClass =
+  "sticky top-0 z-20 h-10 whitespace-nowrap bg-card py-2 text-sm";
+const tableCellClass = "whitespace-nowrap py-3 text-sm";
 
 export default function RentManagementPage() {
   const properties = useManagedProperties();
@@ -53,7 +59,7 @@ export default function RentManagementPage() {
         title="Rent Management"
         subtitle="Live rent metrics, per-property controls, payments, and distributions"
       />
-      <main className="flex-1 space-y-4 p-4 lg:p-6">
+      <main className="flex-1 space-y-4 p-4 text-sm lg:p-6">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <GradientStatCard
             title="Total Rent Collected"
@@ -93,142 +99,146 @@ export default function RentManagementPage() {
           />
         </div>
 
-        <Card>
+        <Card className="text-sm">
           <CardHeader className="pb-2">
-            <CardTitle>Properties</CardTitle>
-            <CardDescription>
+            <CardTitle className="text-sm">Properties</CardTitle>
+            <CardDescription className="text-sm">
               Set monthly rent for properties you created; blockchain sync is handled automatically.
             </CardDescription>
           </CardHeader>
           <CardContent className="px-0 pb-3">
-            <div className="max-h-[310px] overflow-y-auto scrollbar-thin">
+            <div className="[&>div]:max-h-[310px] [&>div]:overflow-auto [&>div]:scrollbar-thin">
               <PropertiesRentTable properties={properties.data ?? []} loading={properties.isLoading} />
             </div>
           </CardContent>
         </Card>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card>
+          <Card className="text-sm">
             <CardHeader>
-              <CardTitle>Recent Rent Payments</CardTitle>
-              <CardDescription>From tenants on Sepolia.</CardDescription>
+              <CardTitle className="text-sm">Recent Rent Payments</CardTitle>
+              <CardDescription className="text-sm">From tenants on Sepolia.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="text-sm">Tenant</TableHead>
-                    <TableHead className="text-sm">Property</TableHead>
-                    <TableHead className="text-sm">Amount</TableHead>
-                    <TableHead className="text-sm">Date</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {payments.isLoading ? (
-                    Array.from({ length: 4 }).map((_, i) => (
-                      <TableRow key={i} className="hover:bg-transparent">
-                        <TableCell colSpan={4}>
-                          <Skeleton className="h-7 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (payments.data ?? []).length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="py-10">
-                        <EmptyState title="No rent payments yet" />
-                      </TableCell>
+              <div className={scrollTableViewportClass}>
+                <Table className="min-w-[760px] text-sm">
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className={stickyHeadClass}>Tenant</TableHead>
+                      <TableHead className={stickyHeadClass}>Property</TableHead>
+                      <TableHead className={stickyHeadClass}>Amount</TableHead>
+                      <TableHead className={stickyHeadClass}>Date</TableHead>
                     </TableRow>
-                  ) : (
-                    (payments.data ?? []).slice(0, 8).map((p) => {
-                      const tenantLabel = identityDisplayName(
-                        {
-                          wallet_address: p.tenant_wallet,
-                          full_name: p.tenant_full_name,
-                          display_id: p.tenant_display_id,
-                          profile_role: p.tenant_profile_role,
-                        },
-                        p.tenant_wallet,
-                      );
-                      return (
-                        <TableRow key={p.id ?? p.tx_hash}>
-                        <TableCell className="text-sm">
-                          <a
-                            href={txExplorerUrl(p.tx_hash)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="hover:underline"
-                          >
-                            {tenantLabel}
-                          </a>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {p.property_name ?? `#${p.property_id}`}
-                        </TableCell>
-                        <TableCell className="tabular-nums text-sm">
-                          {Number(p.amount_eth).toFixed(4)} ETH
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {formatDateTime(p.payment_date)}
+                  </TableHeader>
+                  <TableBody>
+                    {payments.isLoading ? (
+                      Array.from({ length: 4 }).map((_, i) => (
+                        <TableRow key={i} className="hover:bg-transparent">
+                          <TableCell colSpan={4}>
+                            <Skeleton className="h-7 w-full" />
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (payments.data ?? []).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="py-10">
+                          <EmptyState title="No rent payments yet" />
                         </TableCell>
                       </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
+                    ) : (
+                      (payments.data ?? []).slice(0, 8).map((p) => {
+                        const tenantLabel = identityDisplayName(
+                          {
+                            wallet_address: p.tenant_wallet,
+                            full_name: p.tenant_full_name,
+                            display_id: p.tenant_display_id,
+                            profile_role: p.tenant_profile_role,
+                          },
+                          p.tenant_wallet,
+                        );
+                        return (
+                        <TableRow key={p.id ?? p.tx_hash}>
+                          <TableCell className={tableCellClass}>
+                            <a
+                              href={txExplorerUrl(p.tx_hash)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="hover:underline"
+                            >
+                              {tenantLabel}
+                            </a>
+                          </TableCell>
+                          <TableCell className={tableCellClass}>
+                            {p.property_name ?? `#${p.property_id}`}
+                          </TableCell>
+                          <TableCell className={`${tableCellClass} tabular-nums`}>
+                            {Number(p.amount_eth).toFixed(4)} ETH
+                          </TableCell>
+                          <TableCell className={`${tableCellClass} text-muted-foreground`}>
+                            {formatDateTime(p.payment_date)}
+                          </TableCell>
+                        </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="text-sm">
             <CardHeader>
-              <CardTitle>Recent Distributions</CardTitle>
-              <CardDescription>Splits broadcast to investor wallets.</CardDescription>
+              <CardTitle className="text-sm">Recent Distributions</CardTitle>
+              <CardDescription className="text-sm">Splits broadcast to investor wallets.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="text-sm">Property</TableHead>
-                    <TableHead className="text-sm">Distributed</TableHead>
-                    <TableHead className="text-sm">Investors</TableHead>
-                    <TableHead className="text-sm">Date</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {distributions.isLoading ? (
-                    Array.from({ length: 4 }).map((_, i) => (
-                      <TableRow key={i} className="hover:bg-transparent">
-                        <TableCell colSpan={4}>
-                          <Skeleton className="h-7 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (distributions.data ?? []).length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="py-10">
-                        <EmptyState title="No distributions yet" />
-                      </TableCell>
+              <div className={scrollTableViewportClass}>
+                <Table className="min-w-[760px] text-sm">
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className={stickyHeadClass}>Property</TableHead>
+                      <TableHead className={stickyHeadClass}>Distributed</TableHead>
+                      <TableHead className={stickyHeadClass}>Investors</TableHead>
+                      <TableHead className={stickyHeadClass}>Date</TableHead>
                     </TableRow>
-                  ) : (
-                    (distributions.data ?? []).slice(0, 8).map((d) => (
-                      <TableRow key={d.id ?? d.distribution_tx_hash}>
-                        <TableCell className="text-sm">
-                          {d.property_name ?? `#${d.property_id}`}
-                        </TableCell>
-                        <TableCell className="tabular-nums text-sm">
-                          {(Number(d.total_distributed) / 1e18).toFixed(4)} ETH
-                        </TableCell>
-                        <TableCell className="tabular-nums text-sm">
-                          {d.investor_count}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {formatDateTime(d.distributed_at)}
+                  </TableHeader>
+                  <TableBody>
+                    {distributions.isLoading ? (
+                      Array.from({ length: 4 }).map((_, i) => (
+                        <TableRow key={i} className="hover:bg-transparent">
+                          <TableCell colSpan={4}>
+                            <Skeleton className="h-7 w-full" />
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (distributions.data ?? []).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="py-10">
+                          <EmptyState title="No distributions yet" />
                         </TableCell>
                       </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                    ) : (
+                      (distributions.data ?? []).slice(0, 8).map((d) => (
+                        <TableRow key={d.id ?? d.distribution_tx_hash}>
+                          <TableCell className={tableCellClass}>
+                            {d.property_name ?? `#${d.property_id}`}
+                          </TableCell>
+                          <TableCell className={`${tableCellClass} tabular-nums`}>
+                            {(Number(d.total_distributed) / 1e18).toFixed(4)} ETH
+                          </TableCell>
+                          <TableCell className={`${tableCellClass} tabular-nums`}>
+                            {d.investor_count}
+                          </TableCell>
+                          <TableCell className={`${tableCellClass} text-muted-foreground`}>
+                            {formatDateTime(d.distributed_at)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -245,13 +255,13 @@ function PropertiesRentTable({
   loading?: boolean;
 }) {
   return (
-    <Table className="text-xs">
+    <Table className="min-w-[760px] text-sm">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead className="h-8 py-1">Property</TableHead>
-          <TableHead className="h-8 py-1">Monthly Rent</TableHead>
-          <TableHead className="h-8 py-1">Status</TableHead>
-          <TableHead className="h-8 py-1">Actions</TableHead>
+          <TableHead className={stickyHeadClass}>Property</TableHead>
+          <TableHead className={stickyHeadClass}>Monthly Rent</TableHead>
+          <TableHead className={stickyHeadClass}>Status</TableHead>
+          <TableHead className={stickyHeadClass}>Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -301,28 +311,28 @@ function PropertyRentRow({ property }: { property: Property }) {
   }
 
   return (
-    <TableRow className="h-10">
-      <TableCell className="py-1.5">
+    <TableRow className="h-11">
+      <TableCell className={tableCellClass}>
         <div className="flex flex-col">
-          <span className="text-xs font-medium leading-tight">{property.name}</span>
-          <span className="text-[10px] leading-tight text-muted-foreground">{property.location}</span>
+          <span className="whitespace-nowrap text-sm font-medium leading-tight">{property.name}</span>
+          <span className="whitespace-nowrap text-sm leading-tight text-muted-foreground">{property.location}</span>
         </div>
       </TableCell>
-      <TableCell className="py-1.5 tabular-nums">
+      <TableCell className={`${tableCellClass} tabular-nums`}>
         {monthly > 0 ? `${monthly.toFixed(4)} ETH` : <span className="text-muted-foreground">Not set</span>}
       </TableCell>
-      <TableCell className="py-1.5">
+      <TableCell className={tableCellClass}>
         {property.token_address ? (
-          <Badge variant="success" className="h-5 px-2 text-[10px]">Token deployed</Badge>
+          <Badge variant="success" className="h-6 whitespace-nowrap px-2 text-sm">Token deployed</Badge>
         ) : (
-          <Badge variant="warning" className="h-5 px-2 text-[10px]">Not deployed</Badge>
+          <Badge variant="warning" className="h-6 whitespace-nowrap px-2 text-sm">Not deployed</Badge>
         )}
       </TableCell>
-      <TableCell className="py-1.5">
+      <TableCell className={tableCellClass}>
         <div className="flex gap-1.5">
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="h-7 px-2 text-xs">
+              <Button size="sm" variant="outline" className="h-8 whitespace-nowrap px-3 text-sm">
                 Set Rent
               </Button>
             </DialogTrigger>
