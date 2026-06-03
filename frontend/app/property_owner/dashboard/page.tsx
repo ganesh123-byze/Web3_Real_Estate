@@ -71,16 +71,17 @@ export default function DashboardPage() {
     ? overviewProperties.find((property) => property.id === selected.id) ?? selected
     : null;
   const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty, transactions.data ?? []);
-  const propertyPerf = allProperties
+  const propertyPerf = overviewProperties
     .map((property) => ({
       id: property.id,
-      name: property.name?.length > 14 ? `${property.name.slice(0, 12)}...` : property.name,
+      name: property.name || `Property #${property.id}`,
       sold: Number(property.tokens_sold ?? 0),
       total: Number(property.token_supply ?? 0),
       pct: Number(property.sold_percentage ?? 0),
     }))
     .sort((a, b) => b.pct - a.pct)
-    .slice(0, 8);
+    .slice(0, 16);
+  const propertyPerfChartWidth = Math.max(640, propertyPerf.length * 120);
   const txByType = useMemo(() => {
     const map = new Map<string, number>();
     for (const transaction of transactions.data ?? []) {
@@ -164,51 +165,59 @@ export default function DashboardPage() {
               <CardDescription>Sold percentage for all available properties.</CardDescription>
             </CardHeader>
             <CardContent>
-              {properties.isLoading ? (
+              {managedProperties.isLoading ? (
                 <Skeleton className="h-[280px] w-full" />
               ) : propertyPerf.length === 0 ? (
                 <div className="grid h-[280px] place-items-center text-sm text-muted-foreground">
                   No properties.
                 </div>
               ) : (
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={propertyPerf} margin={{ top: 12, right: 16, left: -12, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis
-                      dataKey="name"
-                      tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tickFormatter={(value) => `${value}%`}
-                      tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                      axisLine={false}
-                      tickLine={false}
-                      domain={[0, 100]}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: "hsl(var(--popover))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: 8,
-                        fontSize: 12,
-                      }}
-                      formatter={(value: number, _name, point) => {
-                        const payload = point.payload as { sold: number; total: number };
-                        return [
-                          `${value.toFixed(1)}% (${formatNumber(payload.sold)} / ${formatNumber(payload.total)})`,
-                          "Sold",
-                        ];
-                      }}
-                    />
-                    <Bar dataKey="pct" radius={[8, 8, 0, 0]}>
-                      {propertyPerf.map((property) => (
-                        <Cell key={property.id} fill={pickColor(property.id)} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                <div className="overflow-x-auto overflow-y-hidden pb-2 scrollbar-thin">
+                  <div style={{ width: propertyPerfChartWidth, minWidth: "100%" }}>
+                    <ResponsiveContainer width="100%" height={330}>
+                      <BarChart data={propertyPerf} margin={{ top: 12, right: 16, left: -12, bottom: 58 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                        <XAxis
+                          dataKey="name"
+                          interval={0}
+                          angle={-35}
+                          textAnchor="end"
+                          height={78}
+                          tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          tickFormatter={(value) => `${value}%`}
+                          tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                          axisLine={false}
+                          tickLine={false}
+                          domain={[0, 100]}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "hsl(var(--popover))",
+                            border: "1px solid hsl(var(--border))",
+                            borderRadius: 8,
+                            fontSize: 12,
+                          }}
+                          formatter={(value: number, _name, point) => {
+                            const payload = point.payload as { sold: number; total: number };
+                            return [
+                              `${value.toFixed(1)}% (${formatNumber(payload.sold)} / ${formatNumber(payload.total)})`,
+                              "Sold",
+                            ];
+                          }}
+                        />
+                        <Bar dataKey="pct" radius={[8, 8, 0, 0]}>
+                          {propertyPerf.map((property) => (
+                            <Cell key={property.id} fill={pickColor(property.id)} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>

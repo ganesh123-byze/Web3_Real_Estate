@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowRight, Coins, Receipt, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { AdminTopbar } from "@/components/layout/topbar";
@@ -52,6 +52,26 @@ export default function RentManagementPage() {
   const rent = useRentAnalytics();
   const distributions = useRentDistributions();
   const payments = useRentPayments();
+  const managedPropertyIds = useMemo(
+    () => new Set((properties.data ?? []).map((property) => Number(property.id))),
+    [properties.data],
+  );
+  const managedRentPayments = useMemo(
+    () =>
+      (payments.data ?? [])
+        .filter((payment) => managedPropertyIds.has(Number(payment.property_id)))
+        .slice(0, 8),
+    [managedPropertyIds, payments.data],
+  );
+  const managedRentDistributions = useMemo(
+    () =>
+      (distributions.data ?? [])
+        .filter((distribution) => managedPropertyIds.has(Number(distribution.property_id)))
+        .slice(0, 8),
+    [distributions.data, managedPropertyIds],
+  );
+  const paymentsLoading = properties.isLoading || payments.isLoading;
+  const distributionsLoading = properties.isLoading || distributions.isLoading;
 
   return (
     <>
@@ -131,7 +151,7 @@ export default function RentManagementPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {payments.isLoading ? (
+                    {paymentsLoading ? (
                       Array.from({ length: 4 }).map((_, i) => (
                         <TableRow key={i} className="hover:bg-transparent">
                           <TableCell colSpan={4}>
@@ -139,14 +159,14 @@ export default function RentManagementPage() {
                           </TableCell>
                         </TableRow>
                       ))
-                    ) : (payments.data ?? []).length === 0 ? (
+                    ) : managedRentPayments.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={4} className="py-10">
                           <EmptyState title="No rent payments yet" />
                         </TableCell>
                       </TableRow>
                     ) : (
-                      (payments.data ?? []).slice(0, 8).map((p) => {
+                      managedRentPayments.map((p) => {
                         const tenantLabel = identityDisplayName(
                           {
                             wallet_address: p.tenant_wallet,
@@ -204,7 +224,7 @@ export default function RentManagementPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {distributions.isLoading ? (
+                    {distributionsLoading ? (
                       Array.from({ length: 4 }).map((_, i) => (
                         <TableRow key={i} className="hover:bg-transparent">
                           <TableCell colSpan={4}>
@@ -212,14 +232,14 @@ export default function RentManagementPage() {
                           </TableCell>
                         </TableRow>
                       ))
-                    ) : (distributions.data ?? []).length === 0 ? (
+                    ) : managedRentDistributions.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={4} className="py-10">
                           <EmptyState title="No distributions yet" />
                         </TableCell>
                       </TableRow>
                     ) : (
-                      (distributions.data ?? []).slice(0, 8).map((d) => (
+                      managedRentDistributions.map((d) => (
                         <TableRow key={d.id ?? d.distribution_tx_hash}>
                           <TableCell className={tableCellClass}>
                             {d.property_name ?? `#${d.property_id}`}
