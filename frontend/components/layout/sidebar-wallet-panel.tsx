@@ -1,18 +1,26 @@
 "use client";
 
 import { useState } from "react";
+import { ChevronDown, LogOut } from "lucide-react";
 import { MetaMaskIcon } from "@/components/icons/metamask";
 import { Button } from "@/components/ui/button";
 import { logout } from "@/lib/auth";
 import { AccountSetNameForm } from "@/components/layout/account-set-name-form";
-import { accountPrimaryLabel, identityFromSessionUser } from "@/lib/identity";
+import { AccountWalletCopy } from "@/components/layout/account-wallet-copy";
+import {
+  accountPrimaryLabel,
+  accountRoleLabel,
+  identityFromSessionUser,
+} from "@/lib/identity";
 import { useSessionAccount } from "@/lib/hooks/use-session-account";
+import { cn } from "@/lib/utils";
 
 export function SidebarWalletPanel() {
   const session = useSessionAccount();
   const [open, setOpen] = useState(false);
   const identity = identityFromSessionUser(session?.user);
   const primary = accountPrimaryLabel(identity);
+  const role = accountRoleLabel(identity);
 
   return (
     <div className="mt-auto rounded-2xl border border-border/70 bg-background/70 p-2 shadow-none transition-shadow hover:shadow-sm">
@@ -25,24 +33,37 @@ export function SidebarWalletPanel() {
             aria-expanded={open}
             aria-label={`Account menu for ${primary}`}
           >
-            <MetaMaskIcon size={18} />
-            <span className="min-w-0 flex-1">
+            <MetaMaskIcon size={18} className="shrink-0" />
+            <span className="min-w-0 flex-1 leading-tight">
               <span className="block truncate text-xs font-medium text-foreground" title={primary}>
                 {primary}
               </span>
+              <span className="block truncate text-[10px] font-normal text-muted-foreground">
+                {role}
+              </span>
             </span>
+            <ChevronDown
+              className={cn(
+                "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200",
+                open && "rotate-180",
+              )}
+            />
           </button>
           {open ? (
             <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
+              {identity?.wallet_address ? (
+                <AccountWalletCopy user={identity} />
+              ) : null}
               {!identity?.full_name?.trim() ? <AccountSetNameForm /> : null}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="w-full justify-center rounded-xl"
+                className="w-full justify-center gap-2 rounded-xl text-destructive hover:text-destructive"
                 onClick={() => logout()}
               >
-                Logout with MetaMask
+                <LogOut className="h-3.5 w-3.5" />
+                Log out
               </Button>
             </div>
           ) : null}
