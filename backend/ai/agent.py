@@ -442,11 +442,11 @@ async def run_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_apply_create_property_field_answer(user, db)
+        preflight = await try_server_edit_property_continuation(user, db)
+        if preflight is None:
+            preflight = await try_server_apply_create_property_field_answer(user, db)
         if preflight is None:
             preflight = await try_server_create_property_confirmation(user, db)
-        if preflight is None:
-            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is None:
             preflight = await try_server_delete_property_continuation(user, db)
         if preflight is not None:
@@ -602,11 +602,11 @@ async def stream_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_apply_create_property_field_answer(user, db)
+        preflight = await try_server_edit_property_continuation(user, db)
+        if preflight is None:
+            preflight = await try_server_apply_create_property_field_answer(user, db)
         if preflight is None:
             preflight = await try_server_create_property_confirmation(user, db)
-        if preflight is None:
-            preflight = await try_server_edit_property_continuation(user, db)
         if preflight is None:
             preflight = await try_server_delete_property_continuation(user, db)
         if preflight is not None:

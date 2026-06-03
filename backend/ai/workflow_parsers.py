@@ -179,13 +179,28 @@ def assistant_prompted_for_create_field(assistant_text: str, field: str) -> bool
             "what ticker",
         ),
         "monthly_rent_eth": (
-            "monthly rent",
-            "rent in eth",
+            "monthly rent must be less than 100 eth",
+            "what's the monthly rent",
+            "what is the monthly rent",
+            "whats the monthly rent",
             "open the rent",
             "no rent yet",
         ),
     }
     return any(phrase in t for phrase in prompts.get(field, ()))
+
+
+def assistant_prompted_for_edit_property(assistant_text: str) -> bool:
+    """True when the assistant is in an edit-existing-property turn (not create)."""
+    t = _strip_noise(assistant_text).lower()
+    if not t:
+        return False
+    return (
+        "what would you like to change" in t
+        or "opened the edit form" in t
+        or "edit form for" in t
+        or "i've opened the edit form" in t
+    )
 
 
 def normalize_create_property_field(field: str, raw: str) -> str:
@@ -642,7 +657,7 @@ def parse_create_property_submit_intent(text: str) -> bool | None:
 
 _EDIT_RENT_RE = re.compile(
     r"(?:"
-    r"(?:set|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\s+(?:to\s+)?([\d.,]+(?:\s*(?:eth))?)"
+    r"(?:edit|set|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\s+(?:to\s+)?([\d.,]+(?:\s*(?:eth))?)"
     r"|(?:also\s+)?(?:set\s+)?rent\s+(?:to\s+)?([\d.,]+)"
     r"|monthly\s+rent\s+(?:to\s+)?([\d.,]+)"
     r")",
@@ -683,9 +698,24 @@ def parse_edit_property_fields_from_utterance(text: str) -> dict[str, str]:
     return fields
 
 
+def utterance_is_edit_property_field_update(text: str) -> bool:
+    """True when the user is updating a field on an open edit, not starting a new edit."""
+    if parse_edit_property_fields_from_utterance(text):
+        return True
+    t = _strip_noise(text).lower()
+    if re.search(
+        r"\b(?:edit|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\b",
+        t,
+    ):
+        return True
+    if re.search(r"\b(?:edit|change|update)\s+(?:the\s+)?(?:location|name)\b", t):
+        return True
+    return False
+
+
 def utterance_opens_new_edit_property_flow(text: str) -> bool:
     """True when the user is starting a new edit, not a field-only follow-up."""
-    if parse_edit_property_fields_from_utterance(text):
+    if utterance_is_edit_property_field_update(text):
         return False
     t = _strip_noise(text).lower()
     if re.search(r"\b(edit|update|change)\b", t) and re.search(

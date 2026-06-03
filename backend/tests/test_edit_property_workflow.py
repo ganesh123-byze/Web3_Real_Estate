@@ -36,11 +36,14 @@ def _owner() -> AuthUser:
 def test_parse_edit_rent_follow_up():
     fields = parse_edit_property_fields_from_utterance("also set rent to 10")
     assert fields.get("monthly_rent_eth") == "10"
+    fields = parse_edit_property_fields_from_utterance("edit rent 1")
+    assert fields.get("monthly_rent_eth") == "1"
 
 
 def test_new_edit_intent_not_field_follow_up():
     assert utterance_opens_new_edit_property_flow("edit skyzone property") is True
     assert utterance_opens_new_edit_property_flow("also set rent to 10") is False
+    assert utterance_opens_new_edit_property_flow("edit rent 1") is False
 
 
 def test_edit_session_keeps_property_id_after_submit():
@@ -124,6 +127,63 @@ def test_edit_continuation_rejects_high_rent_follow_up():
         assert session.get("property_id") == 7
         assert session.get("next_field") == "monthly_rent_eth"
     finally:
+        _clear_workflow_session("EDIT_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_edit_continuation_works_while_in_progress():
+    token = set_current_thread_id("test:edit:continuation-in-progress")
+    msg_token = set_current_messages([{"type": "human", "content": "edit rent 1"}])
+    try:
+        _clear_workflow_session("EDIT_PROPERTY")
+        tools._set_workflow_session(
+            "EDIT_PROPERTY",
+            {
+                "property_id": 7,
+                "property_name": "Gold Plaza",
+                "in_progress": True,
+                "filled": {},
+                "submitted": False,
+            },
+        )
+        result = asyncio.run(try_server_edit_property_continuation(_owner(), None))
+        assert result is not None
+        assert result.ok
+        assert result.data.get("submitted") is True
+        assert result.data.get("filled", {}).get("monthly_rent_eth") == "1"
+    finally:
+        _clear_workflow_session("EDIT_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_create_preflight_skipped_during_edit_session():
+    import asyncio
+
+    from backend.ai.tools import try_server_apply_create_property_field_answer
+
+    token = set_current_thread_id("test:edit:block-create-preflight")
+    msg_token = set_current_messages([{"type": "human", "content": "Gujarath"}])
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        _clear_workflow_session("EDIT_PROPERTY")
+        tools._set_workflow_session(
+            "CREATE_PROPERTY",
+            {"in_progress": True, "filled": {"name": "Draft"}, "next_field": "location"},
+        )
+        tools._set_workflow_session(
+            "EDIT_PROPERTY",
+            {
+                "property_id": 7,
+                "property_name": "Gold Plaza",
+                "in_progress": True,
+            },
+        )
+        result = asyncio.run(try_server_apply_create_property_field_answer(_owner(), None))
+        assert result is None
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
         _clear_workflow_session("EDIT_PROPERTY")
         reset_current_messages(msg_token)
         reset_current_thread_id(token)

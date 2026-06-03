@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    assistant_prompted_for_edit_property,
     assistant_showed_create_property_summary,
     create_property_field_collection_speak,
     create_property_monthly_rent_collection_prompt,
@@ -71,11 +72,13 @@ from backend.ai.investor_guards import (
 )
 from backend.ai.schemas import AgentAction, ToolResult
 from backend.api._helpers import (
+    append_sql_owned_property_filter,
     create_property_record,
     enrich_property_with_supply,
     ensure_rent_property_registered,
     format_transaction_row,
     lock_property,
+    property_is_owned_by,
     require_property_token,
     sync_investors_to_contract,
     sync_rent_amount_to_contract,
@@ -316,6 +319,12 @@ def _latest_human_create_property_confirm() -> bool | None:
     return parse_create_property_submit_intent(text)
 
 
+def _edit_property_workflow_active() -> bool:
+    """True when an existing property is selected for edit in this chat thread."""
+    session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+    return bool(session.get("property_id"))
+
+
 def _merge_last_user_utterance(
     accumulated: dict[str, str],
     modal: str,
@@ -323,6 +332,8 @@ def _merge_last_user_utterance(
     required: tuple[str, ...],
 ) -> dict[str, str]:
     """If the LLM omitted the field the user just answered, use the last human line."""
+    if modal == _CREATE_PROPERTY_MODAL and _edit_property_workflow_active():
+        return accumulated
     session = _get_workflow_session(modal)
     if modal == _CREATE_PROPERTY_MODAL and _latest_human_create_property_confirm() is not None:
         return accumulated
@@ -387,6 +398,9 @@ def _backfill_create_property_filled_from_history(
             continue
         lowered = text.lower()
         if role in ("ai", "assistant"):
+            if assistant_prompted_for_edit_property(text):
+                pending_field = None
+                continue
             if assistant_showed_create_property_summary(text):
                 pending_field = None
                 for key, value in parse_create_property_fields_from_summary(text).items():
@@ -775,10 +789,19 @@ register(ToolSpec(
 ))
 
 
-async def _list_properties_tool(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _list_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
-        items = _list_properties(cursor)
+        if canonical_role(user.role) == "property_owner":
+            cursor.execute(
+                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+                (user.wallet_address,),
+            )
+            rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+            items = [_serialize_property(r) for r in rows]
+        else:
+            items = _list_properties(cursor)
     finally:
         cursor.close()
     q = (args.get("search") or "").strip()
@@ -828,9 +851,9 @@ async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> T
 register(ToolSpec(
     name="list_properties",
     description=(
-        "List dashboard-visible properties (same as the Properties / Marketplace UI): "
-        "active, token deployed, sale inventory finalized. Archived and in-progress "
-        "creates are excluded. Use the returned count and property_names — do not guess. "
+        "List dashboard-visible properties. For property owners this returns only "
+        "listings they created (same as get_my_owned_properties). For investors "
+        "it returns the marketplace catalog. Use count and property_names — do not guess. "
         "Tenants must use list_tenant_properties instead."
     ),
     parameters={
@@ -1217,25 +1240,29 @@ register(ToolSpec(
 
 
 def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
-    """Aggregate analytics-page metrics for the property-owner copilot."""
+    """Aggregate analytics for the signed-in property owner — owned listings only."""
     wallet = normalize_address(user.wallet_address or "")
+    owner_wallet = user.wallet_address or ""
 
     cursor.execute(
-        f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
+        f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+        f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+        (owner_wallet,),
     )
-    listable_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
-    properties = [_serialize_property(r) for r in listable_rows]
-    listable_ids = {int(p["id"]) for p in properties if p.get("id") is not None}
-    owned = [p for p in properties if wallet and normalize_address(p.get("owner_wallet") or "") == wallet]
-    listed_with_sales = [p for p in properties if float(p.get("sold_percentage") or 0) > 0]
+    owned_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+    owned = [_serialize_property(r) for r in owned_rows]
+    listed_with_sales = [p for p in owned if float(p.get("sold_percentage") or 0) > 0]
 
     cursor.execute(
         f"""
-        SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected,
-               COUNT(*) AS payments_count
+        SELECT
+          COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected,
+          COUNT(*) AS payments_count
         FROM rent_payments rp
         {active_property_join("p.id = rp.property_id")}
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+        """,
+        (owner_wallet,),
     )
     rent_pay = cursor.fetchone() or {}
     cursor.execute(
@@ -1244,15 +1271,18 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
                COUNT(*) AS distributions_count
         FROM rent_distributions rd
         {active_property_join("p.id = rd.property_id")}
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+        """,
+        (owner_wallet,),
     )
     rent_dist = cursor.fetchone() or {}
     cursor.execute(
         f"""
         SELECT COUNT(*) AS active FROM tenant_rentals tr
         {active_property_join("p.id = tr.property_id")}
-        WHERE tr.status = 'active'
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'
+        """,
+        (owner_wallet,),
     )
     active_rentals = int((cursor.fetchone() or {}).get("active") or 0)
 
@@ -1262,7 +1292,9 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         f"FROM rent_payments rp "
         f"JOIN tenants t ON t.id = rp.tenant_id "
         f"{active_property_join('p.id = rp.property_id')} "
-        f"ORDER BY rp.payment_date DESC LIMIT 10"
+        f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+        f"ORDER BY rp.payment_date DESC LIMIT 10",
+        (owner_wallet,),
     )
     recent_payments = [
         {
@@ -1280,7 +1312,9 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         "rd.investor_count, rd.distributed_at "
         f"FROM rent_distributions rd "
         f"{active_property_join('p.id = rd.property_id')} "
-        f"ORDER BY rd.distributed_at DESC LIMIT 8"
+        f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+        f"ORDER BY rd.distributed_at DESC LIMIT 8",
+        (owner_wallet,),
     )
     recent_distributions = [
         {
@@ -1292,49 +1326,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         for r in (cursor.fetchall() or [])
     ]
 
-    cursor.execute(
-        "SELECT COUNT(DISTINCT o.user_id) AS n FROM token_ownerships o WHERE o.token_amount > 0"
-    )
-    platform_investors = int((cursor.fetchone() or {}).get("n") or 0)
-    cursor.execute(
-        f"""
-        SELECT p.id, p.name, COUNT(DISTINCT o.user_id) AS investor_count
-        FROM properties p
-        LEFT JOIN token_ownerships o ON o.property_id = p.id AND o.token_amount > 0
-        WHERE {ACTIVE_PROPERTY_SQL}
-        GROUP BY p.id, p.name
-        HAVING COUNT(DISTINCT o.user_id) > 0
-        ORDER BY investor_count DESC, p.id DESC
-        LIMIT 8
-        """
-    )
-    investors_by_property = [
-        {
-            "property_id": int(r["id"]),
-            "property_name": r.get("name"),
-            "investor_count": int(r.get("investor_count") or 0),
-        }
-        for r in (cursor.fetchall() or [])
-        if int(r["id"]) in listable_ids
-    ]
-
-    cursor.execute(
-        "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
-        "p.name AS property_name, t.amount_spent "
-        f"FROM transactions t "
-        f"{active_property_left_join('p.id = t.property_id')} "
-        f"WHERE 1=1 {transaction_excludes_archived_property()} "
-        f"ORDER BY t.timestamp DESC, t.id DESC LIMIT 12"
-    )
-    recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
-
-    cursor.execute(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(amount_spent AS DECIMAL(36,18))), 0) AS spent "
-        "FROM transactions WHERE UPPER(type) IN ('INVESTMENT_FUNDED', 'INVESTMENT_COMPLETED')"
-    )
-    inv_agg = cursor.fetchone() or {}
-
-    my_investors_data: dict = {}
+    my_investors_count = 0
     if wallet:
         cursor.execute(
             f"""
@@ -1345,7 +1337,57 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             """,
             (wallet,),
         )
-        my_investors_data["investors_on_my_properties"] = int((cursor.fetchone() or {}).get("n") or 0)
+        my_investors_count = int((cursor.fetchone() or {}).get("n") or 0)
+
+    cursor.execute(
+        f"""
+        SELECT p.id, p.name, COUNT(DISTINCT o.user_id) AS investor_count
+        FROM properties p
+        LEFT JOIN token_ownerships o ON o.property_id = p.id AND o.token_amount > 0
+        WHERE {ACTIVE_PROPERTY_SQL}
+          AND LOWER(p.owner_wallet) = LOWER(%s)
+        GROUP BY p.id, p.name
+        HAVING COUNT(DISTINCT o.user_id) > 0
+        ORDER BY investor_count DESC, p.id DESC
+        LIMIT 8
+        """,
+        (owner_wallet,),
+    )
+    investors_by_property = [
+        {
+            "property_id": int(r["id"]),
+            "property_name": r.get("name"),
+            "investor_count": int(r.get("investor_count") or 0),
+        }
+        for r in (cursor.fetchall() or [])
+    ]
+
+    tx_conditions: list[str] = []
+    tx_params: list = []
+    append_sql_owned_property_filter(tx_conditions, tx_params, wallet=owner_wallet)
+    tx_where = ("WHERE " + " AND ".join(tx_conditions)) if tx_conditions else "WHERE 1=0"
+    cursor.execute(
+        "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
+        "p.name AS property_name, t.amount_spent "
+        f"FROM transactions t "
+        f"{active_property_left_join('p.id = t.property_id')} "
+        f"{tx_where} {transaction_excludes_archived_property()} "
+        f"ORDER BY t.timestamp DESC, t.id DESC LIMIT 12",
+        tuple(tx_params),
+    )
+    recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
+
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS n, COALESCE(SUM(CAST(t.amount_spent AS DECIMAL(36,18))), 0) AS spent
+        FROM transactions t
+        {active_property_join("p.id = t.property_id")}
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+          AND UPPER(t.type) IN ('INVESTMENT_FUNDED', 'INVESTMENT_COMPLETED')
+        """,
+        (owner_wallet,),
+    )
+    inv_agg = cursor.fetchone() or {}
 
     property_perf = sorted(
         [
@@ -1357,7 +1399,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
                 "token_supply": p.get("token_supply"),
                 "monthly_rent_eth": p.get("monthly_rent_eth"),
             }
-            for p in properties
+            for p in owned
         ],
         key=lambda x: float(x.get("sold_percentage") or 0),
         reverse=True,
@@ -1365,12 +1407,12 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
 
     return {
         "summary": {
-            "dashboard_visible_properties": len(properties),
-            "total_properties": len(properties),
+            "dashboard_visible_properties": len(owned),
+            "total_properties": len(owned),
             "properties_you_own": len(owned),
             "properties_with_token_sales": len(listed_with_sales),
-            "property_names": [p.get("name") for p in properties if p.get("name")],
-            "platform_investors": platform_investors,
+            "property_names": [p.get("name") for p in owned if p.get("name")],
+            "investors_on_your_properties": my_investors_count,
             "active_rentals": active_rentals,
             "total_rent_collected_eth": _eth(int(rent_pay.get("collected") or 0)),
             "rent_payments_count": int(rent_pay.get("payments_count") or 0),
@@ -1378,14 +1420,17 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             "rent_distributions_count": int(rent_dist.get("distributions_count") or 0),
             "total_investments_recorded": int(inv_agg.get("n") or 0),
             "total_investment_volume_eth": str(inv_agg.get("spent") or "0"),
+            "scope": "owned_properties_only",
         },
-        "my_portfolio": my_investors_data,
+        "my_portfolio": {
+            "investors_on_my_properties": my_investors_count,
+        },
         "property_performance": property_perf,
         "investors_by_property": investors_by_property,
         "recent_rent_payments": recent_payments,
         "recent_rent_distributions": recent_distributions,
         "recent_transactions": recent_transactions,
-        "properties": properties[:20],
+        "properties": owned[:20],
     }
 
 
@@ -1405,10 +1450,11 @@ async def _get_owner_analytics_overview(_args: dict, user: AuthUser, db: Any) ->
 register(ToolSpec(
     name="get_owner_analytics_overview",
     description=(
-        "Analytics snapshot aligned with the admin dashboard: summary.dashboard_visible_properties "
-        "and summary.property_names match the Properties page. Includes rent collected/distributed, "
-        "active rentals, investors by property, recent payments and transactions. Use for "
-        "'analytics', 'view analytics', or dashboard overview. Report counts from summary only."
+        "Analytics snapshot for the signed-in property owner — scoped to properties "
+        "they created only. Includes rent collected/distributed, active rentals, "
+        "investors, recent payments, and transactions on their listings. Use for "
+        "'analytics', 'view analytics', or dashboard overview. Report counts from "
+        "summary only; never mix in other admins' properties."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
@@ -1581,7 +1627,7 @@ register(ToolSpec(
 ))
 
 
-async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_all_transactions(args: dict, user: AuthUser, db: Any) -> ToolResult:
     limit = max(1, min(int(args.get("limit") or 20), 100))
     tx_type = (args.get("type") or "").strip() or None
     property_id = args.get("property_id")
@@ -1595,6 +1641,8 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
         if property_id is not None:
             conditions.append("t.property_id = %s")
             params.append(int(property_id))
+        if canonical_role(user.role) == "property_owner":
+            append_sql_owned_property_filter(conditions, params, wallet=user.wallet_address)
         query = (
             "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
             "t.block_number, COALESCE(t.wallet_address, i.investor_wallet) AS wallet_address, "
@@ -1606,6 +1654,8 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
         archive_filter = transaction_excludes_archived_property()
         if conditions:
             query += "WHERE " + " AND ".join(conditions) + f" {archive_filter} "
+        elif canonical_role(user.role) == "property_owner":
+            query += f"WHERE 1=0 {archive_filter} "
         else:
             query += f"WHERE 1=1 {archive_filter} "
         query += "ORDER BY t.timestamp DESC, t.id DESC LIMIT %s"
@@ -1621,9 +1671,10 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
 register(ToolSpec(
     name="get_all_transactions",
     description=(
-        "Platform-wide on-chain transactions across every property. Use for "
-        "property-owner analytics like 'last transactions on the platform', "
-        "'all transactions for Azure View', or 'recent rent payments'."
+        "On-chain transactions. For property owners this is scoped to properties "
+        "they created (same as the admin Transactions page). For investors/tenants "
+        "it returns platform-wide activity unless filtered. Use for 'recent "
+        "transactions', 'last 5 transactions', or property-specific activity."
     ),
     parameters={
         "type": "object",
@@ -1639,7 +1690,7 @@ register(ToolSpec(
 ))
 
 
-async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_property_details(args: dict, user: AuthUser, db: Any) -> ToolResult:
     pid = args.get("property_id")
     if pid is None:
         return ToolResult(ok=False, error="property_id is required.")
@@ -1648,6 +1699,13 @@ async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolRes
         prop = fetch_active_property(cursor, int(pid))
         if not prop:
             return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
+        if canonical_role(user.role) == "property_owner" and not property_is_owned_by(
+            prop, user.wallet_address
+        ):
+            return ToolResult(
+                ok=False,
+                error="You can only view details for properties you created.",
+            )
         enriched = prop
         cursor.execute(
             "SELECT COUNT(DISTINCT user_id) AS investor_count "
@@ -1975,38 +2033,99 @@ register(ToolSpec(
 ))
 
 
-async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_platform_stats(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
+    owner_scoped = canonical_role(user.role) == "property_owner"
+    owner_wallet = user.wallet_address or ""
     try:
-        properties_active = count_dashboard_listable_active(cursor)
-        cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
-        investors_active = int((cursor.fetchone() or {}).get("n") or 0)
-        cursor.execute(
-            f"""
-            SELECT COUNT(*) AS n FROM tenant_rentals tr
-            {active_property_join("p.id = tr.property_id")}
-            WHERE tr.status = 'active'
-            """
-        )
-        active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
-            FROM rent_payments rp
-            {active_property_join("p.id = rp.property_id")}
-            """
-        )
-        rent_agg = cursor.fetchone() or {}
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
-            FROM rent_distributions rd
-            {active_property_join("p.id = rd.property_id")}
-            """
-        )
-        dist_agg = cursor.fetchone() or {}
-        cursor.execute("SELECT COUNT(*) AS n FROM transactions")
-        tx_count = int((cursor.fetchone() or {}).get("n") or 0)
+        if owner_scoped:
+            cursor.execute(
+                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+                (owner_wallet,),
+            )
+            properties_active = len(
+                filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+            )
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT o.user_id) AS n
+                FROM token_ownerships o
+                {active_property_join("p.id = o.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s) AND o.token_amount > 0
+                """,
+                (owner_wallet,),
+            )
+            investors_active = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS n FROM tenant_rentals tr
+                {active_property_join("p.id = tr.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'
+                """,
+                (owner_wallet,),
+            )
+            active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
+                FROM rent_payments rp
+                {active_property_join("p.id = rp.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s)
+                """,
+                (owner_wallet,),
+            )
+            rent_agg = cursor.fetchone() or {}
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
+                FROM rent_distributions rd
+                {active_property_join("p.id = rd.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s)
+                """,
+                (owner_wallet,),
+            )
+            dist_agg = cursor.fetchone() or {}
+            tx_conditions: list[str] = []
+            tx_params: list = []
+            append_sql_owned_property_filter(tx_conditions, tx_params, wallet=owner_wallet)
+            tx_where = ("WHERE " + " AND ".join(tx_conditions)) if tx_conditions else "WHERE 1=0"
+            cursor.execute(
+                f"SELECT COUNT(*) AS n FROM transactions t "
+                f"{active_property_left_join('p.id = t.property_id')} {tx_where}",
+                tuple(tx_params),
+            )
+            tx_count = int((cursor.fetchone() or {}).get("n") or 0)
+        else:
+            properties_active = count_dashboard_listable_active(cursor)
+            cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
+            investors_active = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS n FROM tenant_rentals tr
+                {active_property_join("p.id = tr.property_id")}
+                WHERE tr.status = 'active'
+                """
+            )
+            active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
+                FROM rent_payments rp
+                {active_property_join("p.id = rp.property_id")}
+                """
+            )
+            rent_agg = cursor.fetchone() or {}
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
+                FROM rent_distributions rd
+                {active_property_join("p.id = rd.property_id")}
+                """
+            )
+            dist_agg = cursor.fetchone() or {}
+            cursor.execute("SELECT COUNT(*) AS n FROM transactions")
+            tx_count = int((cursor.fetchone() or {}).get("n") or 0)
     finally:
         cursor.close()
     return ToolResult(
@@ -2019,6 +2138,7 @@ async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResu
             "rent_payments_count": int(rent_agg.get("n") or 0),
             "total_rent_distributed_eth": _eth(int(dist_agg.get("wei") or 0)),
             "total_transactions": tx_count,
+            **({"scope": "owned_properties_only"} if owner_scoped else {}),
         },
     )
 
@@ -2026,9 +2146,9 @@ async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResu
 register(ToolSpec(
     name="get_platform_stats",
     description=(
-        "System-wide totals. active_properties counts dashboard-visible listings "
-        "only (same as UI). Also returns active investors, rentals, rent totals, "
-        "and transaction count."
+        "Portfolio totals. For property owners this counts only properties they "
+        "created plus rent, investors, rentals, and transactions on those listings. "
+        "For investors/tenants it returns platform-wide totals."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=ALL_ROLES,
@@ -3339,6 +3459,8 @@ def _create_property_ui_submit_actions(
 def _create_property_workflow_active(
     session: dict[str, Any], filled: dict[str, str]
 ) -> bool:
+    if _edit_property_workflow_active():
+        return False
     if session.get("in_progress") or session.get("awaiting_create_confirmation"):
         return True
     if filled:
@@ -3363,6 +3485,8 @@ async def try_server_apply_create_property_field_answer(
 ) -> ToolResult | None:
     """Apply the latest user answer server-side so the LLM cannot invent value caps."""
     if canonical_role(user.role) != "property_owner":
+        return None
+    if _edit_property_workflow_active():
         return None
     if _latest_human_create_property_confirm() is not None:
         return None
@@ -3419,6 +3543,8 @@ async def try_server_create_property_confirmation(
     free text instead of calling fill_create_property, this keeps Edit/Delete in chat.
     """
     if canonical_role(user.role) != "property_owner":
+        return None
+    if _edit_property_workflow_active():
         return None
     if _latest_human_create_property_confirm() is not None:
         return None
@@ -3491,6 +3617,26 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     blocked = _block_create_property_when_chat_limit_reached()
     if blocked is not None:
         return blocked
+
+    if _edit_property_workflow_active() and not _human_requested_new_create_property_listing():
+        edit_session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+        property_name = str(edit_session.get("property_name") or "this property")
+        return ToolResult(
+            ok=False,
+            error=(
+                f"An edit is in progress for {property_name}. Use fill_edit_property "
+                "with only the field(s) the user wants to change — do not collect "
+                "create-property fields."
+            ),
+            data={
+                "property_id": edit_session.get("property_id"),
+                "property_name": property_name,
+                "instruction": (
+                    "Call fill_edit_property with the changed field(s) and submit=true. "
+                    "Do NOT call fill_create_property during an existing-property edit."
+                ),
+            },
+        )
 
     # Abandoned draft + user asks to create again (often after copilot refresh) without
     # passing new field values yet — drop the stale server session.
@@ -4403,6 +4549,9 @@ async def _fill_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResult
         )
 
     if result.ok and data.get("submitted"):
+        property_label = property_name or f"property #{pid}"
+        data["speak_to_user"] = f"Saved your changes to {property_label}."
+        data["speak_verbatim"] = True
         data["instruction"] = (
             "The property was saved. The user may change more fields on the same "
             "property in this chat — call fill_edit_property with only the new "
@@ -4437,7 +4586,7 @@ async def try_server_edit_property_continuation(
 
     session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
     pid = session.get("property_id")
-    if not pid or session.get("in_progress"):
+    if not pid:
         return None
 
     utterance = _latest_human_utterance()
