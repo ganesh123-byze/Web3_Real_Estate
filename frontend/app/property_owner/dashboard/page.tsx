@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { Building2, Coins, Receipt, Wallet } from "lucide-react";
 import { AdminTopbar } from "@/components/layout/topbar";
-import { useDashboardSummary, useOwnerInvestors, useProperties, useRentAnalytics, useTransactions } from "@/lib/queries";
+import { useDashboardSummary, useOwnerInvestors, useManagedProperties, useProperties, useRentAnalytics, useTransactions } from "@/lib/queries";
 import { PropertiesOverviewTable } from "@/components/dashboard/properties-overview-table";
 import { InvestorShareChart } from "@/components/dashboard/investor-share-chart";
 import { GradientStatCard } from "@/components/dashboard/gradient-stat-card";
@@ -35,14 +35,16 @@ type DonutHover = {
 
 export default function DashboardPage() {
   const properties = useProperties();
+  const managedProperties = useManagedProperties();
   const transactions = useTransactions();
   const rent = useRentAnalytics();
   const summary = useDashboardSummary();
   const ownerInvestors = useOwnerInvestors();
 
   const [selected, setSelected] = useState<Property | null>(null);
+  const overviewProperties = managedProperties.data ?? [];
   useEffect(() => {
-    const list = properties.data ?? [];
+    const list = managedProperties.data ?? [];
     if (list.length === 0) return;
     if (selected && list.some((property) => property.id === selected.id)) return;
 
@@ -50,7 +52,7 @@ export default function DashboardPage() {
       (property) => !!property.token_address && Number(property.tokens_sold ?? 0) > 0,
     );
     setSelected(firstInvestedProperty ?? list[0]);
-  }, [properties.data, selected]);
+  }, [managedProperties.data, selected]);
 
   const allProperties = properties.data ?? [];
   const investments = useMemo(
@@ -66,7 +68,7 @@ export default function DashboardPage() {
   );
   const totalPortfolio = Number(summary.data?.total_portfolio_value ?? 0) / 1e18;
   const selectedProperty = selected
-    ? allProperties.find((property) => property.id === selected.id) ?? selected
+    ? overviewProperties.find((property) => property.id === selected.id) ?? selected
     : null;
   const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty, transactions.data ?? []);
   const propertyPerf = allProperties
@@ -139,8 +141,8 @@ export default function DashboardPage() {
         <section className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
           <div className="min-w-0">
             <PropertiesOverviewTable
-              properties={properties.data ?? []}
-              loading={properties.isLoading}
+              properties={overviewProperties}
+              loading={managedProperties.isLoading}
               selectedId={selected?.id ?? null}
               onSelectProperty={(property) => setSelected(property)}
               ownerInvestors={ownerInvestors.data ?? []}

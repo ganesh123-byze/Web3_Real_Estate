@@ -83,7 +83,7 @@ export function PropertiesOverviewTable({
             : filtered.length === 0
               ? (
                 <div className="py-10 text-center text-sm text-muted-foreground">
-                  No properties to show.
+                  No managed properties to show.
                 </div>
               )
               : filtered.map((p, idx) => {
