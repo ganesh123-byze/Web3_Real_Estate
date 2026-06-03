@@ -15,11 +15,15 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("invalid_field"):
         return True
+    if data.get("rent_over_limit"):
+        return True
     if data.get("field_accepted"):
         return True
     if data.get("next_field") == "token_symbol" and (data.get("speak_to_user") or "").strip():
         return True
     if data.get("awaiting_create_confirmation"):
+        return True
+    if data.get("awaiting_delete_confirmation"):
         return True
     if data.get("confirmation_summary"):
         return True

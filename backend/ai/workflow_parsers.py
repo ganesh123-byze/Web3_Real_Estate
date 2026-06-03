@@ -737,3 +737,116 @@ def parse_yes_no_confirmation(text: str) -> bool | None:
     if re.search(r"\bdelete\b", t):
         return False
     return None
+
+
+_DELETE_PROPERTY_OPEN_RE = re.compile(
+    r"\b(?:delete|remove|archive)\b(?:\s+\w+){0,4}\s*(?:property|listing)\b",
+    re.IGNORECASE,
+)
+
+
+def utterance_opens_delete_property_flow(text: str) -> bool:
+    """True when the user is starting a delete-property workflow."""
+    t = _strip_noise(text).lower()
+    if not t:
+        return False
+    if _DELETE_PROPERTY_OPEN_RE.search(t):
+        return True
+    if re.search(r"\b(?:delete|remove|archive)\s+\S", t):
+        return True
+    return False
+
+
+def parse_delete_property_id_from_utterance(text: str) -> int | None:
+    """Extract a numeric property id from a delete-identification utterance."""
+    raw = _strip_noise(text).strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d+", raw):
+        return int(raw)
+    match = re.fullmatch(
+        r"(?:property\s+)?(?:id\s*)?#?(\d+)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(?:property|id)\s*#?(\d+)\b", raw, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def parse_delete_property_hint_from_utterance(text: str) -> str:
+    """Property name or id hint after delete/remove/archive phrasing."""
+    raw = _strip_noise(text).strip()
+    if not raw:
+        return ""
+    pid = parse_delete_property_id_from_utterance(raw)
+    if pid is not None and re.fullmatch(
+        r"(?:property\s+)?(?:id\s*)?#?\d+",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        return str(pid)
+    stripped = re.sub(
+        r"^(?:please\s+)?(?:i\s+want\s+to\s+)?"
+        r"(?:delete|remove|archive)\s+(?:the\s+)?(?:property\s+)?",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    ).strip()
+    stripped = re.sub(r"\s+(?:property|listing)\.?$", "", stripped, flags=re.IGNORECASE).strip(
+        "'\" "
+    )
+    if stripped:
+        pid = parse_delete_property_id_from_utterance(stripped)
+        if pid is not None and re.fullmatch(
+            r"(?:property\s+)?(?:id\s*)?#?\d+",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return str(pid)
+        return stripped
+    return raw
+
+
+def delete_property_identification_prompt() -> str:
+    return (
+        "Which property should I remove? Please give the exact property name "
+        "or property ID (for example, Skyzone or 7)."
+    )
+
+
+def delete_property_confirmation_message(
+    name: str,
+    property_id: int,
+    *,
+    will_archive: bool,
+) -> str:
+    action = "archive" if will_archive else "permanently delete"
+    label = name.strip() or f"Property {property_id}"
+    return (
+        f"You asked to remove {label!r} (property #{property_id}). "
+        f"This will {action} the listing. Reply Yes to confirm or No to cancel."
+    )
+
+
+def parse_delete_property_confirm_intent(text: str) -> bool | None:
+    """Yes/no for delete confirmation (delete/remove here means proceed, not cancel)."""
+    raw = _strip_noise(text)
+    t = raw.lower().strip("'\".,!? ")
+    if not t:
+        return None
+    if re.search(r"\b(no|nope|cancel|stop|abort|don'?t|do not)\b", t):
+        return False
+    if re.search(
+        r"\b(?:yes|yeah|yep|sure|ok|okay|confirm|proceed|go ahead|do it)\b",
+        t,
+    ):
+        return True
+    if re.search(r"\b(?:delete|remove)\s+(?:it|this|the property|that property)\b", t):
+        return True
+    if t in {"delete", "remove", "yes delete", "yes remove"}:
+        return True
+    return None

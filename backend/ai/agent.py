@@ -50,6 +50,7 @@ from backend.ai.tools import (
     try_server_apply_create_property_field_answer,
     try_server_create_property_confirmation,
     try_server_create_property_submit,
+    try_server_delete_property_continuation,
     try_server_edit_property_continuation,
 )
 from backend.services.auth import AuthUser, canonical_role
@@ -446,6 +447,8 @@ async def run_agent(
             preflight = await try_server_create_property_confirmation(user, db)
         if preflight is None:
             preflight = await try_server_edit_property_continuation(user, db)
+        if preflight is None:
+            preflight = await try_server_delete_property_continuation(user, db)
         if preflight is not None:
             reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
             if not reply and preflight.data.get("property_name"):
@@ -604,6 +607,8 @@ async def stream_agent(
             preflight = await try_server_create_property_confirmation(user, db)
         if preflight is None:
             preflight = await try_server_edit_property_continuation(user, db)
+        if preflight is None:
+            preflight = await try_server_delete_property_continuation(user, db)
         if preflight is not None:
             reply = str((preflight.data or {}).get("speak_to_user") or "").strip()
             if not reply and preflight.data.get("property_name"):

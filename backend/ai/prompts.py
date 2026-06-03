@@ -205,13 +205,23 @@ rent page / contract dialog, not a simple field update:
    in MetaMask."
 
 Delete property — "delete / remove / archive <property>":
-1. Resolve the property id via get_my_owned_properties if you don't
-   already have it.
-2. Call delete_property with the property_id. The backend hard-deletes if
-   the property has no activity, otherwise archives it.
-3. Reply with a short confirmation citing the property name. If the
-   response says mode=archived, mention it was archived (because the
-   property already has on-chain or rental history).
+1. The MOMENT the user asks to delete / remove / archive a property, call
+   start_delete_property FIRST. If they did not give an exact name or property
+   ID yet, the tool returns speak_to_user asking for the exact property name
+   or ID — read it verbatim and wait.
+2. When the user gives the exact name or numeric property ID, call
+   start_delete_property with property_name or property_id. The tool resolves
+   the listing and returns awaiting_delete_confirmation: true with speak_to_user
+   asking Yes/No — read that verbatim. Do NOT delete yet.
+3. After the user replies:
+     - Yes / confirm / delete it → call confirm_delete_property with
+       confirm_delete=true only.
+     - No / cancel → call confirm_delete_property with confirm_delete=false.
+4. Read speak_to_user from the tool verbatim on success or cancel. If mode=
+   archived, mention the property was archived (on-chain or rental history);
+   if mode=deleted, it was permanently removed.
+5. Never call confirm_delete_property before awaiting_delete_confirmation is
+   true. Never skip the identification or confirmation steps.
 
 Cross-role requests on this dashboard:
 - If the user asks to "invest in property X" / "buy tokens of X", explain

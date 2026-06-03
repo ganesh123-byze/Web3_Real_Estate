@@ -65,6 +65,70 @@ def test_edit_session_keeps_property_id_after_submit():
         reset_current_thread_id(token)
 
 
+def test_edit_fill_rejects_monthly_rent_at_or_above_100():
+    token = set_current_thread_id("test:edit:rent-reject-fill")
+    try:
+        _clear_workflow_session("EDIT_PROPERTY")
+        tools._set_workflow_session(
+            "EDIT_PROPERTY",
+            {
+                "property_id": 7,
+                "property_name": "Skyzone",
+                "in_progress": True,
+                "filled": {},
+                "submitted": False,
+            },
+        )
+        res = asyncio.run(
+            _fill_edit_property({"monthly_rent_eth": "150", "submit": True}, _owner(), None)
+        )
+        assert res.ok
+        assert res.data.get("rent_over_limit") is True
+        assert res.data.get("property_id") == 7
+        assert "100 ETH" in str(res.data.get("speak_to_user"))
+        assert "monthly_rent_eth" not in (res.data.get("filled") or {})
+        assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
+        session = _get_workflow_session("EDIT_PROPERTY")
+        assert session.get("property_id") == 7
+        assert session.get("next_field") == "monthly_rent_eth"
+        assert session.get("submitted") is False
+    finally:
+        _clear_workflow_session("EDIT_PROPERTY")
+        reset_current_thread_id(token)
+
+
+def test_edit_continuation_rejects_high_rent_follow_up():
+    token = set_current_thread_id("test:edit:rent-reject-continuation")
+    msg_token = set_current_messages(
+        [{"type": "human", "content": "set monthly rent to 1000 eth"}]
+    )
+    try:
+        _clear_workflow_session("EDIT_PROPERTY")
+        tools._set_workflow_session(
+            "EDIT_PROPERTY",
+            {
+                "property_id": 7,
+                "property_name": "Skyzone",
+                "in_progress": False,
+                "submitted": True,
+            },
+        )
+        result = asyncio.run(try_server_edit_property_continuation(_owner(), None))
+        assert result is not None
+        assert result.ok
+        assert result.data.get("rent_over_limit") is True
+        assert result.data.get("property_id") == 7
+        assert "100 ETH" in str(result.data.get("speak_to_user"))
+        assert not any(a.type == "SUBMIT_FORM" for a in result.actions)
+        session = _get_workflow_session("EDIT_PROPERTY")
+        assert session.get("property_id") == 7
+        assert session.get("next_field") == "monthly_rent_eth"
+    finally:
+        _clear_workflow_session("EDIT_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
 def test_edit_continuation_preflight_submits_rent():
     token = set_current_thread_id("test:edit:continuation-rent")
     msg_token = set_current_messages(

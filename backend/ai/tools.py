@@ -40,8 +40,14 @@ from backend.ai.workflow_parsers import (
     normalize_create_property_accumulated,
     normalize_create_property_field,
     parse_create_property_fields_from_summary,
+    delete_property_confirmation_message,
+    delete_property_identification_prompt,
+    parse_delete_property_confirm_intent,
+    parse_delete_property_hint_from_utterance,
+    parse_delete_property_id_from_utterance,
     parse_edit_property_fields_from_utterance,
     parse_yes_no_confirmation,
+    utterance_opens_delete_property_flow,
     utterance_opens_new_edit_property_flow,
 )
 from backend.ai.copilot_property_scope import (
@@ -2045,6 +2051,7 @@ _CREATE_PROPERTY_FIELDS = (
 )
 _CREATE_PROPERTY_MODAL = "CREATE_PROPERTY"
 _EDIT_PROPERTY_MODAL = "EDIT_PROPERTY"
+_DELETE_PROPERTY_MODAL = "DELETE_PROPERTY"
 _CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE = (
     "Please refresh the page to start a new chat before creating another property."
 )
@@ -2831,30 +2838,70 @@ def _create_property_prompt_for_monthly_rent(
     return ToolResult(ok=True, data=out_data, actions=actions)
 
 
-def _gate_create_property_monthly_rent_value(
+def _gate_monthly_rent_eth_value(
     accumulated: dict[str, str],
     *,
+    modal: str,
     data: dict[str, Any],
     actions: list[AgentAction],
+    session_patch: dict[str, Any] | None = None,
 ) -> ToolResult | None:
+    """Block invalid or over-limit monthly rent before create/edit submit."""
     raw = accumulated.get("monthly_rent_eth")
     if raw in (None, ""):
         return None
     if create_property_monthly_rent_is_skip(str(raw)):
         accumulated["monthly_rent_eth"] = "0"
         return None
+
+    if not create_property_numeric_field_is_valid("monthly_rent_eth", str(raw)):
+        prompt = create_property_invalid_field_message("monthly_rent_eth", str(raw))
+        accumulated.pop("monthly_rent_eth", None)
+        _set_workflow_session(
+            modal,
+            {
+                **(session_patch or {}),
+                "in_progress": True,
+                "filled": accumulated,
+                "next_field": "monthly_rent_eth",
+                "submitted": False,
+            },
+        )
+        return ToolResult(
+            ok=True,
+            data={
+                **data,
+                "filled": accumulated,
+                "next_field": "monthly_rent_eth",
+                "invalid_field": "monthly_rent_eth",
+                "speak_to_user": prompt,
+                "speak_verbatim": True,
+                "instruction": (
+                    "The monthly rent answer was invalid. Read speak_to_user verbatim "
+                    "and wait for a valid amount below 100 ETH."
+                ),
+            },
+            actions=[
+                a
+                for a in actions
+                if not (a.type == "SUBMIT_FORM" and a.modal == modal)
+                and not (a.type == "FILL_FIELD" and a.field == "monthly_rent_eth")
+            ],
+        )
+
     if not create_property_monthly_rent_over_limit(str(raw)):
         return None
+
     accumulated.pop("monthly_rent_eth", None)
     prompt = create_property_monthly_rent_rejection_message(str(raw))
     _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
+        modal,
         {
+            **(session_patch or {}),
             "in_progress": True,
             "filled": accumulated,
             "next_field": "monthly_rent_eth",
             "submitted": False,
-            "awaiting_create_confirmation": False,
         },
     )
     return ToolResult(
@@ -2866,12 +2913,35 @@ def _gate_create_property_monthly_rent_value(
             "next_field": "monthly_rent_eth",
             "rent_over_limit": True,
             "speak_to_user": prompt,
+            "speak_verbatim": True,
             "instruction": (
                 "The rent value exceeds the 100 ETH limit. Read speak_to_user and "
-                "wait for a lower amount, 0, or skip."
+                "wait for a lower amount below 100 ETH."
             ),
         },
-        actions=[a for a in actions if a.field != "monthly_rent_eth"],
+        actions=[
+            a
+            for a in actions
+            if not (a.type == "SUBMIT_FORM" and a.modal == modal)
+            and not (a.type == "FILL_FIELD" and a.field == "monthly_rent_eth")
+        ],
+    )
+
+
+def _gate_create_property_monthly_rent_value(
+    accumulated: dict[str, str],
+    *,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult | None:
+    return _gate_monthly_rent_eth_value(
+        accumulated,
+        modal=_CREATE_PROPERTY_MODAL,
+        data=data,
+        actions=actions,
+        session_patch={
+            "awaiting_create_confirmation": False,
+        },
     )
 
 
@@ -3733,15 +3803,84 @@ def _property_has_activity(cursor, prop: dict) -> bool:
     return False
 
 
-async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
-    pid = args.get("property_id")
-    if not pid:
-        return ToolResult(ok=False, error="property_id is required.")
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ToolResult(ok=False, error="property_id must be an integer.")
+def _parse_confirm_delete_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
 
+
+def _latest_human_delete_property_confirm() -> bool | None:
+    """Yes/no after the delete-property confirmation prompt."""
+    text = _latest_human_utterance()
+    if not text:
+        return None
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if not session.get("awaiting_delete_confirmation"):
+        return None
+    return parse_delete_property_confirm_intent(text)
+
+
+def _resolve_owned_property_by_id_for_user(
+    db: Any, user: AuthUser, property_id: int
+) -> tuple[dict | None, str | None]:
+    cursor = db.cursor(dictionary=True)
+    try:
+        prop = fetch_active_property(cursor, int(property_id))
+        if not prop:
+            return None, property_unavailable_message(property_id)
+        owner = normalize_address(prop.get("owner_wallet") or "")
+        if not owner or owner != normalize_address(user.wallet_address):
+            return None, "You can only delete properties you own."
+        return _serialize_property(prop), None
+    finally:
+        cursor.close()
+
+
+def _resolve_delete_property_target(
+    db: Any,
+    user: AuthUser,
+    *,
+    property_id: Any = None,
+    property_name: str = "",
+    utterance: str = "",
+) -> tuple[dict | None, str | None]:
+    if property_id is not None:
+        try:
+            pid = int(property_id)
+        except (TypeError, ValueError):
+            return None, "property_id must be an integer."
+        return _resolve_owned_property_by_id_for_user(db, user, pid)
+
+    hint = (property_name or "").strip()
+    if not hint and utterance:
+        pid = parse_delete_property_id_from_utterance(utterance)
+        if pid is not None:
+            return _resolve_owned_property_by_id_for_user(db, user, pid)
+        hint = parse_delete_property_hint_from_utterance(utterance)
+        if utterance_opens_delete_property_flow(utterance) and not hint:
+            hint = ""
+        elif not hint:
+            hint = utterance.strip()
+
+    if not hint:
+        return None, delete_property_identification_prompt()
+
+    if hint.isdigit():
+        return _resolve_owned_property_by_id_for_user(db, user, int(hint))
+    return _resolve_owned_property_for_user(db, user, hint)
+
+
+async def _execute_property_removal(
+    db: Any, user: AuthUser, pid: int
+) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
         prop = lock_property(cursor, pid)
@@ -3752,12 +3891,17 @@ async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
             return ToolResult(ok=False, error="You can only delete properties you own.")
 
         name = prop.get("name") or f"Property {pid}"
-        if _property_has_activity(cursor, prop):
+        will_archive = _property_has_activity(cursor, prop)
+        if will_archive:
             cursor.execute("UPDATE properties SET is_active = FALSE WHERE id = %s", (pid,))
             mode = "archived"
+            speak = (
+                f"{name} was archived because it already has on-chain or rental history."
+            )
         else:
             cursor.execute("DELETE FROM properties WHERE id = %s", (pid,))
             mode = "deleted"
+            speak = f"{name} was permanently deleted."
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -3765,33 +3909,264 @@ async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     finally:
         cursor.close()
 
+    _clear_workflow_session(_DELETE_PROPERTY_MODAL)
     return ToolResult(
         ok=True,
-        data={"property_id": pid, "name": name, "mode": mode},
+        data={
+            "property_id": pid,
+            "name": name,
+            "mode": mode,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "success_message": speak,
+        },
         actions=[AgentAction(type="NAVIGATE", route="/property_owner/properties")],
     )
 
 
+def _delete_property_confirmation_result(
+    prop: dict,
+    *,
+    will_archive: bool,
+) -> ToolResult:
+    pid = int(prop["id"])
+    name = str(prop.get("name") or f"Property {pid}")
+    speak = delete_property_confirmation_message(
+        name,
+        pid,
+        will_archive=will_archive,
+    )
+    _set_workflow_session(
+        _DELETE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "property_id": pid,
+            "property_name": name,
+            "will_archive": will_archive,
+            "awaiting_delete_confirmation": True,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "property_id": pid,
+            "property_name": name,
+            "will_archive": will_archive,
+            "awaiting_delete_confirmation": True,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "instruction": (
+                "Read speak_to_user verbatim. Wait for Yes or No. On Yes call "
+                "confirm_delete_property with confirm_delete=true. On No call "
+                "confirm_delete_property with confirm_delete=false."
+            ),
+        },
+        actions=[],
+    )
+
+
+async def _start_delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if session.get("awaiting_delete_confirmation"):
+        pid = session.get("property_id")
+        if pid:
+            prop, err = _resolve_owned_property_by_id_for_user(db, user, int(pid))
+            if prop:
+                return _delete_property_confirmation_result(
+                    prop,
+                    will_archive=bool(session.get("will_archive")),
+                )
+            if err:
+                return ToolResult(ok=False, error=err)
+
+    utterance = _latest_human_utterance()
+    prop, err = _resolve_delete_property_target(
+        db,
+        user,
+        property_id=args.get("property_id"),
+        property_name=str(args.get("property_name") or ""),
+        utterance=utterance if not args.get("property_id") and not args.get("property_name") else "",
+    )
+    if prop:
+        cursor = db.cursor(dictionary=True)
+        try:
+            row = lock_property(cursor, int(prop["id"]))
+            will_archive = bool(row and _property_has_activity(cursor, row))
+        finally:
+            cursor.close()
+        return _delete_property_confirmation_result(prop, will_archive=will_archive)
+
+    if err and err != delete_property_identification_prompt():
+        return ToolResult(
+            ok=False,
+            error=err,
+            data={"speak_to_user": err, "speak_verbatim": True},
+        )
+
+    _set_workflow_session(
+        _DELETE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "property_id": None,
+            "property_name": "",
+            "awaiting_delete_confirmation": False,
+        },
+    )
+    prompt = delete_property_identification_prompt()
+    return ToolResult(
+        ok=True,
+        data={
+            "in_progress": True,
+            "awaiting_delete_confirmation": False,
+            "speak_to_user": prompt,
+            "speak_verbatim": True,
+            "instruction": (
+                "Read speak_to_user verbatim and wait for the exact property name "
+                "or ID. Then call start_delete_property with property_name or "
+                "property_id — do not delete until the user confirms Yes."
+            ),
+        },
+        actions=[],
+    )
+
+
+async def _confirm_delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    pid = session.get("property_id")
+    if not pid or not session.get("awaiting_delete_confirmation"):
+        return ToolResult(
+            ok=False,
+            error=(
+                "No property is awaiting delete confirmation. Call start_delete_property "
+                "first and identify the property by exact name or ID."
+            ),
+        )
+
+    confirm = _parse_confirm_delete_arg(args.get("confirm_delete"))
+    if confirm is None:
+        confirm = _latest_human_delete_property_confirm()
+    if confirm is None:
+        prop, err = _resolve_owned_property_by_id_for_user(db, user, int(pid))
+        if err or not prop:
+            return ToolResult(ok=False, error=err or f"Property {pid} not found.")
+        return _delete_property_confirmation_result(
+            prop,
+            will_archive=bool(session.get("will_archive")),
+        )
+
+    if confirm is False:
+        name = str(session.get("property_name") or f"Property {pid}")
+        _clear_workflow_session(_DELETE_PROPERTY_MODAL)
+        speak = f"Deletion cancelled — {name} was not removed."
+        return ToolResult(
+            ok=True,
+            data={
+                "cancelled": True,
+                "property_id": int(pid),
+                "property_name": name,
+                "speak_to_user": speak,
+                "speak_verbatim": True,
+            },
+            actions=[],
+        )
+
+    return await _execute_property_removal(db, user, int(pid))
+
+
+async def try_server_delete_property_continuation(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Apply delete identification or yes/no without waiting for the LLM."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if not session.get("in_progress"):
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance:
+        return None
+
+    if session.get("awaiting_delete_confirmation"):
+        confirm = parse_delete_property_confirm_intent(utterance)
+        if confirm is None:
+            return None
+        return await _confirm_delete_property({"confirm_delete": confirm}, user, db)
+
+    if utterance_opens_new_edit_property_flow(utterance):
+        return None
+    if is_generic_create_property_intent(utterance):
+        return None
+
+    if utterance_opens_delete_property_flow(utterance):
+        hint = parse_delete_property_hint_from_utterance(utterance)
+        if not hint:
+            return None
+        if hint.isdigit():
+            return await _start_delete_property({"property_id": int(hint)}, user, db)
+        return await _start_delete_property({"property_name": hint}, user, db)
+
+    if parse_delete_property_id_from_utterance(utterance) is not None:
+        pid = parse_delete_property_id_from_utterance(utterance)
+        return await _start_delete_property({"property_id": pid}, user, db)
+
+    if parse_yes_no_confirmation(utterance) is not None:
+        return None
+
+    return await _start_delete_property({"property_name": utterance}, user, db)
+
+
 register(ToolSpec(
-    name="delete_property",
+    name="start_delete_property",
     description=(
-        "Delete or archive a property the signed-in property owner owns. If the "
-        "property has any on-chain or rental activity it is archived "
-        "(is_active=false); otherwise it is hard-deleted. The action navigates "
-        "to /property_owner/properties so the list refreshes. Resolve the "
-        "property by name via get_my_owned_properties first if you don't "
-        "already have its id."
+        "MANDATORY first step when the user asks to delete, remove, or archive "
+        "a property. Starts a two-step flow: (1) identify the property by exact "
+        "name or property ID, (2) ask the user to confirm Yes/No before anything "
+        "is removed. Pass property_id or property_name when the user already "
+        "named the listing. Never call confirm_delete_property until "
+        "awaiting_delete_confirmation is true in the tool result."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "property_id": {"type": "integer", "description": "ID of the property to remove."},
+            "property_id": {
+                "type": "integer",
+                "description": "Property ID when the user gave an exact numeric id.",
+            },
+            "property_name": {
+                "type": "string",
+                "description": "Exact property name when the user identified the listing.",
+            },
         },
-        "required": ["property_id"],
         "additionalProperties": False,
     },
     roles=frozenset({"property_owner"}),
-    handler=_delete_property,
+    handler=_start_delete_property,
+))
+
+
+register(ToolSpec(
+    name="confirm_delete_property",
+    description=(
+        "Confirm or cancel property removal after start_delete_property has "
+        "identified the listing and awaiting_delete_confirmation is true. "
+        "Pass confirm_delete=true only when the user clearly says Yes; "
+        "confirm_delete=false when they say No or cancel."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "confirm_delete": {
+                "type": "boolean",
+                "description": "true to delete/archive; false to cancel.",
+            },
+        },
+        "required": ["confirm_delete"],
+        "additionalProperties": False,
+    },
+    roles=frozenset({"property_owner"}),
+    handler=_confirm_delete_property,
 ))
 
 
@@ -3999,9 +4374,33 @@ async def _fill_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResult
 
     actions = _with_edit_property_id_on_actions(list(result.actions), int(pid))
     data = dict(result.data or {})
+    accumulated = dict(data.get("filled") or {})
+    data["filled"] = accumulated
     data["property_id"] = int(pid)
     if property_name:
         data["property_name"] = property_name
+
+    rent_gated = _gate_monthly_rent_eth_value(
+        accumulated,
+        modal=_EDIT_PROPERTY_MODAL,
+        data=data,
+        actions=actions,
+        session_patch={
+            "property_id": int(pid),
+            "property_name": property_name,
+        },
+    )
+    if rent_gated is not None:
+        gated_data = dict(rent_gated.data or {})
+        gated_data["property_id"] = int(pid)
+        if property_name:
+            gated_data["property_name"] = property_name
+        return ToolResult(
+            ok=rent_gated.ok,
+            data=gated_data,
+            error=rent_gated.error,
+            actions=_with_edit_property_id_on_actions(list(rent_gated.actions), int(pid)),
+        )
 
     if result.ok and data.get("submitted"):
         data["instruction"] = (
