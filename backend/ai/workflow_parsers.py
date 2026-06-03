@@ -41,6 +41,67 @@ def _strip_noise(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
+def _parse_number_word_phrase(text: str) -> int | None:
+    """Parse spoken counts like 'twenty five', 'one hundred', 'one hundred twenty five'."""
+    t = _strip_noise(text).lower().replace("-", " ")
+    if not t:
+        return None
+    compact = re.sub(r"[\s,]", "", t)
+    if re.fullmatch(r"\d+", compact or ""):
+        try:
+            return int(compact)
+        except ValueError:
+            return None
+    m = re.fullmatch(r"([\d.,]+)", t)
+    if m:
+        try:
+            return int(float(m.group(1).replace(",", "")))
+        except (TypeError, ValueError):
+            return None
+
+    tokens = [tok for tok in t.split() if tok not in {"and", "a", "an"}]
+    if not tokens:
+        return None
+
+    total = 0
+    current = 0
+    for tok in tokens:
+        if tok == "hundred":
+            current = max(current, 1) * 100
+            continue
+        val = _WORD_NUMBERS.get(tok)
+        if val is None:
+            return None
+        if val >= 100:
+            current = val
+        else:
+            current += val
+    total += current
+    return total if total > 0 else None
+
+
+def _parse_spoken_scale_multiplier(text: str, scale_word: str, multiplier: int) -> int | None:
+    """Parse '<amount> million' / 'ten thousand' style phrases."""
+    if not re.search(rf"\b{re.escape(scale_word)}\b", text):
+        return None
+    prefix = re.split(rf"\b{re.escape(scale_word)}\b", text, maxsplit=1)[0].strip()
+    if not prefix:
+        return multiplier
+    if re.fullmatch(r"[\d.,]+", prefix.replace(" ", "")):
+        try:
+            base = float(prefix.replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+    else:
+        parsed = _parse_number_word_phrase(prefix)
+        if parsed is None:
+            return None
+        base = float(parsed)
+    if base <= 0:
+        return None
+    return int(base * multiplier)
+
+
 def _parse_spoken_integer(text: str) -> int | None:
     """Best-effort integer from phrases like 'one lakh tokens' or '10000'."""
     t = _strip_noise(text).lower()
@@ -65,15 +126,15 @@ def _parse_spoken_integer(text: str) -> int | None:
             return int(float(m.group(1).replace(",", "")) * 10_000_000)
         except (TypeError, ValueError):
             pass
-    if re.search(r"\bthousand\b", t):
-        m = re.search(r"([\d.,]+)\s*thousand", t)
-        if m:
-            try:
-                return int(float(m.group(1).replace(",", "")) * 1_000)
-            except (TypeError, ValueError):
-                pass
-        if re.search(r"\bone\s+thousand\b", t):
-            return 1_000
+
+    for scale_word, mult in (
+        ("billion", 1_000_000_000),
+        ("million", 1_000_000),
+        ("thousand", 1_000),
+    ):
+        scaled = _parse_spoken_scale_multiplier(t, scale_word, mult)
+        if scaled is not None:
+            return scaled
 
     # Compact suffix: 10k, 1.5m
     m = re.search(r"([\d.,]+)\s*([kKmM])\b", t)
@@ -88,6 +149,10 @@ def _parse_spoken_integer(text: str) -> int | None:
             return int(digits)
         except ValueError:
             return None
+
+    phrase = _parse_number_word_phrase(t)
+    if phrase is not None:
+        return phrase
 
     for word, val in _WORD_NUMBERS.items():
         if re.search(rf"\b{word}\b", t):
@@ -172,15 +237,35 @@ def assistant_prompted_for_create_field(assistant_text: str, field: str) -> bool
             "ticker symbol",
             "token symbol",
             "symbol do you want",
+            "short ticker",
+            "ticker for the token",
+            "provide a short ticker",
+            "provide a ticker",
+            "what ticker",
         ),
         "monthly_rent_eth": (
-            "monthly rent",
-            "rent in eth",
+            "monthly rent must be less than 100 eth",
+            "what's the monthly rent",
+            "what is the monthly rent",
+            "whats the monthly rent",
             "open the rent",
             "no rent yet",
         ),
     }
     return any(phrase in t for phrase in prompts.get(field, ()))
+
+
+def assistant_prompted_for_edit_property(assistant_text: str) -> bool:
+    """True when the assistant is in an edit-existing-property turn (not create)."""
+    t = _strip_noise(assistant_text).lower()
+    if not t:
+        return False
+    return (
+        "what would you like to change" in t
+        or "opened the edit form" in t
+        or "edit form for" in t
+        or "i've opened the edit form" in t
+    )
 
 
 def normalize_create_property_field(field: str, raw: str) -> str:
@@ -190,31 +275,16 @@ def normalize_create_property_field(field: str, raw: str) -> str:
         return text
 
     if field == "token_supply":
-        n = _parse_spoken_integer(text)
-        return str(n) if n is not None else re.sub(r"[^\d]", "", text) or text
+        return _normalize_create_property_token_supply(text)
 
     if field == "token_symbol":
-        upper = text.upper()
-        stop = {
-            "A", "AN", "THE", "I", "TO", "FOR", "IS", "IT", "MY", "WE", "AS",
-            "AT", "IN", "ON", "OR", "OF", "AND", "WANT", "GIVE", "USE", "TOKEN",
-            "SYMBOL", "TICKER", "PLEASE",
-        }
-        m = re.search(
-            r"\b(?:SYMBOL|TICKER)\s+(?:IS\s+)?([A-Z]{2,10})\b",
-            upper,
-        )
-        if m and m.group(1) not in stop:
-            return m.group(1)
-        for sym in re.findall(r"\b([A-Z]{2,10})\b", upper):
-            if sym not in stop:
-                return sym
-        cleaned = re.sub(r"[^A-Z0-9]", "", upper)
-        return cleaned[:10] if cleaned else text
+        return _normalize_create_property_token_symbol(text)
 
-    if field in ("total_value", "monthly_rent_eth"):
-        amt = _parse_decimal_amount(text)
-        return amt if amt is not None else text
+    if field == "total_value":
+        return _normalize_create_property_total_value(text)
+
+    if field == "monthly_rent_eth":
+        return _normalize_create_property_monthly_rent(text)
 
     if field == "name":
         if is_generic_create_property_intent(text):
@@ -238,13 +308,280 @@ def normalize_create_property_field(field: str, raw: str) -> str:
     return text
 
 
+CREATE_PROPERTY_NUMERIC_FIELDS = frozenset({"total_value", "token_supply", "monthly_rent_eth"})
+CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN = 2
+CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN = 10
+
+# Strict collection order for the admin create-property copilot.
+CREATE_PROPERTY_FIELD_ORDER: tuple[str, ...] = (
+    "name",
+    "location",
+    "total_value",
+    "token_supply",
+    "token_symbol",
+    "monthly_rent_eth",
+)
+
+
+def _normalize_create_property_token_supply(text: str) -> str:
+    """Positive whole-number token supply only (no letters or stray symbols)."""
+    n = _parse_spoken_integer(text)
+    if n is not None and n > 0:
+        return str(n)
+    compact = re.sub(r"[\s,]", "", text)
+    if re.fullmatch(r"\d+", compact or ""):
+        value = int(compact)
+        return str(value) if value > 0 else ""
+    return ""
+
+
+def _normalize_create_property_total_value(text: str) -> str:
+    """Positive ETH amount only."""
+    t = _strip_noise(text).lower()
+    if re.search(r"\b(million|billion|thousand|lakh|crore)\b", t):
+        spoken = _parse_spoken_integer(text)
+        if spoken is not None and spoken > 0:
+            return str(spoken)
+    amt = _parse_decimal_amount(text)
+    if amt is None:
+        spoken = _parse_spoken_integer(text)
+        if spoken is not None and spoken > 0:
+            return str(spoken)
+        return ""
+    try:
+        return amt if Decimal(amt) > 0 else ""
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+
+
+def _normalize_create_property_monthly_rent(text: str) -> str:
+    """Monthly rent: skip words → 0, otherwise a non-negative ETH number."""
+    if create_property_monthly_rent_is_skip(text):
+        return "0"
+    amt = _parse_decimal_amount(text)
+    if amt is None:
+        return ""
+    try:
+        return amt if Decimal(amt) >= 0 else ""
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+
+
+def create_property_monthly_rent_is_skip(value: str) -> bool:
+    return (value or "").strip().lower() in {
+        "0",
+        "skip",
+        "none",
+        "no",
+        "n/a",
+        "ok",
+        "okay",
+    }
+
+
+def _normalize_create_property_token_symbol(text: str) -> str:
+    """Ticker: 2–10 alphanumeric characters (e.g. ETH, GP, OCEAN)."""
+    upper = text.upper()
+    stop = {
+        "A", "AN", "THE", "I", "TO", "FOR", "IS", "IT", "MY", "WE", "AS",
+        "AT", "IN", "ON", "OR", "OF", "AND", "WANT", "GIVE", "USE", "TOKEN",
+        "SYMBOL", "TICKER", "PLEASE", "YES", "NO", "OK", "SKIP",
+    }
+    m = re.search(r"\b(?:SYMBOL|TICKER)\s+(?:IS\s+)?([A-Z0-9]{2,10})\b", upper)
+    if m and m.group(1) not in stop:
+        return m.group(1)
+    for sym in re.findall(r"\b([A-Z0-9]{2,10})\b", upper):
+        if sym not in stop:
+            return sym
+    cleaned = re.sub(r"[^A-Z0-9]", "", upper)
+    if CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN <= len(cleaned) <= CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN:
+        return cleaned
+    return ""
+
+
+def create_property_token_symbol_is_valid(value: str) -> bool:
+    normalized = normalize_create_property_field("token_symbol", str(value or ""))
+    return (
+        CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN
+        <= len(normalized)
+        <= CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN
+    )
+
+
+def create_property_numeric_field_is_valid(field: str, value: str) -> bool:
+    """True when a numeric create-property field normalized to an acceptable value."""
+    if field not in CREATE_PROPERTY_NUMERIC_FIELDS:
+        return True
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    normalized = normalize_create_property_field(field, raw)
+    if not normalized:
+        return False
+    if field == "token_supply":
+        try:
+            return int(normalized) > 0
+        except (TypeError, ValueError):
+            return False
+    if field == "total_value":
+        try:
+            return Decimal(normalized) > 0
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    if field == "monthly_rent_eth":
+        try:
+            return Decimal(normalized) >= 0
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    return True
+
+
+def create_property_invalid_field_message(field: str, rejected_value: str = "") -> str:
+    """User-facing prompt when a numeric answer could not be parsed."""
+    shown = f'"{_strip_noise(rejected_value)}"' if _strip_noise(rejected_value) else "that answer"
+    if field == "total_value":
+        return (
+            f"{shown} isn't a valid total property value. "
+            "Please enter a positive number in ETH only — for example 10000 or 2500.5."
+        )
+    if field == "token_supply":
+        return (
+            f"{shown} isn't a valid token count. "
+            "Please enter a positive whole number only — for example 100000."
+        )
+    if field == "monthly_rent_eth":
+        return (
+            f"{shown} isn't a valid monthly rent amount. "
+            "Enter a non-negative number in ETH below 100 (for example 0.1 or 12), "
+            "or say skip or no for no rent."
+        )
+    if field == "token_symbol":
+        return (
+            f"{shown} isn't a valid token symbol. "
+            f"Use {CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN}–{CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN} "
+            "letters or numbers only — for example ETH, GP, or OCEAN."
+        )
+    return "Please enter a valid number."
+
+
+def sanitize_create_property_numeric_fields(
+    accumulated: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """Remove invalid numeric entries; return the first rejected field key."""
+    cleaned = dict(accumulated)
+    for field in ("total_value", "token_supply", "monthly_rent_eth"):
+        if field not in cleaned:
+            continue
+        if not create_property_numeric_field_is_valid(field, str(cleaned[field])):
+            cleaned.pop(field, None)
+            return cleaned, field
+    return cleaned, None
+
+
+def sanitize_create_property_fields(
+    accumulated: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """Drop invalid numeric or token-symbol values; return first rejected field."""
+    cleaned, invalid = sanitize_create_property_numeric_fields(accumulated)
+    if invalid:
+        return cleaned, invalid
+    if "token_symbol" in cleaned and not create_property_token_symbol_is_valid(
+        str(cleaned["token_symbol"])
+    ):
+        cleaned.pop("token_symbol", None)
+        return cleaned, "token_symbol"
+    return cleaned, None
+
+
 def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in accumulated.items():
         if value in (None, ""):
             continue
-        out[key] = normalize_create_property_field(key, str(value))
+        normalized = normalize_create_property_field(key, str(value))
+        if not normalized:
+            continue
+        if key in CREATE_PROPERTY_NUMERIC_FIELDS and not create_property_numeric_field_is_valid(
+            key, normalized
+        ):
+            continue
+        if key == "token_symbol" and not create_property_token_symbol_is_valid(normalized):
+            continue
+        out[key] = normalized
     return out
+
+
+def assistant_showed_create_property_summary(assistant_text: str) -> bool:
+    """True when the assistant presented a create-property confirmation summary."""
+    t = _strip_noise(assistant_text).lower()
+    if not t:
+        return False
+    if "here are the property details i have" in t:
+        return True
+    if "summary of the property details" in t or "summary of the property" in t:
+        return True
+    if "shall i go ahead" in t and "propert" in t:
+        return True
+    if "shall i create" in t and "propert" in t:
+        return True
+    markers = (
+        "token symbol:",
+        "token supply:",
+        "total value:",
+        "monthly rent:",
+    )
+    hits = sum(1 for marker in markers if marker in t)
+    return hits >= 2 and ("name:" in t or "location:" in t)
+
+
+def parse_create_property_fields_from_summary(assistant_text: str) -> dict[str, str]:
+    """Recover field values from canonical or LLM-paraphrased confirmation summaries."""
+    text = assistant_text or ""
+    if not text.strip():
+        return {}
+
+    patterns: tuple[tuple[str, re.Pattern[str]], ...] = (
+        ("name", re.compile(r"(?im)(?:^|\n)\s*[-*]?\s*(?:name|property name)\s*:\s*(.+?)\s*(?:\n|$)")),
+        ("location", re.compile(r"(?im)(?:^|\n)\s*[-*]?\s*location\s*:\s*(.+?)\s*(?:\n|$)")),
+        (
+            "total_value",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:total value|total property value)"
+                r"(?:\s*\(eth\))?\s*:\s*([\d.,]+)"
+            ),
+        ),
+        (
+            "token_supply",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token supply|ownership tokens?)\s*:\s*([\d.,]+)"
+            ),
+        ),
+        (
+            "token_symbol",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token symbol|ticker(?:\s+symbol)?)\s*:\s*([A-Za-z0-9]{2,10})"
+            ),
+        ),
+        (
+            "monthly_rent_eth",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*monthly rent(?:\s*\(eth\))?\s*:\s*([\d.,]+)"
+            ),
+        ),
+    )
+
+    fields: dict[str, str] = {}
+    for key, pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        if key == "total_value" and "eth" in raw.lower():
+            raw = re.sub(r"(?i)\s*eth\s*$", "", raw).strip()
+        normalized = normalize_create_property_field(key, raw)
+        if normalized:
+            fields[key] = normalized
+    return fields
 
 
 CREATE_PROPERTY_MAX_MONTHLY_RENT_ETH = Decimal("100")
@@ -282,11 +619,25 @@ def create_property_field_collection_speak(
     field: str, filled: dict[str, str] | None = None
 ) -> str | None:
     """Authoritative question text for the next create-property field (when set)."""
+    prompts: dict[str, str] = {
+        "name": "What's the name of the property?",
+        "location": "Where is it located?",
+        "total_value": (
+            "What's the total property value in ETH? "
+            "Any positive amount works — say digits or spoken amounts like "
+            "ten million or one hundred thousand (for example 10000 or 12345678)."
+        ),
+        "token_supply": (
+            "How many ownership tokens should we mint? "
+            "Any positive whole number works — digits or spoken amounts like "
+            "five million (for example 100000 or 5000000)."
+        ),
+    }
     if field == "token_symbol":
-        return create_property_token_symbol_prompt(
-            str((filled or {}).get("name") or "")
-        )
-    return None
+        return create_property_token_symbol_prompt(str((filled or {}).get("name") or ""))
+    if field == "monthly_rent_eth":
+        return create_property_monthly_rent_collection_prompt()
+    return prompts.get(field)
 
 
 def create_property_monthly_rent_collection_prompt() -> str:
@@ -295,10 +646,6 @@ def create_property_monthly_rent_collection_prompt() -> str:
         "Monthly rent must be less than 100 ETH (on-chain limit). "
         "What's the monthly rent in ETH? Say 0 or skip if you don't want rent yet."
     )
-
-
-def create_property_monthly_rent_is_skip(value: str) -> bool:
-    return (value or "").strip().lower() in {"0", "skip", "none", "no", "n/a"}
 
 
 def create_property_monthly_rent_over_limit(value: str) -> bool:
@@ -390,7 +737,7 @@ def parse_create_property_submit_intent(text: str) -> bool | None:
 
 _EDIT_RENT_RE = re.compile(
     r"(?:"
-    r"(?:set|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\s+(?:to\s+)?([\d.,]+(?:\s*(?:eth))?)"
+    r"(?:edit|set|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\s+(?:to\s+)?([\d.,]+(?:\s*(?:eth))?)"
     r"|(?:also\s+)?(?:set\s+)?rent\s+(?:to\s+)?([\d.,]+)"
     r"|monthly\s+rent\s+(?:to\s+)?([\d.,]+)"
     r")",
@@ -431,9 +778,24 @@ def parse_edit_property_fields_from_utterance(text: str) -> dict[str, str]:
     return fields
 
 
+def utterance_is_edit_property_field_update(text: str) -> bool:
+    """True when the user is updating a field on an open edit, not starting a new edit."""
+    if parse_edit_property_fields_from_utterance(text):
+        return True
+    t = _strip_noise(text).lower()
+    if re.search(
+        r"\b(?:edit|change|update)\s+(?:the\s+)?(?:monthly\s+)?rent\b",
+        t,
+    ):
+        return True
+    if re.search(r"\b(?:edit|change|update)\s+(?:the\s+)?(?:location|name)\b", t):
+        return True
+    return False
+
+
 def utterance_opens_new_edit_property_flow(text: str) -> bool:
     """True when the user is starting a new edit, not a field-only follow-up."""
-    if parse_edit_property_fields_from_utterance(text):
+    if utterance_is_edit_property_field_update(text):
         return False
     t = _strip_noise(text).lower()
     if re.search(r"\b(edit|update|change)\b", t) and re.search(
@@ -484,4 +846,117 @@ def parse_yes_no_confirmation(text: str) -> bool | None:
         return False
     if re.search(r"\bdelete\b", t):
         return False
+    return None
+
+
+_DELETE_PROPERTY_OPEN_RE = re.compile(
+    r"\b(?:delete|remove|archive)\b(?:\s+\w+){0,4}\s*(?:property|listing)\b",
+    re.IGNORECASE,
+)
+
+
+def utterance_opens_delete_property_flow(text: str) -> bool:
+    """True when the user is starting a delete-property workflow."""
+    t = _strip_noise(text).lower()
+    if not t:
+        return False
+    if _DELETE_PROPERTY_OPEN_RE.search(t):
+        return True
+    if re.search(r"\b(?:delete|remove|archive)\s+\S", t):
+        return True
+    return False
+
+
+def parse_delete_property_id_from_utterance(text: str) -> int | None:
+    """Extract a numeric property id from a delete-identification utterance."""
+    raw = _strip_noise(text).strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d+", raw):
+        return int(raw)
+    match = re.fullmatch(
+        r"(?:property\s+)?(?:id\s*)?#?(\d+)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(?:property|id)\s*#?(\d+)\b", raw, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def parse_delete_property_hint_from_utterance(text: str) -> str:
+    """Property name or id hint after delete/remove/archive phrasing."""
+    raw = _strip_noise(text).strip()
+    if not raw:
+        return ""
+    pid = parse_delete_property_id_from_utterance(raw)
+    if pid is not None and re.fullmatch(
+        r"(?:property\s+)?(?:id\s*)?#?\d+",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        return str(pid)
+    stripped = re.sub(
+        r"^(?:please\s+)?(?:i\s+want\s+to\s+)?"
+        r"(?:delete|remove|archive)\s+(?:the\s+)?(?:property\s+)?",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    ).strip()
+    stripped = re.sub(r"\s+(?:property|listing)\.?$", "", stripped, flags=re.IGNORECASE).strip(
+        "'\" "
+    )
+    if stripped:
+        pid = parse_delete_property_id_from_utterance(stripped)
+        if pid is not None and re.fullmatch(
+            r"(?:property\s+)?(?:id\s*)?#?\d+",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return str(pid)
+        return stripped
+    return raw
+
+
+def delete_property_identification_prompt() -> str:
+    return (
+        "Which property should I remove? Please give the exact property name "
+        "or property ID (for example, Skyzone or 7)."
+    )
+
+
+def delete_property_confirmation_message(
+    name: str,
+    property_id: int,
+    *,
+    will_archive: bool,
+) -> str:
+    action = "archive" if will_archive else "permanently delete"
+    label = name.strip() or f"Property {property_id}"
+    return (
+        f"You asked to remove {label!r} (property #{property_id}). "
+        f"This will {action} the listing. Reply Yes to confirm or No to cancel."
+    )
+
+
+def parse_delete_property_confirm_intent(text: str) -> bool | None:
+    """Yes/no for delete confirmation (delete/remove here means proceed, not cancel)."""
+    raw = _strip_noise(text)
+    t = raw.lower().strip("'\".,!? ")
+    if not t:
+        return None
+    if re.search(r"\b(no|nope|cancel|stop|abort|don'?t|do not)\b", t):
+        return False
+    if re.search(
+        r"\b(?:yes|yeah|yep|sure|ok|okay|confirm|proceed|go ahead|do it)\b",
+        t,
+    ):
+        return True
+    if re.search(r"\b(?:delete|remove)\s+(?:it|this|the property|that property)\b", t):
+        return True
+    if t in {"delete", "remove", "yes delete", "yes remove"}:
+        return True
     return None

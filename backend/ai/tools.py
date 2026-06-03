@@ -24,17 +24,31 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    assistant_prompted_for_edit_property,
+    assistant_showed_create_property_summary,
     create_property_field_collection_speak,
     create_property_monthly_rent_collection_prompt,
     create_property_monthly_rent_is_skip,
     create_property_monthly_rent_over_limit,
     create_property_monthly_rent_rejection_message,
+    create_property_invalid_field_message,
+    create_property_numeric_field_is_valid,
+    create_property_token_symbol_is_valid,
+    CREATE_PROPERTY_NUMERIC_FIELDS,
     format_create_property_confirmation_summary,
+    sanitize_create_property_fields,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
+    parse_create_property_fields_from_summary,
+    delete_property_confirmation_message,
+    delete_property_identification_prompt,
+    parse_delete_property_confirm_intent,
+    parse_delete_property_hint_from_utterance,
+    parse_delete_property_id_from_utterance,
     parse_edit_property_fields_from_utterance,
     parse_yes_no_confirmation,
+    utterance_opens_delete_property_flow,
     utterance_opens_new_edit_property_flow,
 )
 from backend.ai.copilot_property_scope import (
@@ -51,18 +65,23 @@ from backend.ai.copilot_property_scope import (
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_last_human_utterance,
+    format_investor_marketplace_catalog_speak,
     has_explicit_claim_intent,
     has_explicit_invest_intent,
+    has_marketplace_browse_intent,
     invest_tool_blocked_message,
+    invest_workflow_active,
     wants_to_begin_invest_workflow,
 )
 from backend.ai.schemas import AgentAction, ToolResult
 from backend.api._helpers import (
+    append_sql_owned_property_filter,
     create_property_record,
     enrich_property_with_supply,
     ensure_rent_property_registered,
     format_transaction_row,
     lock_property,
+    property_is_owned_by,
     require_property_token,
     sync_investors_to_contract,
     sync_rent_amount_to_contract,
@@ -288,19 +307,47 @@ def _create_property_awaiting_user_confirmation() -> bool:
     )
 
 
+def _create_property_in_field_collection_phase() -> bool:
+    """True while the server is still collecting fields (not at confirmation yet)."""
+    if _create_property_summary_pending_in_history():
+        return False
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("awaiting_create_confirmation") or pre_session.get("submit_failed"):
+        return False
+    if pre_session.get("next_field"):
+        return True
+    filled = normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    filled = _backfill_create_property_filled_from_history(filled)
+    if not _create_property_workflow_active(pre_session, filled):
+        return False
+    if not _create_property_required_fields_present(filled):
+        return True
+    return _create_property_needs_monthly_rent_collection(filled)
+
+
 def _latest_human_create_property_confirm() -> bool | None:
     """Yes/no or voice phrases like \"create this property\" after the summary."""
     text = _latest_human_utterance()
     if not text:
         return None
+    if _create_property_in_field_collection_phase():
+        return None
     yn = parse_yes_no_confirmation(text)
     if yn is not None:
         return yn
-    if not _create_property_awaiting_user_confirmation():
+    if not _create_property_awaiting_user_confirmation() and not _create_property_summary_pending_in_history():
         return None
     from backend.ai.workflow_parsers import parse_create_property_submit_intent
 
     return parse_create_property_submit_intent(text)
+
+
+def _edit_property_workflow_active() -> bool:
+    """True when an existing property is selected for edit in this chat thread."""
+    session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+    return bool(session.get("property_id"))
 
 
 def _merge_last_user_utterance(
@@ -310,6 +357,8 @@ def _merge_last_user_utterance(
     required: tuple[str, ...],
 ) -> dict[str, str]:
     """If the LLM omitted the field the user just answered, use the last human line."""
+    if modal == _CREATE_PROPERTY_MODAL and _edit_property_workflow_active():
+        return accumulated
     session = _get_workflow_session(modal)
     if modal == _CREATE_PROPERTY_MODAL and _latest_human_create_property_confirm() is not None:
         return accumulated
@@ -374,6 +423,15 @@ def _backfill_create_property_filled_from_history(
             continue
         lowered = text.lower()
         if role in ("ai", "assistant"):
+            if assistant_prompted_for_edit_property(text):
+                pending_field = None
+                continue
+            if assistant_showed_create_property_summary(text):
+                pending_field = None
+                for key, value in parse_create_property_fields_from_summary(text).items():
+                    if value and not str(out.get(key) or "").strip():
+                        out[key] = value
+                continue
             if "reply yes to create and deploy" in lowered or (
                 "here are the property details" in lowered
                 and ("reply yes" in lowered or "to edit," in lowered)
@@ -390,13 +448,13 @@ def _backfill_create_property_filled_from_history(
         if out.get(pending_field) not in (None, ""):
             pending_field = None
             continue
-        if parse_yes_no_confirmation(text) is not None:
-            pending_field = None
-            continue
         if pending_field == "name" and is_generic_create_property_intent(text):
             continue
         if pending_field == "monthly_rent_eth" and create_property_monthly_rent_is_skip(text):
             out[pending_field] = "0"
+            pending_field = None
+            continue
+        if parse_yes_no_confirmation(text) is not None:
             pending_field = None
             continue
         value = normalize_create_property_field(pending_field, text)
@@ -405,6 +463,22 @@ def _backfill_create_property_filled_from_history(
         pending_field = None
 
     return normalize_create_property_accumulated(out)
+
+
+def _create_property_summary_pending_in_history() -> bool:
+    """True when the latest assistant turn before the user was a create summary."""
+    hist = _current_history() or []
+    last_human_idx: int | None = None
+    for i, msg in enumerate(hist):
+        if _message_role(msg) in ("human", "user"):
+            last_human_idx = i
+    if last_human_idx is None:
+        return False
+    for msg in reversed(hist[:last_human_idx]):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        return assistant_showed_create_property_summary(_message_content(msg))
+    return False
 
 
 def _persist_create_property_filled(filled: dict[str, str], **extra: Any) -> None:
@@ -541,6 +615,7 @@ def _serialize_property(row: dict) -> dict:
         "rent_enabled": str(row.get("monthly_rent_wei") or "0") not in ("", "0"),
         "owner_wallet": row.get("owner_wallet"),
         "token_address": row.get("token_address"),
+        "token_sale_price_eth": str(row.get("token_sale_price_eth") or "0"),
     }
 
 
@@ -570,6 +645,36 @@ def _list_properties(cursor) -> list[dict]:
     )
     rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
     return [_serialize_property(r) for r in rows]
+
+
+def _filter_investable_marketplace_properties(items: list[dict]) -> list[dict]:
+    investable: list[dict] = []
+    for prop in items:
+        if _validate_property_investable(prop) is None:
+            investable.append(prop)
+    return investable
+
+
+def _investor_marketplace_catalog_data(items: list[dict]) -> dict[str, Any]:
+    investable = _filter_investable_marketplace_properties(items)
+    speak = format_investor_marketplace_catalog_speak(
+        investable,
+        total_listed=len(items),
+    )
+    return {
+        **copilot_property_list_meta(items),
+        "properties": items[:25],
+        "investable_properties": investable,
+        "investable_count": len(investable),
+        "marketplace_catalog": True,
+        "speak_to_user": speak,
+        "speak_verbatim": True,
+        "instruction": (
+            "Read speak_to_user verbatim — it lists each investable property with "
+            "location, sale progress, tokens available, price, and rent. Do NOT "
+            "replace it with a generic navigation-only sentence."
+        ),
+    }
 
 
 def _normalize_match_text(value: Any) -> str:
@@ -740,10 +845,19 @@ register(ToolSpec(
 ))
 
 
-async def _list_properties_tool(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _list_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
-        items = _list_properties(cursor)
+        if canonical_role(user.role) == "property_owner":
+            cursor.execute(
+                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+                (user.wallet_address,),
+            )
+            rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+            items = [_serialize_property(r) for r in rows]
+        else:
+            items = _list_properties(cursor)
     finally:
         cursor.close()
     q = (args.get("search") or "").strip()
@@ -752,8 +866,28 @@ async def _list_properties_tool(args: dict, _user: AuthUser, db: Any) -> ToolRes
     rent_only = bool(args.get("rent_enabled_only"))
     if rent_only:
         items = [p for p in items if p["rent_enabled"]]
+    if canonical_role(user.role) == "investor":
+        payload = _investor_marketplace_catalog_data(items)
+        actions = [AgentAction(type="NAVIGATE", route="/investor/marketplace")]
+        return ToolResult(ok=True, data=payload, actions=actions)
     payload = {"properties": items[:25], **copilot_property_list_meta(items)}
     return ToolResult(ok=True, data=payload)
+
+
+async def try_server_investor_marketplace_browse(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return investable property details when the user browses the marketplace."""
+    if canonical_role(user.role) != "investor":
+        return None
+    if invest_workflow_active(_get_workflow_session(_INVEST_MODAL)):
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or not has_marketplace_browse_intent(utterance):
+        return None
+
+    return await _list_properties_tool({}, user, db)
 
 
 async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
@@ -793,9 +927,11 @@ async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> T
 register(ToolSpec(
     name="list_properties",
     description=(
-        "List dashboard-visible properties (same as the Properties / Marketplace UI): "
-        "active, token deployed, sale inventory finalized. Archived and in-progress "
-        "creates are excluded. Use the returned count and property_names — do not guess. "
+        "List dashboard-visible properties. For property owners this returns only "
+        "listings they created (same as get_my_owned_properties). For investors "
+        "returns the marketplace catalog with speak_to_user listing each investable "
+        "property (location, tokens available, price, rent) — read speak_to_user "
+        "verbatim. Use count and property_names — do not guess. "
         "Tenants must use list_tenant_properties instead."
     ),
     parameters={
@@ -1182,25 +1318,29 @@ register(ToolSpec(
 
 
 def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
-    """Aggregate analytics-page metrics for the property-owner copilot."""
+    """Aggregate analytics for the signed-in property owner — owned listings only."""
     wallet = normalize_address(user.wallet_address or "")
+    owner_wallet = user.wallet_address or ""
 
     cursor.execute(
-        f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
+        f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+        f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+        (owner_wallet,),
     )
-    listable_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
-    properties = [_serialize_property(r) for r in listable_rows]
-    listable_ids = {int(p["id"]) for p in properties if p.get("id") is not None}
-    owned = [p for p in properties if wallet and normalize_address(p.get("owner_wallet") or "") == wallet]
-    listed_with_sales = [p for p in properties if float(p.get("sold_percentage") or 0) > 0]
+    owned_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+    owned = [_serialize_property(r) for r in owned_rows]
+    listed_with_sales = [p for p in owned if float(p.get("sold_percentage") or 0) > 0]
 
     cursor.execute(
         f"""
-        SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected,
-               COUNT(*) AS payments_count
+        SELECT
+          COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS collected,
+          COUNT(*) AS payments_count
         FROM rent_payments rp
         {active_property_join("p.id = rp.property_id")}
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+        """,
+        (owner_wallet,),
     )
     rent_pay = cursor.fetchone() or {}
     cursor.execute(
@@ -1209,15 +1349,18 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
                COUNT(*) AS distributions_count
         FROM rent_distributions rd
         {active_property_join("p.id = rd.property_id")}
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+        """,
+        (owner_wallet,),
     )
     rent_dist = cursor.fetchone() or {}
     cursor.execute(
         f"""
         SELECT COUNT(*) AS active FROM tenant_rentals tr
         {active_property_join("p.id = tr.property_id")}
-        WHERE tr.status = 'active'
-        """
+        WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'
+        """,
+        (owner_wallet,),
     )
     active_rentals = int((cursor.fetchone() or {}).get("active") or 0)
 
@@ -1227,7 +1370,9 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         f"FROM rent_payments rp "
         f"JOIN tenants t ON t.id = rp.tenant_id "
         f"{active_property_join('p.id = rp.property_id')} "
-        f"ORDER BY rp.payment_date DESC LIMIT 10"
+        f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+        f"ORDER BY rp.payment_date DESC LIMIT 10",
+        (owner_wallet,),
     )
     recent_payments = [
         {
@@ -1245,7 +1390,9 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         "rd.investor_count, rd.distributed_at "
         f"FROM rent_distributions rd "
         f"{active_property_join('p.id = rd.property_id')} "
-        f"ORDER BY rd.distributed_at DESC LIMIT 8"
+        f"WHERE LOWER(p.owner_wallet) = LOWER(%s) "
+        f"ORDER BY rd.distributed_at DESC LIMIT 8",
+        (owner_wallet,),
     )
     recent_distributions = [
         {
@@ -1257,49 +1404,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
         for r in (cursor.fetchall() or [])
     ]
 
-    cursor.execute(
-        "SELECT COUNT(DISTINCT o.user_id) AS n FROM token_ownerships o WHERE o.token_amount > 0"
-    )
-    platform_investors = int((cursor.fetchone() or {}).get("n") or 0)
-    cursor.execute(
-        f"""
-        SELECT p.id, p.name, COUNT(DISTINCT o.user_id) AS investor_count
-        FROM properties p
-        LEFT JOIN token_ownerships o ON o.property_id = p.id AND o.token_amount > 0
-        WHERE {ACTIVE_PROPERTY_SQL}
-        GROUP BY p.id, p.name
-        HAVING COUNT(DISTINCT o.user_id) > 0
-        ORDER BY investor_count DESC, p.id DESC
-        LIMIT 8
-        """
-    )
-    investors_by_property = [
-        {
-            "property_id": int(r["id"]),
-            "property_name": r.get("name"),
-            "investor_count": int(r.get("investor_count") or 0),
-        }
-        for r in (cursor.fetchall() or [])
-        if int(r["id"]) in listable_ids
-    ]
-
-    cursor.execute(
-        "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
-        "p.name AS property_name, t.amount_spent "
-        f"FROM transactions t "
-        f"{active_property_left_join('p.id = t.property_id')} "
-        f"WHERE 1=1 {transaction_excludes_archived_property()} "
-        f"ORDER BY t.timestamp DESC, t.id DESC LIMIT 12"
-    )
-    recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
-
-    cursor.execute(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(amount_spent AS DECIMAL(36,18))), 0) AS spent "
-        "FROM transactions WHERE UPPER(type) IN ('INVESTMENT_FUNDED', 'INVESTMENT_COMPLETED')"
-    )
-    inv_agg = cursor.fetchone() or {}
-
-    my_investors_data: dict = {}
+    my_investors_count = 0
     if wallet:
         cursor.execute(
             f"""
@@ -1310,7 +1415,57 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             """,
             (wallet,),
         )
-        my_investors_data["investors_on_my_properties"] = int((cursor.fetchone() or {}).get("n") or 0)
+        my_investors_count = int((cursor.fetchone() or {}).get("n") or 0)
+
+    cursor.execute(
+        f"""
+        SELECT p.id, p.name, COUNT(DISTINCT o.user_id) AS investor_count
+        FROM properties p
+        LEFT JOIN token_ownerships o ON o.property_id = p.id AND o.token_amount > 0
+        WHERE {ACTIVE_PROPERTY_SQL}
+          AND LOWER(p.owner_wallet) = LOWER(%s)
+        GROUP BY p.id, p.name
+        HAVING COUNT(DISTINCT o.user_id) > 0
+        ORDER BY investor_count DESC, p.id DESC
+        LIMIT 8
+        """,
+        (owner_wallet,),
+    )
+    investors_by_property = [
+        {
+            "property_id": int(r["id"]),
+            "property_name": r.get("name"),
+            "investor_count": int(r.get("investor_count") or 0),
+        }
+        for r in (cursor.fetchall() or [])
+    ]
+
+    tx_conditions: list[str] = []
+    tx_params: list = []
+    append_sql_owned_property_filter(tx_conditions, tx_params, wallet=owner_wallet)
+    tx_where = ("WHERE " + " AND ".join(tx_conditions)) if tx_conditions else "WHERE 1=0"
+    cursor.execute(
+        "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
+        "p.name AS property_name, t.amount_spent "
+        f"FROM transactions t "
+        f"{active_property_left_join('p.id = t.property_id')} "
+        f"{tx_where} {transaction_excludes_archived_property()} "
+        f"ORDER BY t.timestamp DESC, t.id DESC LIMIT 12",
+        tuple(tx_params),
+    )
+    recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
+
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS n, COALESCE(SUM(CAST(t.amount_spent AS DECIMAL(36,18))), 0) AS spent
+        FROM transactions t
+        {active_property_join("p.id = t.property_id")}
+        WHERE LOWER(p.owner_wallet) = LOWER(%s)
+          AND UPPER(t.type) IN ('INVESTMENT_FUNDED', 'INVESTMENT_COMPLETED')
+        """,
+        (owner_wallet,),
+    )
+    inv_agg = cursor.fetchone() or {}
 
     property_perf = sorted(
         [
@@ -1322,7 +1477,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
                 "token_supply": p.get("token_supply"),
                 "monthly_rent_eth": p.get("monthly_rent_eth"),
             }
-            for p in properties
+            for p in owned
         ],
         key=lambda x: float(x.get("sold_percentage") or 0),
         reverse=True,
@@ -1330,12 +1485,12 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
 
     return {
         "summary": {
-            "dashboard_visible_properties": len(properties),
-            "total_properties": len(properties),
+            "dashboard_visible_properties": len(owned),
+            "total_properties": len(owned),
             "properties_you_own": len(owned),
             "properties_with_token_sales": len(listed_with_sales),
-            "property_names": [p.get("name") for p in properties if p.get("name")],
-            "platform_investors": platform_investors,
+            "property_names": [p.get("name") for p in owned if p.get("name")],
+            "investors_on_your_properties": my_investors_count,
             "active_rentals": active_rentals,
             "total_rent_collected_eth": _eth(int(rent_pay.get("collected") or 0)),
             "rent_payments_count": int(rent_pay.get("payments_count") or 0),
@@ -1343,14 +1498,17 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             "rent_distributions_count": int(rent_dist.get("distributions_count") or 0),
             "total_investments_recorded": int(inv_agg.get("n") or 0),
             "total_investment_volume_eth": str(inv_agg.get("spent") or "0"),
+            "scope": "owned_properties_only",
         },
-        "my_portfolio": my_investors_data,
+        "my_portfolio": {
+            "investors_on_my_properties": my_investors_count,
+        },
         "property_performance": property_perf,
         "investors_by_property": investors_by_property,
         "recent_rent_payments": recent_payments,
         "recent_rent_distributions": recent_distributions,
         "recent_transactions": recent_transactions,
-        "properties": properties[:20],
+        "properties": owned[:20],
     }
 
 
@@ -1370,10 +1528,11 @@ async def _get_owner_analytics_overview(_args: dict, user: AuthUser, db: Any) ->
 register(ToolSpec(
     name="get_owner_analytics_overview",
     description=(
-        "Analytics snapshot aligned with the admin dashboard: summary.dashboard_visible_properties "
-        "and summary.property_names match the Properties page. Includes rent collected/distributed, "
-        "active rentals, investors by property, recent payments and transactions. Use for "
-        "'analytics', 'view analytics', or dashboard overview. Report counts from summary only."
+        "Analytics snapshot for the signed-in property owner — scoped to properties "
+        "they created only. Includes rent collected/distributed, active rentals, "
+        "investors, recent payments, and transactions on their listings. Use for "
+        "'analytics', 'view analytics', or dashboard overview. Report counts from "
+        "summary only; never mix in other admins' properties."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"property_owner"}),
@@ -1546,7 +1705,7 @@ register(ToolSpec(
 ))
 
 
-async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_all_transactions(args: dict, user: AuthUser, db: Any) -> ToolResult:
     limit = max(1, min(int(args.get("limit") or 20), 100))
     tx_type = (args.get("type") or "").strip() or None
     property_id = args.get("property_id")
@@ -1560,6 +1719,8 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
         if property_id is not None:
             conditions.append("t.property_id = %s")
             params.append(int(property_id))
+        if canonical_role(user.role) == "property_owner":
+            append_sql_owned_property_filter(conditions, params, wallet=user.wallet_address)
         query = (
             "SELECT t.id, t.tx_hash, t.type, t.amount, t.timestamp, t.property_id, "
             "t.block_number, COALESCE(t.wallet_address, i.investor_wallet) AS wallet_address, "
@@ -1571,6 +1732,8 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
         archive_filter = transaction_excludes_archived_property()
         if conditions:
             query += "WHERE " + " AND ".join(conditions) + f" {archive_filter} "
+        elif canonical_role(user.role) == "property_owner":
+            query += f"WHERE 1=0 {archive_filter} "
         else:
             query += f"WHERE 1=1 {archive_filter} "
         query += "ORDER BY t.timestamp DESC, t.id DESC LIMIT %s"
@@ -1586,9 +1749,10 @@ async def _get_all_transactions(args: dict, _user: AuthUser, db: Any) -> ToolRes
 register(ToolSpec(
     name="get_all_transactions",
     description=(
-        "Platform-wide on-chain transactions across every property. Use for "
-        "property-owner analytics like 'last transactions on the platform', "
-        "'all transactions for Azure View', or 'recent rent payments'."
+        "On-chain transactions. For property owners this is scoped to properties "
+        "they created (same as the admin Transactions page). For investors/tenants "
+        "it returns platform-wide activity unless filtered. Use for 'recent "
+        "transactions', 'last 5 transactions', or property-specific activity."
     ),
     parameters={
         "type": "object",
@@ -1604,7 +1768,7 @@ register(ToolSpec(
 ))
 
 
-async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_property_details(args: dict, user: AuthUser, db: Any) -> ToolResult:
     pid = args.get("property_id")
     if pid is None:
         return ToolResult(ok=False, error="property_id is required.")
@@ -1613,6 +1777,13 @@ async def _get_property_details(args: dict, _user: AuthUser, db: Any) -> ToolRes
         prop = fetch_active_property(cursor, int(pid))
         if not prop:
             return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
+        if canonical_role(user.role) == "property_owner" and not property_is_owned_by(
+            prop, user.wallet_address
+        ):
+            return ToolResult(
+                ok=False,
+                error="You can only view details for properties you created.",
+            )
         enriched = prop
         cursor.execute(
             "SELECT COUNT(DISTINCT user_id) AS investor_count "
@@ -1940,38 +2111,99 @@ register(ToolSpec(
 ))
 
 
-async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResult:
+async def _get_platform_stats(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
+    owner_scoped = canonical_role(user.role) == "property_owner"
+    owner_wallet = user.wallet_address or ""
     try:
-        properties_active = count_dashboard_listable_active(cursor)
-        cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
-        investors_active = int((cursor.fetchone() or {}).get("n") or 0)
-        cursor.execute(
-            f"""
-            SELECT COUNT(*) AS n FROM tenant_rentals tr
-            {active_property_join("p.id = tr.property_id")}
-            WHERE tr.status = 'active'
-            """
-        )
-        active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
-            FROM rent_payments rp
-            {active_property_join("p.id = rp.property_id")}
-            """
-        )
-        rent_agg = cursor.fetchone() or {}
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
-            FROM rent_distributions rd
-            {active_property_join("p.id = rd.property_id")}
-            """
-        )
-        dist_agg = cursor.fetchone() or {}
-        cursor.execute("SELECT COUNT(*) AS n FROM transactions")
-        tx_count = int((cursor.fetchone() or {}).get("n") or 0)
+        if owner_scoped:
+            cursor.execute(
+                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+                (owner_wallet,),
+            )
+            properties_active = len(
+                filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+            )
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT o.user_id) AS n
+                FROM token_ownerships o
+                {active_property_join("p.id = o.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s) AND o.token_amount > 0
+                """,
+                (owner_wallet,),
+            )
+            investors_active = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS n FROM tenant_rentals tr
+                {active_property_join("p.id = tr.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s) AND tr.status = 'active'
+                """,
+                (owner_wallet,),
+            )
+            active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
+                FROM rent_payments rp
+                {active_property_join("p.id = rp.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s)
+                """,
+                (owner_wallet,),
+            )
+            rent_agg = cursor.fetchone() or {}
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
+                FROM rent_distributions rd
+                {active_property_join("p.id = rd.property_id")}
+                WHERE LOWER(p.owner_wallet) = LOWER(%s)
+                """,
+                (owner_wallet,),
+            )
+            dist_agg = cursor.fetchone() or {}
+            tx_conditions: list[str] = []
+            tx_params: list = []
+            append_sql_owned_property_filter(tx_conditions, tx_params, wallet=owner_wallet)
+            tx_where = ("WHERE " + " AND ".join(tx_conditions)) if tx_conditions else "WHERE 1=0"
+            cursor.execute(
+                f"SELECT COUNT(*) AS n FROM transactions t "
+                f"{active_property_left_join('p.id = t.property_id')} {tx_where}",
+                tuple(tx_params),
+            )
+            tx_count = int((cursor.fetchone() or {}).get("n") or 0)
+        else:
+            properties_active = count_dashboard_listable_active(cursor)
+            cursor.execute("SELECT COUNT(DISTINCT user_id) AS n FROM token_ownerships WHERE token_amount > 0")
+            investors_active = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS n FROM tenant_rentals tr
+                {active_property_join("p.id = tr.property_id")}
+                WHERE tr.status = 'active'
+                """
+            )
+            active_rentals = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rp.amount_wei AS DECIMAL(36,0))), 0) AS wei, COUNT(*) AS n
+                FROM rent_payments rp
+                {active_property_join("p.id = rp.property_id")}
+                """
+            )
+            rent_agg = cursor.fetchone() or {}
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(CAST(rd.total_distributed AS DECIMAL(36,0))), 0) AS wei
+                FROM rent_distributions rd
+                {active_property_join("p.id = rd.property_id")}
+                """
+            )
+            dist_agg = cursor.fetchone() or {}
+            cursor.execute("SELECT COUNT(*) AS n FROM transactions")
+            tx_count = int((cursor.fetchone() or {}).get("n") or 0)
     finally:
         cursor.close()
     return ToolResult(
@@ -1984,6 +2216,7 @@ async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResu
             "rent_payments_count": int(rent_agg.get("n") or 0),
             "total_rent_distributed_eth": _eth(int(dist_agg.get("wei") or 0)),
             "total_transactions": tx_count,
+            **({"scope": "owned_properties_only"} if owner_scoped else {}),
         },
     )
 
@@ -1991,9 +2224,9 @@ async def _get_platform_stats(_args: dict, _user: AuthUser, db: Any) -> ToolResu
 register(ToolSpec(
     name="get_platform_stats",
     description=(
-        "System-wide totals. active_properties counts dashboard-visible listings "
-        "only (same as UI). Also returns active investors, rentals, rent totals, "
-        "and transaction count."
+        "Portfolio totals. For property owners this counts only properties they "
+        "created plus rent, investors, rentals, and transactions on those listings. "
+        "For investors/tenants it returns platform-wide totals."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=ALL_ROLES,
@@ -2016,6 +2249,7 @@ _CREATE_PROPERTY_FIELDS = (
 )
 _CREATE_PROPERTY_MODAL = "CREATE_PROPERTY"
 _EDIT_PROPERTY_MODAL = "EDIT_PROPERTY"
+_DELETE_PROPERTY_MODAL = "DELETE_PROPERTY"
 _CREATE_PROPERTY_REFRESH_FOR_NEW_CHAT_MESSAGE = (
     "Please refresh the page to start a new chat before creating another property."
 )
@@ -2608,10 +2842,15 @@ def create_property_server_submit_eligible(user: AuthUser) -> tuple[bool, str]:
     filled = _backfill_create_property_filled_from_history(
         normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
     )
-    awaiting = _create_property_awaiting_user_confirmation()
+    awaiting = (
+        _create_property_awaiting_user_confirmation()
+        or _create_property_summary_pending_in_history()
+    )
     if not awaiting and not _create_property_required_fields_present(filled):
         return False, ""
     if not _create_property_required_fields_present(filled):
+        return False, ""
+    if _create_property_needs_monthly_rent_collection(filled):
         return False, ""
 
     return True, str(filled.get("name") or "").strip()
@@ -2652,6 +2891,8 @@ def _create_property_confirmation_reply(args: dict) -> bool | None:
     confirm = args.get("confirm_create")
     if confirm is not None:
         return bool(confirm)
+    if _create_property_args_change_fields(args):
+        return None
     return _latest_human_create_property_confirm()
 
 
@@ -2706,7 +2947,60 @@ def _create_property_pre_submit_block(accumulated: dict[str, str]) -> ToolResult
 
 def _create_property_required_fields_present(filled: dict[str, str]) -> bool:
     required = _CREATE_PROPERTY_FIELDS[:5]
-    return all(filled.get(field) not in (None, "") for field in required)
+    if not all(filled.get(field) not in (None, "") for field in required):
+        return False
+    for field in ("total_value", "token_supply"):
+        if not create_property_numeric_field_is_valid(field, str(filled.get(field) or "")):
+            return False
+    if not create_property_token_symbol_is_valid(str(filled.get("token_symbol") or "")):
+        return False
+    return True
+
+
+def _create_property_reject_invalid_field(
+    accumulated: dict[str, str],
+    invalid_field: str,
+    *,
+    rejected_value: str,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult:
+    """Re-prompt when the user's answer fails field validation."""
+    required = _CREATE_PROPERTY_FIELDS[:5]
+    missing = [f for f in required if not accumulated.get(f)]
+    next_field = invalid_field
+    if invalid_field not in missing and invalid_field in required:
+        missing = [invalid_field, *[f for f in missing if f != invalid_field]]
+    elif invalid_field == "monthly_rent_eth":
+        missing = []
+    speak = create_property_invalid_field_message(invalid_field, rejected_value)
+    _persist_create_property_filled(
+        accumulated,
+        next_field=next_field,
+        submitted=False,
+        awaiting_create_confirmation=False,
+    )
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": missing,
+        "next_field": next_field,
+        "submitted": False,
+        "awaiting_create_confirmation": False,
+        "invalid_field": invalid_field,
+        "speak_to_user": speak,
+        "speak_verbatim": True,
+        "instruction": (
+            f"The user's answer for {invalid_field} was invalid. Read speak_to_user "
+            "verbatim and wait for a valid answer before continuing."
+        ),
+    }
+    filtered_actions = [
+        a
+        for a in actions
+        if not (a.type == "FILL_FIELD" and a.modal == _CREATE_PROPERTY_MODAL and a.field == invalid_field)
+    ]
+    return ToolResult(ok=True, data=out_data, actions=filtered_actions)
 
 
 def _create_property_needs_monthly_rent_collection(filled: dict[str, str]) -> bool:
@@ -2749,30 +3043,70 @@ def _create_property_prompt_for_monthly_rent(
     return ToolResult(ok=True, data=out_data, actions=actions)
 
 
-def _gate_create_property_monthly_rent_value(
+def _gate_monthly_rent_eth_value(
     accumulated: dict[str, str],
     *,
+    modal: str,
     data: dict[str, Any],
     actions: list[AgentAction],
+    session_patch: dict[str, Any] | None = None,
 ) -> ToolResult | None:
+    """Block invalid or over-limit monthly rent before create/edit submit."""
     raw = accumulated.get("monthly_rent_eth")
     if raw in (None, ""):
         return None
     if create_property_monthly_rent_is_skip(str(raw)):
         accumulated["monthly_rent_eth"] = "0"
         return None
+
+    if not create_property_numeric_field_is_valid("monthly_rent_eth", str(raw)):
+        prompt = create_property_invalid_field_message("monthly_rent_eth", str(raw))
+        accumulated.pop("monthly_rent_eth", None)
+        _set_workflow_session(
+            modal,
+            {
+                **(session_patch or {}),
+                "in_progress": True,
+                "filled": accumulated,
+                "next_field": "monthly_rent_eth",
+                "submitted": False,
+            },
+        )
+        return ToolResult(
+            ok=True,
+            data={
+                **data,
+                "filled": accumulated,
+                "next_field": "monthly_rent_eth",
+                "invalid_field": "monthly_rent_eth",
+                "speak_to_user": prompt,
+                "speak_verbatim": True,
+                "instruction": (
+                    "The monthly rent answer was invalid. Read speak_to_user verbatim "
+                    "and wait for a valid amount below 100 ETH."
+                ),
+            },
+            actions=[
+                a
+                for a in actions
+                if not (a.type == "SUBMIT_FORM" and a.modal == modal)
+                and not (a.type == "FILL_FIELD" and a.field == "monthly_rent_eth")
+            ],
+        )
+
     if not create_property_monthly_rent_over_limit(str(raw)):
         return None
+
     accumulated.pop("monthly_rent_eth", None)
     prompt = create_property_monthly_rent_rejection_message(str(raw))
     _set_workflow_session(
-        _CREATE_PROPERTY_MODAL,
+        modal,
         {
+            **(session_patch or {}),
             "in_progress": True,
             "filled": accumulated,
             "next_field": "monthly_rent_eth",
             "submitted": False,
-            "awaiting_create_confirmation": False,
         },
     )
     return ToolResult(
@@ -2784,12 +3118,35 @@ def _gate_create_property_monthly_rent_value(
             "next_field": "monthly_rent_eth",
             "rent_over_limit": True,
             "speak_to_user": prompt,
+            "speak_verbatim": True,
             "instruction": (
                 "The rent value exceeds the 100 ETH limit. Read speak_to_user and "
-                "wait for a lower amount, 0, or skip."
+                "wait for a lower amount below 100 ETH."
             ),
         },
-        actions=[a for a in actions if a.field != "monthly_rent_eth"],
+        actions=[
+            a
+            for a in actions
+            if not (a.type == "SUBMIT_FORM" and a.modal == modal)
+            and not (a.type == "FILL_FIELD" and a.field == "monthly_rent_eth")
+        ],
+    )
+
+
+def _gate_create_property_monthly_rent_value(
+    accumulated: dict[str, str],
+    *,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult | None:
+    return _gate_monthly_rent_eth_value(
+        accumulated,
+        modal=_CREATE_PROPERTY_MODAL,
+        data=data,
+        actions=actions,
+        session_patch={
+            "awaiting_create_confirmation": False,
+        },
     )
 
 
@@ -3110,12 +3467,18 @@ def _handle_create_property_confirmation_turn(
             submit_failed=bool(pre_session.get("submit_failed")),
             last_submit_error=pre_session.get("last_submit_error"),
         )
+    complete = _create_property_required_fields_present(filled)
     awaiting = bool(
         pre_session.get("awaiting_create_confirmation")
         or pre_session.get("submit_failed")
     )
-    complete = _create_property_required_fields_present(filled)
-    if not awaiting and not complete:
+    summary_confirm = (
+        not awaiting
+        and complete
+        and _latest_human_create_property_confirm() is True
+        and _create_property_summary_pending_in_history()
+    )
+    if not awaiting and not complete and not summary_confirm:
         return None
 
     confirm = _create_property_confirmation_reply(args)
@@ -3181,6 +3544,8 @@ def _create_property_ui_submit_actions(
 def _create_property_workflow_active(
     session: dict[str, Any], filled: dict[str, str]
 ) -> bool:
+    if _edit_property_workflow_active():
+        return False
     if session.get("in_progress") or session.get("awaiting_create_confirmation"):
         return True
     if filled:
@@ -3191,11 +3556,67 @@ def _create_property_workflow_active(
         text = _message_content(msg).lower()
         if "here are the property details i have" in text:
             return True
+        if assistant_showed_create_property_summary(text):
+            return True
         if "what's the name of the property" in text:
             return True
         if "monthly rent" in text and "100 eth" in text:
             return True
     return False
+
+
+async def try_server_apply_create_property_field_answer(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Apply the latest user answer server-side so the LLM cannot invent value caps."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+    if _edit_property_workflow_active():
+        return None
+    if _latest_human_create_property_confirm() is not None:
+        return None
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("chat_property_limit_reached"):
+        return None
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return None
+    if pre_session.get("awaiting_create_confirmation"):
+        return None
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    if not _create_property_workflow_active(pre_session, filled):
+        return None
+
+    last_human = _latest_human_utterance().strip()
+    if not last_human or is_generic_create_property_intent(last_human):
+        return None
+
+    pending = pre_session.get("next_field")
+    if not pending:
+        missing = [f for f in _CREATE_PROPERTY_FIELDS[:5] if not filled.get(f)]
+        if _create_property_required_fields_present(filled):
+            if _create_property_needs_monthly_rent_collection(filled):
+                pending = "monthly_rent_eth"
+        elif missing:
+            pending = missing[0]
+    if not pending or pending not in _CREATE_PROPERTY_FIELDS:
+        return None
+
+    result = await _fill_create_property({pending: last_human}, user, db)
+    data = result.data or {}
+    speak = str(data.get("speak_to_user") or "").strip()
+    if not speak:
+        return None
+    if data.get("invalid_field") == pending:
+        return result
+    if pending in (data.get("filled") or {}):
+        return result
+    return None
 
 
 async def try_server_create_property_confirmation(
@@ -3207,6 +3628,8 @@ async def try_server_create_property_confirmation(
     free text instead of calling fill_create_property, this keeps Edit/Delete in chat.
     """
     if canonical_role(user.role) != "property_owner":
+        return None
+    if _edit_property_workflow_active():
         return None
     if _latest_human_create_property_confirm() is not None:
         return None
@@ -3280,6 +3703,26 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     if blocked is not None:
         return blocked
 
+    if _edit_property_workflow_active() and not _human_requested_new_create_property_listing():
+        edit_session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
+        property_name = str(edit_session.get("property_name") or "this property")
+        return ToolResult(
+            ok=False,
+            error=(
+                f"An edit is in progress for {property_name}. Use fill_edit_property "
+                "with only the field(s) the user wants to change — do not collect "
+                "create-property fields."
+            ),
+            data={
+                "property_id": edit_session.get("property_id"),
+                "property_name": property_name,
+                "instruction": (
+                    "Call fill_edit_property with the changed field(s) and submit=true. "
+                    "Do NOT call fill_create_property during an existing-property edit."
+                ),
+            },
+        )
+
     # Abandoned draft + user asks to create again (often after copilot refresh) without
     # passing new field values yet — drop the stale server session.
     if (
@@ -3351,6 +3794,57 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     actions = list(result.actions)
     accumulated = normalize_create_property_accumulated(dict(data.get("filled") or {}))
     accumulated = _backfill_create_property_filled_from_history(accumulated)
+    raw_before_sanitize = dict(accumulated)
+    accumulated, invalid_field = sanitize_create_property_fields(accumulated)
+    if invalid_field:
+        rejected = str(raw_before_sanitize.get(invalid_field) or args.get(invalid_field) or "")
+        return _create_property_reject_invalid_field(
+            accumulated,
+            invalid_field,
+            rejected_value=rejected,
+            data=data,
+            actions=actions,
+        )
+    last_human = _latest_human_utterance()
+    if last_human and _latest_human_create_property_confirm() is None:
+        for field in CREATE_PROPERTY_NUMERIC_FIELDS:
+            incoming = args.get(field)
+            if incoming not in (None, ""):
+                candidate = str(incoming)
+            else:
+                pending = pre_session.get("next_field") or data.get("next_field")
+                if pending != field or field in accumulated:
+                    continue
+                candidate = last_human
+            if create_property_numeric_field_is_valid(field, candidate):
+                continue
+            return _create_property_reject_invalid_field(
+                accumulated,
+                field,
+                rejected_value=candidate,
+                data=data,
+                actions=actions,
+            )
+    if last_human and _latest_human_create_property_confirm() is None:
+        pending = pre_session.get("next_field") or data.get("next_field")
+        symbol_incoming = args.get("token_symbol")
+        if symbol_incoming not in (None, ""):
+            symbol_candidate = str(symbol_incoming)
+        elif pending == "token_symbol" and "token_symbol" not in accumulated:
+            symbol_candidate = last_human
+        else:
+            symbol_candidate = ""
+        if (
+            symbol_candidate
+            and not create_property_token_symbol_is_valid(symbol_candidate)
+        ):
+            return _create_property_reject_invalid_field(
+                accumulated,
+                "token_symbol",
+                rejected_value=symbol_candidate,
+                data=data,
+                actions=actions,
+            )
     required = _CREATE_PROPERTY_FIELDS[:5]
     missing = [f for f in required if not accumulated.get(f)]
     data["filled"] = accumulated
@@ -3452,7 +3946,15 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     if field_speak:
         data["speak_to_user"] = field_speak
         data["speak_verbatim"] = True
-        data["instruction"] = "Read speak_to_user verbatim — do not rephrase the ticker question."
+        accepted_field = str(data.get("next_field") or "")
+        prior = pre_session.get("next_field")
+        if prior and prior in (data.get("filled") or {}) and prior != accepted_field:
+            data["field_accepted"] = prior
+        data["instruction"] = (
+            "Read speak_to_user verbatim — do not skip, rephrase, or reorder the "
+            "create-property questions. Do not impose wallet limits or 'reasonable' "
+            "maximums on total_value or token_supply."
+        )
     return ToolResult(ok=result.ok, data=data, error=result.error, actions=actions)
 
 
@@ -3532,15 +4034,84 @@ def _property_has_activity(cursor, prop: dict) -> bool:
     return False
 
 
-async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
-    pid = args.get("property_id")
-    if not pid:
-        return ToolResult(ok=False, error="property_id is required.")
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ToolResult(ok=False, error="property_id must be an integer.")
+def _parse_confirm_delete_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
 
+
+def _latest_human_delete_property_confirm() -> bool | None:
+    """Yes/no after the delete-property confirmation prompt."""
+    text = _latest_human_utterance()
+    if not text:
+        return None
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if not session.get("awaiting_delete_confirmation"):
+        return None
+    return parse_delete_property_confirm_intent(text)
+
+
+def _resolve_owned_property_by_id_for_user(
+    db: Any, user: AuthUser, property_id: int
+) -> tuple[dict | None, str | None]:
+    cursor = db.cursor(dictionary=True)
+    try:
+        prop = fetch_active_property(cursor, int(property_id))
+        if not prop:
+            return None, property_unavailable_message(property_id)
+        owner = normalize_address(prop.get("owner_wallet") or "")
+        if not owner or owner != normalize_address(user.wallet_address):
+            return None, "You can only delete properties you own."
+        return _serialize_property(prop), None
+    finally:
+        cursor.close()
+
+
+def _resolve_delete_property_target(
+    db: Any,
+    user: AuthUser,
+    *,
+    property_id: Any = None,
+    property_name: str = "",
+    utterance: str = "",
+) -> tuple[dict | None, str | None]:
+    if property_id is not None:
+        try:
+            pid = int(property_id)
+        except (TypeError, ValueError):
+            return None, "property_id must be an integer."
+        return _resolve_owned_property_by_id_for_user(db, user, pid)
+
+    hint = (property_name or "").strip()
+    if not hint and utterance:
+        pid = parse_delete_property_id_from_utterance(utterance)
+        if pid is not None:
+            return _resolve_owned_property_by_id_for_user(db, user, pid)
+        hint = parse_delete_property_hint_from_utterance(utterance)
+        if utterance_opens_delete_property_flow(utterance) and not hint:
+            hint = ""
+        elif not hint:
+            hint = utterance.strip()
+
+    if not hint:
+        return None, delete_property_identification_prompt()
+
+    if hint.isdigit():
+        return _resolve_owned_property_by_id_for_user(db, user, int(hint))
+    return _resolve_owned_property_for_user(db, user, hint)
+
+
+async def _execute_property_removal(
+    db: Any, user: AuthUser, pid: int
+) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
         prop = lock_property(cursor, pid)
@@ -3551,12 +4122,17 @@ async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
             return ToolResult(ok=False, error="You can only delete properties you own.")
 
         name = prop.get("name") or f"Property {pid}"
-        if _property_has_activity(cursor, prop):
+        will_archive = _property_has_activity(cursor, prop)
+        if will_archive:
             cursor.execute("UPDATE properties SET is_active = FALSE WHERE id = %s", (pid,))
             mode = "archived"
+            speak = (
+                f"{name} was archived because it already has on-chain or rental history."
+            )
         else:
             cursor.execute("DELETE FROM properties WHERE id = %s", (pid,))
             mode = "deleted"
+            speak = f"{name} was permanently deleted."
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -3564,33 +4140,264 @@ async def _delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
     finally:
         cursor.close()
 
+    _clear_workflow_session(_DELETE_PROPERTY_MODAL)
     return ToolResult(
         ok=True,
-        data={"property_id": pid, "name": name, "mode": mode},
+        data={
+            "property_id": pid,
+            "name": name,
+            "mode": mode,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "success_message": speak,
+        },
         actions=[AgentAction(type="NAVIGATE", route="/property_owner/properties")],
     )
 
 
+def _delete_property_confirmation_result(
+    prop: dict,
+    *,
+    will_archive: bool,
+) -> ToolResult:
+    pid = int(prop["id"])
+    name = str(prop.get("name") or f"Property {pid}")
+    speak = delete_property_confirmation_message(
+        name,
+        pid,
+        will_archive=will_archive,
+    )
+    _set_workflow_session(
+        _DELETE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "property_id": pid,
+            "property_name": name,
+            "will_archive": will_archive,
+            "awaiting_delete_confirmation": True,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "property_id": pid,
+            "property_name": name,
+            "will_archive": will_archive,
+            "awaiting_delete_confirmation": True,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "instruction": (
+                "Read speak_to_user verbatim. Wait for Yes or No. On Yes call "
+                "confirm_delete_property with confirm_delete=true. On No call "
+                "confirm_delete_property with confirm_delete=false."
+            ),
+        },
+        actions=[],
+    )
+
+
+async def _start_delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if session.get("awaiting_delete_confirmation"):
+        pid = session.get("property_id")
+        if pid:
+            prop, err = _resolve_owned_property_by_id_for_user(db, user, int(pid))
+            if prop:
+                return _delete_property_confirmation_result(
+                    prop,
+                    will_archive=bool(session.get("will_archive")),
+                )
+            if err:
+                return ToolResult(ok=False, error=err)
+
+    utterance = _latest_human_utterance()
+    prop, err = _resolve_delete_property_target(
+        db,
+        user,
+        property_id=args.get("property_id"),
+        property_name=str(args.get("property_name") or ""),
+        utterance=utterance if not args.get("property_id") and not args.get("property_name") else "",
+    )
+    if prop:
+        cursor = db.cursor(dictionary=True)
+        try:
+            row = lock_property(cursor, int(prop["id"]))
+            will_archive = bool(row and _property_has_activity(cursor, row))
+        finally:
+            cursor.close()
+        return _delete_property_confirmation_result(prop, will_archive=will_archive)
+
+    if err and err != delete_property_identification_prompt():
+        return ToolResult(
+            ok=False,
+            error=err,
+            data={"speak_to_user": err, "speak_verbatim": True},
+        )
+
+    _set_workflow_session(
+        _DELETE_PROPERTY_MODAL,
+        {
+            "in_progress": True,
+            "property_id": None,
+            "property_name": "",
+            "awaiting_delete_confirmation": False,
+        },
+    )
+    prompt = delete_property_identification_prompt()
+    return ToolResult(
+        ok=True,
+        data={
+            "in_progress": True,
+            "awaiting_delete_confirmation": False,
+            "speak_to_user": prompt,
+            "speak_verbatim": True,
+            "instruction": (
+                "Read speak_to_user verbatim and wait for the exact property name "
+                "or ID. Then call start_delete_property with property_name or "
+                "property_id — do not delete until the user confirms Yes."
+            ),
+        },
+        actions=[],
+    )
+
+
+async def _confirm_delete_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    pid = session.get("property_id")
+    if not pid or not session.get("awaiting_delete_confirmation"):
+        return ToolResult(
+            ok=False,
+            error=(
+                "No property is awaiting delete confirmation. Call start_delete_property "
+                "first and identify the property by exact name or ID."
+            ),
+        )
+
+    confirm = _parse_confirm_delete_arg(args.get("confirm_delete"))
+    if confirm is None:
+        confirm = _latest_human_delete_property_confirm()
+    if confirm is None:
+        prop, err = _resolve_owned_property_by_id_for_user(db, user, int(pid))
+        if err or not prop:
+            return ToolResult(ok=False, error=err or f"Property {pid} not found.")
+        return _delete_property_confirmation_result(
+            prop,
+            will_archive=bool(session.get("will_archive")),
+        )
+
+    if confirm is False:
+        name = str(session.get("property_name") or f"Property {pid}")
+        _clear_workflow_session(_DELETE_PROPERTY_MODAL)
+        speak = f"Deletion cancelled — {name} was not removed."
+        return ToolResult(
+            ok=True,
+            data={
+                "cancelled": True,
+                "property_id": int(pid),
+                "property_name": name,
+                "speak_to_user": speak,
+                "speak_verbatim": True,
+            },
+            actions=[],
+        )
+
+    return await _execute_property_removal(db, user, int(pid))
+
+
+async def try_server_delete_property_continuation(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Apply delete identification or yes/no without waiting for the LLM."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    session = _get_workflow_session(_DELETE_PROPERTY_MODAL) or {}
+    if not session.get("in_progress"):
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance:
+        return None
+
+    if session.get("awaiting_delete_confirmation"):
+        confirm = parse_delete_property_confirm_intent(utterance)
+        if confirm is None:
+            return None
+        return await _confirm_delete_property({"confirm_delete": confirm}, user, db)
+
+    if utterance_opens_new_edit_property_flow(utterance):
+        return None
+    if is_generic_create_property_intent(utterance):
+        return None
+
+    if utterance_opens_delete_property_flow(utterance):
+        hint = parse_delete_property_hint_from_utterance(utterance)
+        if not hint:
+            return None
+        if hint.isdigit():
+            return await _start_delete_property({"property_id": int(hint)}, user, db)
+        return await _start_delete_property({"property_name": hint}, user, db)
+
+    if parse_delete_property_id_from_utterance(utterance) is not None:
+        pid = parse_delete_property_id_from_utterance(utterance)
+        return await _start_delete_property({"property_id": pid}, user, db)
+
+    if parse_yes_no_confirmation(utterance) is not None:
+        return None
+
+    return await _start_delete_property({"property_name": utterance}, user, db)
+
+
 register(ToolSpec(
-    name="delete_property",
+    name="start_delete_property",
     description=(
-        "Delete or archive a property the signed-in property owner owns. If the "
-        "property has any on-chain or rental activity it is archived "
-        "(is_active=false); otherwise it is hard-deleted. The action navigates "
-        "to /property_owner/properties so the list refreshes. Resolve the "
-        "property by name via get_my_owned_properties first if you don't "
-        "already have its id."
+        "MANDATORY first step when the user asks to delete, remove, or archive "
+        "a property. Starts a two-step flow: (1) identify the property by exact "
+        "name or property ID, (2) ask the user to confirm Yes/No before anything "
+        "is removed. Pass property_id or property_name when the user already "
+        "named the listing. Never call confirm_delete_property until "
+        "awaiting_delete_confirmation is true in the tool result."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "property_id": {"type": "integer", "description": "ID of the property to remove."},
+            "property_id": {
+                "type": "integer",
+                "description": "Property ID when the user gave an exact numeric id.",
+            },
+            "property_name": {
+                "type": "string",
+                "description": "Exact property name when the user identified the listing.",
+            },
         },
-        "required": ["property_id"],
         "additionalProperties": False,
     },
     roles=frozenset({"property_owner"}),
-    handler=_delete_property,
+    handler=_start_delete_property,
+))
+
+
+register(ToolSpec(
+    name="confirm_delete_property",
+    description=(
+        "Confirm or cancel property removal after start_delete_property has "
+        "identified the listing and awaiting_delete_confirmation is true. "
+        "Pass confirm_delete=true only when the user clearly says Yes; "
+        "confirm_delete=false when they say No or cancel."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "confirm_delete": {
+                "type": "boolean",
+                "description": "true to delete/archive; false to cancel.",
+            },
+        },
+        "required": ["confirm_delete"],
+        "additionalProperties": False,
+    },
+    roles=frozenset({"property_owner"}),
+    handler=_confirm_delete_property,
 ))
 
 
@@ -3798,11 +4605,38 @@ async def _fill_edit_property(args: dict, user: AuthUser, db: Any) -> ToolResult
 
     actions = _with_edit_property_id_on_actions(list(result.actions), int(pid))
     data = dict(result.data or {})
+    accumulated = dict(data.get("filled") or {})
+    data["filled"] = accumulated
     data["property_id"] = int(pid)
     if property_name:
         data["property_name"] = property_name
 
+    rent_gated = _gate_monthly_rent_eth_value(
+        accumulated,
+        modal=_EDIT_PROPERTY_MODAL,
+        data=data,
+        actions=actions,
+        session_patch={
+            "property_id": int(pid),
+            "property_name": property_name,
+        },
+    )
+    if rent_gated is not None:
+        gated_data = dict(rent_gated.data or {})
+        gated_data["property_id"] = int(pid)
+        if property_name:
+            gated_data["property_name"] = property_name
+        return ToolResult(
+            ok=rent_gated.ok,
+            data=gated_data,
+            error=rent_gated.error,
+            actions=_with_edit_property_id_on_actions(list(rent_gated.actions), int(pid)),
+        )
+
     if result.ok and data.get("submitted"):
+        property_label = property_name or f"property #{pid}"
+        data["speak_to_user"] = f"Saved your changes to {property_label}."
+        data["speak_verbatim"] = True
         data["instruction"] = (
             "The property was saved. The user may change more fields on the same "
             "property in this chat — call fill_edit_property with only the new "
@@ -3837,7 +4671,7 @@ async def try_server_edit_property_continuation(
 
     session = _get_workflow_session(_EDIT_PROPERTY_MODAL) or {}
     pid = session.get("property_id")
-    if not pid or session.get("in_progress"):
+    if not pid:
         return None
 
     utterance = _latest_human_utterance()
