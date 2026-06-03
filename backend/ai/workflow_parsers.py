@@ -195,31 +195,16 @@ def normalize_create_property_field(field: str, raw: str) -> str:
         return text
 
     if field == "token_supply":
-        n = _parse_spoken_integer(text)
-        return str(n) if n is not None else re.sub(r"[^\d]", "", text) or text
+        return _normalize_create_property_token_supply(text)
 
     if field == "token_symbol":
-        upper = text.upper()
-        stop = {
-            "A", "AN", "THE", "I", "TO", "FOR", "IS", "IT", "MY", "WE", "AS",
-            "AT", "IN", "ON", "OR", "OF", "AND", "WANT", "GIVE", "USE", "TOKEN",
-            "SYMBOL", "TICKER", "PLEASE",
-        }
-        m = re.search(
-            r"\b(?:SYMBOL|TICKER)\s+(?:IS\s+)?([A-Z]{2,10})\b",
-            upper,
-        )
-        if m and m.group(1) not in stop:
-            return m.group(1)
-        for sym in re.findall(r"\b([A-Z]{2,10})\b", upper):
-            if sym not in stop:
-                return sym
-        cleaned = re.sub(r"[^A-Z0-9]", "", upper)
-        return cleaned[:10] if cleaned else text
+        return _normalize_create_property_token_symbol(text)
 
-    if field in ("total_value", "monthly_rent_eth"):
-        amt = _parse_decimal_amount(text)
-        return amt if amt is not None else text
+    if field == "total_value":
+        return _normalize_create_property_total_value(text)
+
+    if field == "monthly_rent_eth":
+        return _normalize_create_property_monthly_rent(text)
 
     if field == "name":
         if is_generic_create_property_intent(text):
@@ -243,12 +228,193 @@ def normalize_create_property_field(field: str, raw: str) -> str:
     return text
 
 
+CREATE_PROPERTY_NUMERIC_FIELDS = frozenset({"total_value", "token_supply", "monthly_rent_eth"})
+CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN = 2
+CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN = 10
+
+# Strict collection order for the admin create-property copilot.
+CREATE_PROPERTY_FIELD_ORDER: tuple[str, ...] = (
+    "name",
+    "location",
+    "total_value",
+    "token_supply",
+    "token_symbol",
+    "monthly_rent_eth",
+)
+
+
+def _normalize_create_property_token_supply(text: str) -> str:
+    """Positive whole-number token supply only (no letters or stray symbols)."""
+    n = _parse_spoken_integer(text)
+    if n is not None and n > 0:
+        return str(n)
+    compact = re.sub(r"[\s,]", "", text)
+    if re.fullmatch(r"\d+", compact or ""):
+        value = int(compact)
+        return str(value) if value > 0 else ""
+    return ""
+
+
+def _normalize_create_property_total_value(text: str) -> str:
+    """Positive ETH amount only."""
+    amt = _parse_decimal_amount(text)
+    if amt is None:
+        spoken = _parse_spoken_integer(text)
+        if spoken is not None and spoken > 0:
+            return str(spoken)
+        return ""
+    try:
+        return amt if Decimal(amt) > 0 else ""
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+
+
+def _normalize_create_property_monthly_rent(text: str) -> str:
+    """Monthly rent: skip words → 0, otherwise a non-negative ETH number."""
+    if create_property_monthly_rent_is_skip(text):
+        return "0"
+    amt = _parse_decimal_amount(text)
+    if amt is None:
+        return ""
+    try:
+        return amt if Decimal(amt) >= 0 else ""
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+
+
+def create_property_monthly_rent_is_skip(value: str) -> bool:
+    return (value or "").strip().lower() in {"0", "skip", "none", "no", "n/a"}
+
+
+def _normalize_create_property_token_symbol(text: str) -> str:
+    """Ticker: 2–10 alphanumeric characters (e.g. ETH, GP, OCEAN)."""
+    upper = text.upper()
+    stop = {
+        "A", "AN", "THE", "I", "TO", "FOR", "IS", "IT", "MY", "WE", "AS",
+        "AT", "IN", "ON", "OR", "OF", "AND", "WANT", "GIVE", "USE", "TOKEN",
+        "SYMBOL", "TICKER", "PLEASE", "YES", "NO", "OK", "SKIP",
+    }
+    m = re.search(r"\b(?:SYMBOL|TICKER)\s+(?:IS\s+)?([A-Z0-9]{2,10})\b", upper)
+    if m and m.group(1) not in stop:
+        return m.group(1)
+    for sym in re.findall(r"\b([A-Z0-9]{2,10})\b", upper):
+        if sym not in stop:
+            return sym
+    cleaned = re.sub(r"[^A-Z0-9]", "", upper)
+    if CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN <= len(cleaned) <= CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN:
+        return cleaned
+    return ""
+
+
+def create_property_token_symbol_is_valid(value: str) -> bool:
+    normalized = normalize_create_property_field("token_symbol", str(value or ""))
+    return (
+        CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN
+        <= len(normalized)
+        <= CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN
+    )
+
+
+def create_property_numeric_field_is_valid(field: str, value: str) -> bool:
+    """True when a numeric create-property field normalized to an acceptable value."""
+    if field not in CREATE_PROPERTY_NUMERIC_FIELDS:
+        return True
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    normalized = normalize_create_property_field(field, raw)
+    if not normalized:
+        return False
+    if field == "token_supply":
+        try:
+            return int(normalized) > 0
+        except (TypeError, ValueError):
+            return False
+    if field == "total_value":
+        try:
+            return Decimal(normalized) > 0
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    if field == "monthly_rent_eth":
+        try:
+            return Decimal(normalized) >= 0
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    return True
+
+
+def create_property_invalid_field_message(field: str, rejected_value: str = "") -> str:
+    """User-facing prompt when a numeric answer could not be parsed."""
+    shown = f'"{_strip_noise(rejected_value)}"' if _strip_noise(rejected_value) else "that answer"
+    if field == "total_value":
+        return (
+            f"{shown} isn't a valid total property value. "
+            "Please enter a positive number in ETH only — for example 10000 or 2500.5."
+        )
+    if field == "token_supply":
+        return (
+            f"{shown} isn't a valid token count. "
+            "Please enter a positive whole number only — for example 100000."
+        )
+    if field == "monthly_rent_eth":
+        return (
+            f"{shown} isn't a valid monthly rent amount. "
+            "Enter a non-negative number in ETH below 100 (for example 0.1 or 12), "
+            "or say skip or no for no rent."
+        )
+    if field == "token_symbol":
+        return (
+            f"{shown} isn't a valid token symbol. "
+            f"Use {CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN}–{CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN} "
+            "letters or numbers only — for example ETH, GP, or OCEAN."
+        )
+    return "Please enter a valid number."
+
+
+def sanitize_create_property_numeric_fields(
+    accumulated: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """Remove invalid numeric entries; return the first rejected field key."""
+    cleaned = dict(accumulated)
+    for field in ("total_value", "token_supply", "monthly_rent_eth"):
+        if field not in cleaned:
+            continue
+        if not create_property_numeric_field_is_valid(field, str(cleaned[field])):
+            cleaned.pop(field, None)
+            return cleaned, field
+    return cleaned, None
+
+
+def sanitize_create_property_fields(
+    accumulated: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """Drop invalid numeric or token-symbol values; return first rejected field."""
+    cleaned, invalid = sanitize_create_property_numeric_fields(accumulated)
+    if invalid:
+        return cleaned, invalid
+    if "token_symbol" in cleaned and not create_property_token_symbol_is_valid(
+        str(cleaned["token_symbol"])
+    ):
+        cleaned.pop("token_symbol", None)
+        return cleaned, "token_symbol"
+    return cleaned, None
+
+
 def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in accumulated.items():
         if value in (None, ""):
             continue
-        out[key] = normalize_create_property_field(key, str(value))
+        normalized = normalize_create_property_field(key, str(value))
+        if not normalized:
+            continue
+        if key in CREATE_PROPERTY_NUMERIC_FIELDS and not create_property_numeric_field_is_valid(
+            key, normalized
+        ):
+            continue
+        if key == "token_symbol" and not create_property_token_symbol_is_valid(normalized):
+            continue
+        out[key] = normalized
     return out
 
 
@@ -360,11 +526,23 @@ def create_property_field_collection_speak(
     field: str, filled: dict[str, str] | None = None
 ) -> str | None:
     """Authoritative question text for the next create-property field (when set)."""
+    prompts: dict[str, str] = {
+        "name": "What's the name of the property?",
+        "location": "Where is it located?",
+        "total_value": (
+            "What's the total property value in ETH? "
+            "Please enter a positive number only (for example 10000 or 2500.5)."
+        ),
+        "token_supply": (
+            "How many ownership tokens should we mint? "
+            "Please enter a positive whole number only (for example 100000)."
+        ),
+    }
     if field == "token_symbol":
-        return create_property_token_symbol_prompt(
-            str((filled or {}).get("name") or "")
-        )
-    return None
+        return create_property_token_symbol_prompt(str((filled or {}).get("name") or ""))
+    if field == "monthly_rent_eth":
+        return create_property_monthly_rent_collection_prompt()
+    return prompts.get(field)
 
 
 def create_property_monthly_rent_collection_prompt() -> str:
@@ -373,10 +551,6 @@ def create_property_monthly_rent_collection_prompt() -> str:
         "Monthly rent must be less than 100 ETH (on-chain limit). "
         "What's the monthly rent in ETH? Say 0 or skip if you don't want rent yet."
     )
-
-
-def create_property_monthly_rent_is_skip(value: str) -> bool:
-    return (value or "").strip().lower() in {"0", "skip", "none", "no", "n/a"}
 
 
 def create_property_monthly_rent_over_limit(value: str) -> bool:

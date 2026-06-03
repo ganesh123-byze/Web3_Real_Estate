@@ -30,7 +30,12 @@ from backend.ai.workflow_parsers import (
     create_property_monthly_rent_is_skip,
     create_property_monthly_rent_over_limit,
     create_property_monthly_rent_rejection_message,
+    create_property_invalid_field_message,
+    create_property_numeric_field_is_valid,
+    create_property_token_symbol_is_valid,
+    CREATE_PROPERTY_NUMERIC_FIELDS,
     format_create_property_confirmation_summary,
+    sanitize_create_property_fields,
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
@@ -2730,7 +2735,60 @@ def _create_property_pre_submit_block(accumulated: dict[str, str]) -> ToolResult
 
 def _create_property_required_fields_present(filled: dict[str, str]) -> bool:
     required = _CREATE_PROPERTY_FIELDS[:5]
-    return all(filled.get(field) not in (None, "") for field in required)
+    if not all(filled.get(field) not in (None, "") for field in required):
+        return False
+    for field in ("total_value", "token_supply"):
+        if not create_property_numeric_field_is_valid(field, str(filled.get(field) or "")):
+            return False
+    if not create_property_token_symbol_is_valid(str(filled.get("token_symbol") or "")):
+        return False
+    return True
+
+
+def _create_property_reject_invalid_field(
+    accumulated: dict[str, str],
+    invalid_field: str,
+    *,
+    rejected_value: str,
+    data: dict[str, Any],
+    actions: list[AgentAction],
+) -> ToolResult:
+    """Re-prompt when the user's answer fails field validation."""
+    required = _CREATE_PROPERTY_FIELDS[:5]
+    missing = [f for f in required if not accumulated.get(f)]
+    next_field = invalid_field
+    if invalid_field not in missing and invalid_field in required:
+        missing = [invalid_field, *[f for f in missing if f != invalid_field]]
+    elif invalid_field == "monthly_rent_eth":
+        missing = []
+    speak = create_property_invalid_field_message(invalid_field, rejected_value)
+    _persist_create_property_filled(
+        accumulated,
+        next_field=next_field,
+        submitted=False,
+        awaiting_create_confirmation=False,
+    )
+    out_data = {
+        **data,
+        "filled": accumulated,
+        "missing": missing,
+        "next_field": next_field,
+        "submitted": False,
+        "awaiting_create_confirmation": False,
+        "invalid_field": invalid_field,
+        "speak_to_user": speak,
+        "speak_verbatim": True,
+        "instruction": (
+            f"The user's answer for {invalid_field} was invalid. Read speak_to_user "
+            "verbatim and wait for a valid answer before continuing."
+        ),
+    }
+    filtered_actions = [
+        a
+        for a in actions
+        if not (a.type == "FILL_FIELD" and a.modal == _CREATE_PROPERTY_MODAL and a.field == invalid_field)
+    ]
+    return ToolResult(ok=True, data=out_data, actions=filtered_actions)
 
 
 def _create_property_needs_monthly_rent_collection(filled: dict[str, str]) -> bool:
@@ -3383,6 +3441,57 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     actions = list(result.actions)
     accumulated = normalize_create_property_accumulated(dict(data.get("filled") or {}))
     accumulated = _backfill_create_property_filled_from_history(accumulated)
+    raw_before_sanitize = dict(accumulated)
+    accumulated, invalid_field = sanitize_create_property_fields(accumulated)
+    if invalid_field:
+        rejected = str(raw_before_sanitize.get(invalid_field) or args.get(invalid_field) or "")
+        return _create_property_reject_invalid_field(
+            accumulated,
+            invalid_field,
+            rejected_value=rejected,
+            data=data,
+            actions=actions,
+        )
+    last_human = _latest_human_utterance()
+    if last_human and _latest_human_create_property_confirm() is None:
+        for field in CREATE_PROPERTY_NUMERIC_FIELDS:
+            incoming = args.get(field)
+            if incoming not in (None, ""):
+                candidate = str(incoming)
+            else:
+                pending = pre_session.get("next_field") or data.get("next_field")
+                if pending != field or field in accumulated:
+                    continue
+                candidate = last_human
+            if create_property_numeric_field_is_valid(field, candidate):
+                continue
+            return _create_property_reject_invalid_field(
+                accumulated,
+                field,
+                rejected_value=candidate,
+                data=data,
+                actions=actions,
+            )
+    if last_human and _latest_human_create_property_confirm() is None:
+        pending = pre_session.get("next_field") or data.get("next_field")
+        symbol_incoming = args.get("token_symbol")
+        if symbol_incoming not in (None, ""):
+            symbol_candidate = str(symbol_incoming)
+        elif pending == "token_symbol" and "token_symbol" not in accumulated:
+            symbol_candidate = last_human
+        else:
+            symbol_candidate = ""
+        if (
+            symbol_candidate
+            and not create_property_token_symbol_is_valid(symbol_candidate)
+        ):
+            return _create_property_reject_invalid_field(
+                accumulated,
+                "token_symbol",
+                rejected_value=symbol_candidate,
+                data=data,
+                actions=actions,
+            )
     required = _CREATE_PROPERTY_FIELDS[:5]
     missing = [f for f in required if not accumulated.get(f)]
     data["filled"] = accumulated
@@ -3484,7 +3593,10 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     if field_speak:
         data["speak_to_user"] = field_speak
         data["speak_verbatim"] = True
-        data["instruction"] = "Read speak_to_user verbatim — do not rephrase the ticker question."
+        data["instruction"] = (
+            "Read speak_to_user verbatim — do not skip, rephrase, or reorder the "
+            "create-property questions."
+        )
     return ToolResult(ok=result.ok, data=data, error=result.error, actions=actions)
 
 
