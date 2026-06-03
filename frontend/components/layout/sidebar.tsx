@@ -9,7 +9,6 @@ import {
   Receipt,
   Users,
 } from "lucide-react";
-import { EstateChainBrandMark } from "@/components/layout/estatechain-brand-mark";
 import { SidebarWalletPanel } from "@/components/layout/sidebar-wallet-panel";
 import { cn } from "@/lib/utils";
 
@@ -34,7 +33,9 @@ export function AdminSidebar({ mobile = false, onNavigate }: { mobile?: boolean;
       )}
     >
       <Link href="/property_owner/dashboard" onClick={onNavigate} className="mb-9 flex items-center gap-3 px-1">
-        <EstateChainBrandMark />
+        <div className="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-primary via-chart-3 to-chart-2 font-bold text-primary-foreground shadow-lg shadow-primary/20">
+          E
+        </div>
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold">EstateChain</span>
           <span className="text-[11px] text-muted-foreground">Admin Panel</span>

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Building2, LayoutDashboard, Receipt, Wallet } from "lucide-react";
-import { EstateChainBrandMark } from "@/components/layout/estatechain-brand-mark";
 import { SidebarWalletPanel } from "@/components/layout/sidebar-wallet-panel";
 import { cn } from "@/lib/utils";
 
@@ -28,7 +27,9 @@ export function InvestorSidebar({ mobile = false, onNavigate }: { mobile?: boole
     >
       <div className="px-4 pb-4 pt-5">
         <Link href="/investor" onClick={onNavigate} className="flex items-center gap-3">
-          <EstateChainBrandMark />
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#1e3a8a] text-sm font-bold text-white shadow-sm dark:bg-[#2563eb]">
+            E
+          </div>
           <div className="min-w-0 flex flex-col leading-tight">
             <span className="truncate text-[15px] font-semibold text-[#010101] dark:text-white">
               EstateChain

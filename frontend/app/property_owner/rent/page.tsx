@@ -30,14 +30,14 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/common/empty";
 import {
-  useManagedProperties,
+  useProperties,
   useRentAnalytics,
   useRentDistributions,
   useRentPayments,
 } from "@/lib/queries";
 import { useSetRent } from "@/lib/mutations";
 import { formatDateTime, formatEth } from "@/lib/utils";
-import { identityDisplayName } from "@/lib/identity";
+import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
 
@@ -47,28 +47,41 @@ const stickyHeadClass =
   "sticky top-0 z-20 h-10 whitespace-nowrap bg-card py-2 text-sm";
 const tableCellClass = "whitespace-nowrap py-3 text-sm";
 
+function sameWallet(a?: string | null, b?: string | null): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
 export default function RentManagementPage() {
-  const properties = useManagedProperties();
+  const properties = useProperties();
   const rent = useRentAnalytics();
   const distributions = useRentDistributions();
   const payments = useRentPayments();
-  const managedPropertyIds = useMemo(
-    () => new Set((properties.data ?? []).map((property) => Number(property.id))),
-    [properties.data],
+  const sessionIdentity = currentSessionIdentity();
+  const adminWallet = sessionIdentity?.wallet_address ?? null;
+  const adminProperties = useMemo(
+    () =>
+      (properties.data ?? []).filter(
+        (property) => property.can_manage || sameWallet(property.owner_wallet, adminWallet),
+      ),
+    [adminWallet, properties.data],
   );
-  const managedRentPayments = useMemo(
+  const adminPropertyIds = useMemo(
+    () => new Set(adminProperties.map((property) => Number(property.id))),
+    [adminProperties],
+  );
+  const adminRentPayments = useMemo(
     () =>
       (payments.data ?? [])
-        .filter((payment) => managedPropertyIds.has(Number(payment.property_id)))
+        .filter((payment) => adminPropertyIds.has(Number(payment.property_id)))
         .slice(0, 8),
-    [managedPropertyIds, payments.data],
+    [adminPropertyIds, payments.data],
   );
-  const managedRentDistributions = useMemo(
+  const adminRentDistributions = useMemo(
     () =>
       (distributions.data ?? [])
-        .filter((distribution) => managedPropertyIds.has(Number(distribution.property_id)))
+        .filter((distribution) => adminPropertyIds.has(Number(distribution.property_id)))
         .slice(0, 8),
-    [distributions.data, managedPropertyIds],
+    [adminPropertyIds, distributions.data],
   );
   const paymentsLoading = properties.isLoading || payments.isLoading;
   const distributionsLoading = properties.isLoading || distributions.isLoading;
@@ -122,13 +135,11 @@ export default function RentManagementPage() {
         <Card className="text-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">Properties</CardTitle>
-            <CardDescription className="text-sm">
-              Set monthly rent for properties you created; blockchain sync is handled automatically.
-            </CardDescription>
+            <CardDescription className="text-sm">Set monthly rent; blockchain sync is handled automatically.</CardDescription>
           </CardHeader>
           <CardContent className="px-0 pb-3">
             <div className="[&>div]:max-h-[310px] [&>div]:overflow-auto [&>div]:scrollbar-thin">
-              <PropertiesRentTable properties={properties.data ?? []} loading={properties.isLoading} />
+              <PropertiesRentTable properties={adminProperties} loading={properties.isLoading} />
             </div>
           </CardContent>
         </Card>
@@ -141,68 +152,68 @@ export default function RentManagementPage() {
             </CardHeader>
             <CardContent className="px-0 pb-0">
               <div className={scrollTableViewportClass}>
-                <Table className="min-w-[760px] text-sm">
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className={stickyHeadClass}>Tenant</TableHead>
-                      <TableHead className={stickyHeadClass}>Property</TableHead>
-                      <TableHead className={stickyHeadClass}>Amount</TableHead>
-                      <TableHead className={stickyHeadClass}>Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {paymentsLoading ? (
-                      Array.from({ length: 4 }).map((_, i) => (
-                        <TableRow key={i} className="hover:bg-transparent">
-                          <TableCell colSpan={4}>
-                            <Skeleton className="h-7 w-full" />
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : managedRentPayments.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={4} className="py-10">
-                          <EmptyState title="No rent payments yet" />
+              <Table className="min-w-[760px] text-sm">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className={stickyHeadClass}>Tenant</TableHead>
+                    <TableHead className={stickyHeadClass}>Property</TableHead>
+                    <TableHead className={stickyHeadClass}>Amount</TableHead>
+                    <TableHead className={stickyHeadClass}>Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paymentsLoading ? (
+                    Array.from({ length: 4 }).map((_, i) => (
+                      <TableRow key={i} className="hover:bg-transparent">
+                        <TableCell colSpan={4}>
+                          <Skeleton className="h-7 w-full" />
                         </TableCell>
                       </TableRow>
-                    ) : (
-                      managedRentPayments.map((p) => {
-                        const tenantLabel = identityDisplayName(
-                          {
-                            wallet_address: p.tenant_wallet,
-                            full_name: p.tenant_full_name,
-                            display_id: p.tenant_display_id,
-                            profile_role: p.tenant_profile_role,
-                          },
-                          p.tenant_wallet,
-                        );
-                        return (
+                    ))
+                  ) : adminRentPayments.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-10">
+                        <EmptyState title="No rent payments yet" />
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    adminRentPayments.map((p) => {
+                      const tenantLabel = identityDisplayName(
+                        {
+                          wallet_address: p.tenant_wallet,
+                          full_name: p.tenant_full_name,
+                          display_id: p.tenant_display_id,
+                          profile_role: p.tenant_profile_role,
+                        },
+                        p.tenant_wallet,
+                      );
+                      return (
                         <TableRow key={p.id ?? p.tx_hash}>
-                          <TableCell className={tableCellClass}>
-                            <a
-                              href={txExplorerUrl(p.tx_hash)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="hover:underline"
-                            >
-                              {tenantLabel}
-                            </a>
-                          </TableCell>
-                          <TableCell className={tableCellClass}>
-                            {p.property_name ?? `#${p.property_id}`}
-                          </TableCell>
-                          <TableCell className={`${tableCellClass} tabular-nums`}>
-                            {Number(p.amount_eth).toFixed(4)} ETH
-                          </TableCell>
-                          <TableCell className={`${tableCellClass} text-muted-foreground`}>
-                            {formatDateTime(p.payment_date)}
-                          </TableCell>
-                        </TableRow>
-                        );
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        <TableCell className={tableCellClass}>
+                          <a
+                            href={txExplorerUrl(p.tx_hash)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="hover:underline"
+                          >
+                            {tenantLabel}
+                          </a>
+                        </TableCell>
+                        <TableCell className={tableCellClass}>
+                          {p.property_name ?? `#${p.property_id}`}
+                        </TableCell>
+                        <TableCell className={`${tableCellClass} tabular-nums`}>
+                          {Number(p.amount_eth).toFixed(4)} ETH
+                        </TableCell>
+                        <TableCell className={`${tableCellClass} text-muted-foreground`}>
+                          {formatDateTime(p.payment_date)}
+                        </TableCell>
+                      </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
               </div>
             </CardContent>
           </Card>
@@ -214,50 +225,50 @@ export default function RentManagementPage() {
             </CardHeader>
             <CardContent className="px-0 pb-0">
               <div className={scrollTableViewportClass}>
-                <Table className="min-w-[760px] text-sm">
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className={stickyHeadClass}>Property</TableHead>
-                      <TableHead className={stickyHeadClass}>Distributed</TableHead>
-                      <TableHead className={stickyHeadClass}>Investors</TableHead>
-                      <TableHead className={stickyHeadClass}>Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {distributionsLoading ? (
-                      Array.from({ length: 4 }).map((_, i) => (
-                        <TableRow key={i} className="hover:bg-transparent">
-                          <TableCell colSpan={4}>
-                            <Skeleton className="h-7 w-full" />
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : managedRentDistributions.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={4} className="py-10">
-                          <EmptyState title="No distributions yet" />
+              <Table className="min-w-[760px] text-sm">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className={stickyHeadClass}>Property</TableHead>
+                    <TableHead className={stickyHeadClass}>Distributed</TableHead>
+                    <TableHead className={stickyHeadClass}>Investors</TableHead>
+                    <TableHead className={stickyHeadClass}>Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {distributionsLoading ? (
+                    Array.from({ length: 4 }).map((_, i) => (
+                      <TableRow key={i} className="hover:bg-transparent">
+                        <TableCell colSpan={4}>
+                          <Skeleton className="h-7 w-full" />
                         </TableCell>
                       </TableRow>
-                    ) : (
-                      managedRentDistributions.map((d) => (
-                        <TableRow key={d.id ?? d.distribution_tx_hash}>
-                          <TableCell className={tableCellClass}>
-                            {d.property_name ?? `#${d.property_id}`}
-                          </TableCell>
-                          <TableCell className={`${tableCellClass} tabular-nums`}>
-                            {(Number(d.total_distributed) / 1e18).toFixed(4)} ETH
-                          </TableCell>
-                          <TableCell className={`${tableCellClass} tabular-nums`}>
-                            {d.investor_count}
-                          </TableCell>
-                          <TableCell className={`${tableCellClass} text-muted-foreground`}>
-                            {formatDateTime(d.distributed_at)}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
+                    ))
+                  ) : adminRentDistributions.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-10">
+                        <EmptyState title="No distributions yet" />
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    adminRentDistributions.map((d) => (
+                      <TableRow key={d.id ?? d.distribution_tx_hash}>
+                        <TableCell className={tableCellClass}>
+                          {d.property_name ?? `#${d.property_id}`}
+                        </TableCell>
+                        <TableCell className={`${tableCellClass} tabular-nums`}>
+                          {(Number(d.total_distributed) / 1e18).toFixed(4)} ETH
+                        </TableCell>
+                        <TableCell className={`${tableCellClass} tabular-nums`}>
+                          {d.investor_count}
+                        </TableCell>
+                        <TableCell className={`${tableCellClass} text-muted-foreground`}>
+                          {formatDateTime(d.distributed_at)}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
               </div>
             </CardContent>
           </Card>
@@ -296,10 +307,7 @@ function PropertiesRentTable({
         ) : properties.length === 0 ? (
           <TableRow>
             <TableCell colSpan={4} className="py-10">
-              <EmptyState
-                title="No managed properties"
-                description="Properties you create will appear here for rent setup."
-              />
+              <EmptyState title="No properties" />
             </TableCell>
           </TableRow>
         ) : (
