@@ -114,7 +114,8 @@ export function propertyOwnershipFor(
       const tokens = toTokenUnits(position.token_amount, supply);
       if (!investorWallet || tokens <= 0) continue;
       const rawShare = Number(position.ownership_percentage ?? 0);
-      const share = rawShare > 0 ? rawShare : supply > 0 ? (tokens / supply) * 100 : 0;
+      const tokenShare = supply > 0 ? (tokens / supply) * 100 : 0;
+      const share = tokenShare > 0 ? tokenShare : rawShare;
       rows.set(investorWallet.toLowerCase(), {
         investor: investorWallet,
         share_pct: share,
@@ -138,10 +139,6 @@ export function propertyOwnershipFor(
     });
   }
 
-  const result = Array.from(rows.values());
-  const total = result.reduce((sum, item) => sum + item.share_pct, 0);
-  const scale = total > 0 && total <= 1 ? 100 : 1;
-  return result
-    .map((item) => ({ ...item, share_pct: item.share_pct * scale }))
+  return Array.from(rows.values())
     .sort((a, b) => b.share_pct - a.share_pct || a.investor.localeCompare(b.investor));
 }
