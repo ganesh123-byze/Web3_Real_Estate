@@ -531,11 +531,11 @@ def create_property_field_collection_speak(
         "location": "Where is it located?",
         "total_value": (
             "What's the total property value in ETH? "
-            "Please enter a positive number only (for example 10000 or 2500.5)."
+            "Enter any positive amount using numbers only (for example 10000 or 12345678)."
         ),
         "token_supply": (
             "How many ownership tokens should we mint? "
-            "Please enter a positive whole number only (for example 100000)."
+            "Enter any positive whole number using digits only (for example 100000 or 5000000)."
         ),
     }
     if field == "token_symbol":

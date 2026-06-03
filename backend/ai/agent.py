@@ -47,6 +47,7 @@ from backend.ai.tools import (
     reset_current_thread_id,
     set_current_messages,
     set_current_thread_id,
+    try_server_apply_create_property_field_answer,
     try_server_create_property_confirmation,
     try_server_create_property_submit,
     try_server_edit_property_continuation,
@@ -440,7 +441,9 @@ async def run_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_create_property_confirmation(user, db)
+        preflight = await try_server_apply_create_property_field_answer(user, db)
+        if preflight is None:
+            preflight = await try_server_create_property_confirmation(user, db)
         if preflight is None:
             preflight = await try_server_edit_property_continuation(user, db)
         if preflight is not None:
@@ -596,7 +599,9 @@ async def stream_agent(
     msg_token = set_current_messages(history)
     try:
         prepare_copilot_turn(effective_thread, history)
-        preflight = await try_server_create_property_confirmation(user, db)
+        preflight = await try_server_apply_create_property_field_answer(user, db)
+        if preflight is None:
+            preflight = await try_server_create_property_confirmation(user, db)
         if preflight is None:
             preflight = await try_server_edit_property_continuation(user, db)
         if preflight is not None:

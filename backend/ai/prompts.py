@@ -137,12 +137,14 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
 3. Field order (strict — always follow `next_field` and read `speak_to_user` verbatim):
      - name         → property name (any text)
      - location     → location (any text)
-     - total_value  → positive number in ETH only (reject letters like "nc")
-     - token_supply → positive whole number only (reject symbols like ";snm")
+     - total_value  → any positive number in ETH (format only — no letters like "nc")
+     - token_supply → any positive whole number (format only — no symbols like ";snm")
      - token_symbol → 2–10 letter/number ticker (e.g. ETH, GP) — read `speak_to_user`
      - monthly_rent_eth → number in ETH below 100, or skip/no for none — read `speak_to_user`
-   If the tool returns `invalid_field` or a validation message in `speak_to_user`,
-   read it verbatim and wait for a corrected answer — do not advance to the next field.
+   NEVER cap or second-guess total_value or token_supply (no wallet limits, no "reasonable"
+   maximum, no "typically below" — the admin chooses any positive numbers they want).
+   If the tool accepts a value into `filled`, move on — do NOT reject it yourself.
+   If the tool returns `invalid_field`, read `speak_to_user` verbatim (format errors only).
 
 4. When the tool reports `missing: []` and `next_field: monthly_rent_eth`, read
    `speak_to_user` verbatim — it reminds the user that rent must be less than 100 ETH.

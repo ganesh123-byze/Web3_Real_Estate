@@ -3288,6 +3288,58 @@ def _create_property_workflow_active(
     return False
 
 
+async def try_server_apply_create_property_field_answer(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Apply the latest user answer server-side so the LLM cannot invent value caps."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+    if _latest_human_create_property_confirm() is not None:
+        return None
+
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("chat_property_limit_reached"):
+        return None
+    if pre_session.get("submitting") and not pre_session.get("submit_failed"):
+        return None
+    if pre_session.get("awaiting_create_confirmation"):
+        return None
+
+    filled = _backfill_create_property_filled_from_history(
+        normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    )
+    if not _create_property_workflow_active(pre_session, filled):
+        return None
+
+    last_human = _latest_human_utterance().strip()
+    if not last_human or is_generic_create_property_intent(last_human):
+        return None
+
+    pending = pre_session.get("next_field")
+    if not pending:
+        missing = [f for f in _CREATE_PROPERTY_FIELDS[:5] if not filled.get(f)]
+        if _create_property_required_fields_present(filled):
+            if _create_property_needs_monthly_rent_collection(filled):
+                pending = "monthly_rent_eth"
+        elif missing:
+            pending = missing[0]
+    if not pending or pending not in _CREATE_PROPERTY_FIELDS:
+        return None
+
+    result = await _fill_create_property({pending: last_human}, user, db)
+    data = result.data or {}
+    speak = str(data.get("speak_to_user") or "").strip()
+    if not speak:
+        return None
+    if data.get("invalid_field") == pending:
+        return result
+    if pending in (data.get("filled") or {}):
+        return result
+    return None
+
+
 async def try_server_create_property_confirmation(
     user: AuthUser, db: Any
 ) -> ToolResult | None:
@@ -3593,9 +3645,14 @@ async def _fill_create_property(args: dict, user: AuthUser, db: Any) -> ToolResu
     if field_speak:
         data["speak_to_user"] = field_speak
         data["speak_verbatim"] = True
+        accepted_field = str(data.get("next_field") or "")
+        prior = pre_session.get("next_field")
+        if prior and prior in (data.get("filled") or {}) and prior != accepted_field:
+            data["field_accepted"] = prior
         data["instruction"] = (
             "Read speak_to_user verbatim — do not skip, rephrase, or reorder the "
-            "create-property questions."
+            "create-property questions. Do not impose wallet limits or 'reasonable' "
+            "maximums on total_value or token_supply."
         )
     return ToolResult(ok=result.ok, data=data, error=result.error, actions=actions)
 

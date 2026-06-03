@@ -10,6 +10,7 @@ from backend.ai.tools import (
     reset_current_thread_id,
     set_current_messages,
     set_current_thread_id,
+    try_server_apply_create_property_field_answer,
 )
 from backend.ai.workflow_parsers import (
     create_property_field_collection_speak,
@@ -108,3 +109,37 @@ def test_numeric_field_validator_accepts_spoken_amounts():
     assert create_property_numeric_field_is_valid("total_value", "one lakh")
     assert create_property_numeric_field_is_valid("token_supply", "100,000")
     assert create_property_numeric_field_is_valid("monthly_rent_eth", "no")
+
+
+def test_large_total_value_accepted_and_advances():
+    assert normalize_create_property_field("total_value", "12345678") == "12345678"
+    token = set_current_thread_id("test:create:large-total-value")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "What's the total property value in ETH?"},
+            {"type": "human", "content": "12345678"},
+        ]
+    )
+    try:
+        _clear_workflow_session("CREATE_PROPERTY")
+        from backend.ai import tools
+
+        tools._set_workflow_session(
+            "CREATE_PROPERTY",
+            {
+                "in_progress": True,
+                "filled": {"name": "sadf", "location": "sdsfd"},
+                "next_field": "total_value",
+            },
+        )
+        result = asyncio.run(try_server_apply_create_property_field_answer(_owner(), None))
+        assert result is not None
+        assert result.data.get("filled", {}).get("total_value") == "12345678"
+        assert result.data.get("next_field") == "token_supply"
+        speak = str(result.data.get("speak_to_user") or "").lower()
+        assert "reasonable" not in speak
+        assert "wallet" not in speak
+    finally:
+        _clear_workflow_session("CREATE_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
