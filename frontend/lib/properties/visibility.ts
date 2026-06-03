@@ -50,3 +50,24 @@ export function filterFullyCreatedProperties<
 >(properties: T[]): T[] {
   return properties.filter(isPropertyFullyCreated);
 }
+
+/** True when the signed-in admin may manage this property (matches backend ``can_manage``). */
+export function isPropertyManagedByOwner(
+  property: Pick<Property, "can_manage" | "owner_wallet">,
+  ownerWallet?: string | null,
+): boolean {
+  if (property.can_manage === true) return true;
+  const owner = String(property.owner_wallet ?? "").trim().toLowerCase();
+  const viewer = String(ownerWallet ?? "").trim().toLowerCase();
+  return Boolean(owner && viewer && owner === viewer);
+}
+
+/** Properties created by the signed-in admin — for operational pages (rent, dashboard, etc.). */
+export function filterManagedProperties<
+  T extends Pick<Property, "can_manage" | "owner_wallet">,
+>(properties: T[], ownerWallet?: string | null): T[] {
+  if (!ownerWallet) {
+    return properties.filter((property) => property.can_manage === true);
+  }
+  return properties.filter((property) => isPropertyManagedByOwner(property, ownerWallet));
+}
