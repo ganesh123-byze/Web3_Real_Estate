@@ -213,6 +213,21 @@ def property_is_owned_by(property_item: dict, wallet: str) -> bool:
     return bool(owner and viewer and owner == viewer)
 
 
+def append_sql_owned_property_filter(
+    conditions: list[str],
+    params: list,
+    *,
+    wallet: str,
+    property_alias: str = "p",
+) -> None:
+    """Add a WHERE clause matching properties created by ``wallet``."""
+    owner = normalize_address(wallet or "")
+    if not owner:
+        return
+    conditions.append(f"LOWER(COALESCE({property_alias}.owner_wallet, '')) = LOWER(%s)")
+    params.append(owner)
+
+
 def apply_property_visibility(property_item: dict, viewer: Optional["AuthUser"]) -> dict:
     """Attach ``can_manage`` while keeping the creator wallet visible."""
     if not property_item:

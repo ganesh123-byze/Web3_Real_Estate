@@ -10,7 +10,7 @@ export default function TransactionsPage() {
     <>
       <AdminTopbar
         title="Transactions"
-        subtitle="Full transaction ledger indexed from Sepolia — click a row for details"
+        subtitle="Transaction ledger for your properties on Sepolia — click a row for details"
       />
       <main className="flex-1 space-y-4 p-4 lg:p-6">
         <TransactionsTable transactions={data ?? []} loading={isLoading} />

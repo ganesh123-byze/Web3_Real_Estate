@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.api._helpers import format_transaction_row
+from backend.api._helpers import append_sql_owned_property_filter, format_transaction_row
 from backend.api.deps import get_current_user, get_db
 from backend.api.schemas import TransactionRead
 from backend.config.settings import TOKEN_DECIMALS
@@ -40,7 +40,10 @@ def list_transactions(
         if tx_type:
             conditions.append("t.type = %s")
             params.append(tx_type)
-        if wallet_address:
+        if user.role == "property_owner":
+            # Admin ledger: activity on properties this wallet created (not platform-wide).
+            append_sql_owned_property_filter(conditions, params, wallet=user.wallet_address)
+        elif wallet_address:
             if not web3.is_address(wallet_address):
                 raise HTTPException(status_code=400, detail="Invalid wallet address")
             checksum = web3.to_checksum_address(wallet_address)
