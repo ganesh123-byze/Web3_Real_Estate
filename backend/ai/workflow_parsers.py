@@ -41,6 +41,67 @@ def _strip_noise(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
+def _parse_number_word_phrase(text: str) -> int | None:
+    """Parse spoken counts like 'twenty five', 'one hundred', 'one hundred twenty five'."""
+    t = _strip_noise(text).lower().replace("-", " ")
+    if not t:
+        return None
+    compact = re.sub(r"[\s,]", "", t)
+    if re.fullmatch(r"\d+", compact or ""):
+        try:
+            return int(compact)
+        except ValueError:
+            return None
+    m = re.fullmatch(r"([\d.,]+)", t)
+    if m:
+        try:
+            return int(float(m.group(1).replace(",", "")))
+        except (TypeError, ValueError):
+            return None
+
+    tokens = [tok for tok in t.split() if tok not in {"and", "a", "an"}]
+    if not tokens:
+        return None
+
+    total = 0
+    current = 0
+    for tok in tokens:
+        if tok == "hundred":
+            current = max(current, 1) * 100
+            continue
+        val = _WORD_NUMBERS.get(tok)
+        if val is None:
+            return None
+        if val >= 100:
+            current = val
+        else:
+            current += val
+    total += current
+    return total if total > 0 else None
+
+
+def _parse_spoken_scale_multiplier(text: str, scale_word: str, multiplier: int) -> int | None:
+    """Parse '<amount> million' / 'ten thousand' style phrases."""
+    if not re.search(rf"\b{re.escape(scale_word)}\b", text):
+        return None
+    prefix = re.split(rf"\b{re.escape(scale_word)}\b", text, maxsplit=1)[0].strip()
+    if not prefix:
+        return multiplier
+    if re.fullmatch(r"[\d.,]+", prefix.replace(" ", "")):
+        try:
+            base = float(prefix.replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+    else:
+        parsed = _parse_number_word_phrase(prefix)
+        if parsed is None:
+            return None
+        base = float(parsed)
+    if base <= 0:
+        return None
+    return int(base * multiplier)
+
+
 def _parse_spoken_integer(text: str) -> int | None:
     """Best-effort integer from phrases like 'one lakh tokens' or '10000'."""
     t = _strip_noise(text).lower()
@@ -65,15 +126,15 @@ def _parse_spoken_integer(text: str) -> int | None:
             return int(float(m.group(1).replace(",", "")) * 10_000_000)
         except (TypeError, ValueError):
             pass
-    if re.search(r"\bthousand\b", t):
-        m = re.search(r"([\d.,]+)\s*thousand", t)
-        if m:
-            try:
-                return int(float(m.group(1).replace(",", "")) * 1_000)
-            except (TypeError, ValueError):
-                pass
-        if re.search(r"\bone\s+thousand\b", t):
-            return 1_000
+
+    for scale_word, mult in (
+        ("billion", 1_000_000_000),
+        ("million", 1_000_000),
+        ("thousand", 1_000),
+    ):
+        scaled = _parse_spoken_scale_multiplier(t, scale_word, mult)
+        if scaled is not None:
+            return scaled
 
     # Compact suffix: 10k, 1.5m
     m = re.search(r"([\d.,]+)\s*([kKmM])\b", t)
@@ -88,6 +149,10 @@ def _parse_spoken_integer(text: str) -> int | None:
             return int(digits)
         except ValueError:
             return None
+
+    phrase = _parse_number_word_phrase(t)
+    if phrase is not None:
+        return phrase
 
     for word, val in _WORD_NUMBERS.items():
         if re.search(rf"\b{word}\b", t):
@@ -272,6 +337,11 @@ def _normalize_create_property_token_supply(text: str) -> str:
 
 def _normalize_create_property_total_value(text: str) -> str:
     """Positive ETH amount only."""
+    t = _strip_noise(text).lower()
+    if re.search(r"\b(million|billion|thousand|lakh|crore)\b", t):
+        spoken = _parse_spoken_integer(text)
+        if spoken is not None and spoken > 0:
+            return str(spoken)
     amt = _parse_decimal_amount(text)
     if amt is None:
         spoken = _parse_spoken_integer(text)
@@ -298,7 +368,15 @@ def _normalize_create_property_monthly_rent(text: str) -> str:
 
 
 def create_property_monthly_rent_is_skip(value: str) -> bool:
-    return (value or "").strip().lower() in {"0", "skip", "none", "no", "n/a"}
+    return (value or "").strip().lower() in {
+        "0",
+        "skip",
+        "none",
+        "no",
+        "n/a",
+        "ok",
+        "okay",
+    }
 
 
 def _normalize_create_property_token_symbol(text: str) -> str:
@@ -546,11 +624,13 @@ def create_property_field_collection_speak(
         "location": "Where is it located?",
         "total_value": (
             "What's the total property value in ETH? "
-            "Enter any positive amount using numbers only (for example 10000 or 12345678)."
+            "Any positive amount works — say digits or spoken amounts like "
+            "ten million or one hundred thousand (for example 10000 or 12345678)."
         ),
         "token_supply": (
             "How many ownership tokens should we mint? "
-            "Enter any positive whole number using digits only (for example 100000 or 5000000)."
+            "Any positive whole number works — digits or spoken amounts like "
+            "five million (for example 100000 or 5000000)."
         ),
     }
     if field == "token_symbol":

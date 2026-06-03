@@ -15,6 +15,14 @@ def test_one_lakh_token_supply():
     assert normalize_create_property_field("token_supply", "One lakh tokens") == "100000"
 
 
+def test_spoken_million_and_thousand_phrases():
+    assert normalize_create_property_field("total_value", "ten million") == "10000000"
+    assert normalize_create_property_field("total_value", "one hundred million") == "100000000"
+    assert normalize_create_property_field("total_value", "twenty five thousand") == "25000"
+    assert normalize_create_property_field("token_supply", "five million") == "5000000"
+    assert normalize_create_property_field("total_value", "10 million ETH") == "10000000"
+
+
 def test_usd_symbol():
     assert normalize_create_property_field("token_symbol", "I want to give an USD symbol") == "USD"
 

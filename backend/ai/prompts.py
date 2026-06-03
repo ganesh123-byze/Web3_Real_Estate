@@ -147,6 +147,8 @@ card behind the chat. NEVER refuse a "create property" request and NEVER say
      - monthly_rent_eth → number in ETH below 100, or skip/no for none — read `speak_to_user`
    NEVER cap or second-guess total_value or token_supply (no wallet limits, no "reasonable"
    maximum, no "typically below" — the admin chooses any positive numbers they want).
+   Voice users may say large amounts in words (e.g. "ten million", "one hundred million") —
+   pass them through to fill_create_property; the server normalizes spoken numbers.
    If the tool accepts a value into `filled`, move on — do NOT reject it yourself.
    If the tool returns `invalid_field`, read `speak_to_user` verbatim (format errors only).
 

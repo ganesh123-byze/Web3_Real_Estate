@@ -307,15 +307,37 @@ def _create_property_awaiting_user_confirmation() -> bool:
     )
 
 
+def _create_property_in_field_collection_phase() -> bool:
+    """True while the server is still collecting fields (not at confirmation yet)."""
+    if _create_property_summary_pending_in_history():
+        return False
+    pre_session = _reconcile_create_property_session_after_outcome(
+        _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
+    )
+    if pre_session.get("awaiting_create_confirmation") or pre_session.get("submit_failed"):
+        return False
+    if pre_session.get("next_field"):
+        return True
+    filled = normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+    filled = _backfill_create_property_filled_from_history(filled)
+    if not _create_property_workflow_active(pre_session, filled):
+        return False
+    if not _create_property_required_fields_present(filled):
+        return True
+    return _create_property_needs_monthly_rent_collection(filled)
+
+
 def _latest_human_create_property_confirm() -> bool | None:
     """Yes/no or voice phrases like \"create this property\" after the summary."""
     text = _latest_human_utterance()
     if not text:
         return None
+    if _create_property_in_field_collection_phase():
+        return None
     yn = parse_yes_no_confirmation(text)
     if yn is not None:
         return yn
-    if not _create_property_awaiting_user_confirmation():
+    if not _create_property_awaiting_user_confirmation() and not _create_property_summary_pending_in_history():
         return None
     from backend.ai.workflow_parsers import parse_create_property_submit_intent
 
@@ -426,13 +448,13 @@ def _backfill_create_property_filled_from_history(
         if out.get(pending_field) not in (None, ""):
             pending_field = None
             continue
-        if parse_yes_no_confirmation(text) is not None:
-            pending_field = None
-            continue
         if pending_field == "name" and is_generic_create_property_intent(text):
             continue
         if pending_field == "monthly_rent_eth" and create_property_monthly_rent_is_skip(text):
             out[pending_field] = "0"
+            pending_field = None
+            continue
+        if parse_yes_no_confirmation(text) is not None:
             pending_field = None
             continue
         value = normalize_create_property_field(pending_field, text)
@@ -2820,10 +2842,15 @@ def create_property_server_submit_eligible(user: AuthUser) -> tuple[bool, str]:
     filled = _backfill_create_property_filled_from_history(
         normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
     )
-    awaiting = _create_property_awaiting_user_confirmation()
+    awaiting = (
+        _create_property_awaiting_user_confirmation()
+        or _create_property_summary_pending_in_history()
+    )
     if not awaiting and not _create_property_required_fields_present(filled):
         return False, ""
     if not _create_property_required_fields_present(filled):
+        return False, ""
+    if _create_property_needs_monthly_rent_collection(filled):
         return False, ""
 
     return True, str(filled.get("name") or "").strip()
@@ -2864,6 +2891,8 @@ def _create_property_confirmation_reply(args: dict) -> bool | None:
     confirm = args.get("confirm_create")
     if confirm is not None:
         return bool(confirm)
+    if _create_property_args_change_fields(args):
+        return None
     return _latest_human_create_property_confirm()
 
 
