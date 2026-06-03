@@ -1,8 +1,10 @@
 "use client";
 
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import { filterFullyCreatedProperties } from "./properties/visibility";
+import { useSessionAccount } from "./hooks/use-session-account";
+import { filterFullyCreatedProperties, filterManagedProperties } from "./properties/visibility";
 import type {
   ClaimableRewardsSummary,
   DashboardSummary,
@@ -71,6 +73,18 @@ export function useProperties() {
     select: filterFullyCreatedProperties,
     refetchInterval: POLL_MS,
   });
+}
+
+/** Active listings the signed-in admin created — does not change global ``useProperties``. */
+export function useManagedProperties() {
+  const session = useSessionAccount();
+  const query = useProperties();
+  const ownerWallet = session?.user?.wallet_address ?? null;
+  const data = useMemo(
+    () => filterManagedProperties(query.data ?? [], ownerWallet),
+    [query.data, ownerWallet],
+  );
+  return { ...query, data };
 }
 
 export function useProperty(id?: number | null) {

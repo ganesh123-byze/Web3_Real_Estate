@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/common/empty";
 import {
-  useProperties,
+  useManagedProperties,
   useRentAnalytics,
   useRentDistributions,
   useRentPayments,
@@ -42,7 +42,7 @@ import { txExplorerUrl } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
 
 export default function RentManagementPage() {
-  const properties = useProperties();
+  const properties = useManagedProperties();
   const rent = useRentAnalytics();
   const distributions = useRentDistributions();
   const payments = useRentPayments();
@@ -96,7 +96,9 @@ export default function RentManagementPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle>Properties</CardTitle>
-            <CardDescription>Set monthly rent; blockchain sync is handled automatically.</CardDescription>
+            <CardDescription>
+              Set monthly rent for properties you created; blockchain sync is handled automatically.
+            </CardDescription>
           </CardHeader>
           <CardContent className="px-0 pb-3">
             <div className="max-h-[310px] overflow-y-auto scrollbar-thin">
@@ -264,7 +266,10 @@ function PropertiesRentTable({
         ) : properties.length === 0 ? (
           <TableRow>
             <TableCell colSpan={4} className="py-10">
-              <EmptyState title="No properties" />
+              <EmptyState
+                title="No managed properties"
+                description="Properties you create will appear here for rent setup."
+              />
             </TableCell>
           </TableRow>
         ) : (
