@@ -172,6 +172,11 @@ def assistant_prompted_for_create_field(assistant_text: str, field: str) -> bool
             "ticker symbol",
             "token symbol",
             "symbol do you want",
+            "short ticker",
+            "ticker for the token",
+            "provide a short ticker",
+            "provide a ticker",
+            "what ticker",
         ),
         "monthly_rent_eth": (
             "monthly rent",
@@ -245,6 +250,79 @@ def normalize_create_property_accumulated(accumulated: dict[str, str]) -> dict[s
             continue
         out[key] = normalize_create_property_field(key, str(value))
     return out
+
+
+def assistant_showed_create_property_summary(assistant_text: str) -> bool:
+    """True when the assistant presented a create-property confirmation summary."""
+    t = _strip_noise(assistant_text).lower()
+    if not t:
+        return False
+    if "here are the property details i have" in t:
+        return True
+    if "summary of the property details" in t or "summary of the property" in t:
+        return True
+    if "shall i go ahead" in t and "propert" in t:
+        return True
+    if "shall i create" in t and "propert" in t:
+        return True
+    markers = (
+        "token symbol:",
+        "token supply:",
+        "total value:",
+        "monthly rent:",
+    )
+    hits = sum(1 for marker in markers if marker in t)
+    return hits >= 2 and ("name:" in t or "location:" in t)
+
+
+def parse_create_property_fields_from_summary(assistant_text: str) -> dict[str, str]:
+    """Recover field values from canonical or LLM-paraphrased confirmation summaries."""
+    text = assistant_text or ""
+    if not text.strip():
+        return {}
+
+    patterns: tuple[tuple[str, re.Pattern[str]], ...] = (
+        ("name", re.compile(r"(?im)(?:^|\n)\s*[-*]?\s*(?:name|property name)\s*:\s*(.+?)\s*(?:\n|$)")),
+        ("location", re.compile(r"(?im)(?:^|\n)\s*[-*]?\s*location\s*:\s*(.+?)\s*(?:\n|$)")),
+        (
+            "total_value",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:total value|total property value)"
+                r"(?:\s*\(eth\))?\s*:\s*([\d.,]+)"
+            ),
+        ),
+        (
+            "token_supply",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token supply|ownership tokens?)\s*:\s*([\d.,]+)"
+            ),
+        ),
+        (
+            "token_symbol",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token symbol|ticker(?:\s+symbol)?)\s*:\s*([A-Za-z0-9]{2,10})"
+            ),
+        ),
+        (
+            "monthly_rent_eth",
+            re.compile(
+                r"(?im)(?:^|\n)\s*[-*]?\s*monthly rent(?:\s*\(eth\))?\s*:\s*([\d.,]+)"
+            ),
+        ),
+    )
+
+    fields: dict[str, str] = {}
+    for key, pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        if key == "total_value" and "eth" in raw.lower():
+            raw = re.sub(r"(?i)\s*eth\s*$", "", raw).strip()
+        normalized = normalize_create_property_field(key, raw)
+        if normalized:
+            fields[key] = normalized
+    return fields
 
 
 CREATE_PROPERTY_MAX_MONTHLY_RENT_ETH = Decimal("100")

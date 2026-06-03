@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from backend.ai.workflow_parsers import (
     assistant_prompted_for_create_field,
+    assistant_showed_create_property_summary,
     create_property_field_collection_speak,
     create_property_monthly_rent_collection_prompt,
     create_property_monthly_rent_is_skip,
@@ -33,6 +34,7 @@ from backend.ai.workflow_parsers import (
     is_generic_create_property_intent,
     normalize_create_property_accumulated,
     normalize_create_property_field,
+    parse_create_property_fields_from_summary,
     parse_edit_property_fields_from_utterance,
     parse_yes_no_confirmation,
     utterance_opens_new_edit_property_flow,
@@ -374,6 +376,12 @@ def _backfill_create_property_filled_from_history(
             continue
         lowered = text.lower()
         if role in ("ai", "assistant"):
+            if assistant_showed_create_property_summary(text):
+                pending_field = None
+                for key, value in parse_create_property_fields_from_summary(text).items():
+                    if value and not str(out.get(key) or "").strip():
+                        out[key] = value
+                continue
             if "reply yes to create and deploy" in lowered or (
                 "here are the property details" in lowered
                 and ("reply yes" in lowered or "to edit," in lowered)
@@ -405,6 +413,22 @@ def _backfill_create_property_filled_from_history(
         pending_field = None
 
     return normalize_create_property_accumulated(out)
+
+
+def _create_property_summary_pending_in_history() -> bool:
+    """True when the latest assistant turn before the user was a create summary."""
+    hist = _current_history() or []
+    last_human_idx: int | None = None
+    for i, msg in enumerate(hist):
+        if _message_role(msg) in ("human", "user"):
+            last_human_idx = i
+    if last_human_idx is None:
+        return False
+    for msg in reversed(hist[:last_human_idx]):
+        if _message_role(msg) not in ("ai", "assistant"):
+            continue
+        return assistant_showed_create_property_summary(_message_content(msg))
+    return False
 
 
 def _persist_create_property_filled(filled: dict[str, str], **extra: Any) -> None:
@@ -3110,12 +3134,18 @@ def _handle_create_property_confirmation_turn(
             submit_failed=bool(pre_session.get("submit_failed")),
             last_submit_error=pre_session.get("last_submit_error"),
         )
+    complete = _create_property_required_fields_present(filled)
     awaiting = bool(
         pre_session.get("awaiting_create_confirmation")
         or pre_session.get("submit_failed")
     )
-    complete = _create_property_required_fields_present(filled)
-    if not awaiting and not complete:
+    summary_confirm = (
+        not awaiting
+        and complete
+        and _latest_human_create_property_confirm() is True
+        and _create_property_summary_pending_in_history()
+    )
+    if not awaiting and not complete and not summary_confirm:
         return None
 
     confirm = _create_property_confirmation_reply(args)
@@ -3190,6 +3220,8 @@ def _create_property_workflow_active(
             continue
         text = _message_content(msg).lower()
         if "here are the property details i have" in text:
+            return True
+        if assistant_showed_create_property_summary(text):
             return True
         if "what's the name of the property" in text:
             return True
