@@ -92,6 +92,9 @@ export function InvestorInvestDialog({
       });
       queryClient.invalidateQueries({ queryKey: ["investor"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.properties });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("estatechain:ai-data-changed"));
+      }
       onOpenChange(false);
       setStep("idle");
     } catch (err: unknown) {

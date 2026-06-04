@@ -68,7 +68,9 @@ from backend.ai.investor_guards import (
     extract_last_human_utterance,
     format_invest_target_property_speak,
     format_investor_marketplace_catalog_speak,
+    format_investor_portfolio_speak,
     has_explicit_claim_intent,
+    has_investor_portfolio_intent,
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
     invest_tool_blocked_message,
@@ -1160,13 +1162,39 @@ register(ToolSpec(
 # ---------------------------------------------------------------------------
 
 
+def _refresh_investor_portfolio_from_chain(db: Any, user: AuthUser) -> None:
+    """Sync token_ownerships from on-chain balances so post-invest portfolio is accurate."""
+    from backend.api.routers.investments import _sync_wallet_holdings_from_chain
+
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id FROM users WHERE LOWER(wallet_address) = LOWER(%s)",
+            (user.wallet_address,),
+        )
+        row = cursor.fetchone()
+        user_id = int(row["id"]) if row else None
+        _sync_wallet_holdings_from_chain(
+            cursor,
+            wallet_address=user.wallet_address or "",
+            user_id=user_id,
+        )
+        db.commit()
+    finally:
+        cursor.close()
+
+
 async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
+    refresh_chain = _args.get("refresh_from_chain", True)
+    if refresh_chain:
+        _refresh_investor_portfolio_from_chain(db, user)
+
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute(
             f"""
             SELECT p.id AS property_id, p.name AS property_name, p.location,
-                   p.token_symbol, p.token_supply,
+                   p.token_symbol, p.token_supply, p.token_sale_price_eth,
                    o.token_amount AS token_amount_base
             FROM token_ownerships o
             {active_property_join("p.id = o.property_id")}
@@ -1195,13 +1223,67 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
             "token_amount": whole,
             "total_supply": total_supply_whole,
             "ownership_percentage": pct,
+            "token_sale_price_eth": r.get("token_sale_price_eth"),
         })
-    return ToolResult(ok=True, data={"count": len(holdings), "holdings": holdings})
+    return ToolResult(
+        ok=True,
+        data={
+            "count": len(holdings),
+            "holdings": holdings,
+            "refreshed_from_chain": bool(refresh_chain),
+        },
+    )
+
+
+async def try_server_investor_portfolio_overview(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return a live portfolio snapshot so the LLM cannot reuse stale pre-invest chat memory."""
+    if canonical_role(user.role) != "investor":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance or not has_investor_portfolio_intent(utterance):
+        return None
+
+    portfolio_result = await _get_my_portfolio(
+        {"refresh_from_chain": True},
+        user,
+        db,
+    )
+    if not portfolio_result.ok:
+        return portfolio_result
+
+    yield_result = await _get_my_yield_summary({}, user, db)
+    yield_data = yield_result.data if yield_result.ok else None
+    speak = format_investor_portfolio_speak(portfolio_result.data or {}, yield_data)
+
+    return ToolResult(
+        ok=True,
+        data={
+            "investor_portfolio_overview": True,
+            "speak_verbatim": True,
+            "speak_to_user": speak,
+            "holdings": (portfolio_result.data or {}).get("holdings") or [],
+            "count": (portfolio_result.data or {}).get("count") or 0,
+            "refreshed_from_chain": True,
+            "instruction": (
+                "Read speak_to_user verbatim. This is a live portfolio snapshot "
+                "refreshed from the database and on-chain token balances — do NOT "
+                "reuse earlier invest summaries or outdated holdings from chat memory."
+            ),
+        },
+        actions=[AgentAction(type="NAVIGATE", route="/investor/portfolio")],
+    )
 
 
 register(ToolSpec(
     name="get_my_portfolio",
-    description="Return the signed-in investor's token holdings across every property they own tokens of.",
+    description=(
+        "Return the signed-in investor's token holdings across every property they own "
+        "tokens of. Refreshes on-chain balances first so results include investments "
+        "completed in this session."
+    ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     roles=frozenset({"investor"}),
     handler=_get_my_portfolio,
