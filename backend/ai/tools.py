@@ -91,6 +91,12 @@ from backend.ai.owner_guards import (
     owner_investors_tool_payload,
     owner_rent_tool_payload,
 )
+from backend.ai.tenant_guards import (
+    extract_pay_rent_property_hint_from_utterance,
+    has_explicit_pay_rent_intent,
+    pay_rent_workflow_active,
+    wants_to_begin_pay_rent_workflow,
+)
 from backend.ai.schemas import AgentAction, ToolResult
 from backend.api._helpers import (
     append_sql_owned_property_filter,
@@ -441,6 +447,11 @@ def _merge_last_user_utterance(
                 accumulated[next_field] = hint
                 return accumulated
         return accumulated
+    if modal == _PAY_RENT_MODAL and next_field == "property_name":
+        hint = extract_pay_rent_property_hint_from_utterance(text)
+        if hint:
+            accumulated[next_field] = hint
+            return accumulated
     accumulated[next_field] = value
     return accumulated
 
@@ -827,6 +838,20 @@ def _validate_property_rentable(prop: dict) -> str | None:
     return None
 
 
+def _property_id_from_query(query: str) -> int | None:
+    """Numeric property id from '#4', '4', or 'pay rent #4' style text."""
+    q = (query or "").strip()
+    if not q:
+        return None
+    exact = re.fullmatch(r"#?(\d+)", q)
+    if exact:
+        return int(exact.group(1))
+    embedded = re.search(r"(?i)(?:property\s*)?#(\d+)\b", q)
+    if embedded:
+        return int(embedded.group(1))
+    return None
+
+
 def _resolve_rentable_property_from_items(
     items: list[dict], query: str
 ) -> tuple[dict | None, str | None]:
@@ -845,6 +870,13 @@ def _resolve_rentable_property_from_items(
             "No rent-enabled properties are available right now. "
             "Ask the owner to set monthly rent on a property first."
         )
+
+    target_id = _property_id_from_query(q)
+    if target_id is not None:
+        for prop in rentable:
+            if int(prop.get("id") or 0) == target_id:
+                return prop, None
+        return None, f"No rent-enabled property found with id #{target_id}."
 
     ranked = sorted(
         [(_property_match_score(q, p), p) for p in rentable],
@@ -1065,6 +1097,80 @@ async def try_server_invest_property_turn(
     return _enrich_invest_preflight_result(result, db, parsed=parsed)
 
 
+def _enrich_pay_rent_preflight_result(result: ToolResult) -> ToolResult:
+    """Keep pay-rent preflight on one property — do not let the LLM list every rental."""
+    data = dict(result.data or {})
+    data["pay_rent_property_target"] = True
+
+    if not result.ok:
+        message = (result.error or data.get("speak_to_user") or "").strip()
+        if message:
+            data["speak_to_user"] = message
+            data["speak_verbatim"] = True
+            data["instruction"] = (
+                "Read speak_to_user verbatim. Do NOT list all tenant properties by name."
+            )
+            return ToolResult(ok=True, data=data, actions=result.actions)
+        return result
+
+    if data.get("insufficient_funds"):
+        speak = str(data.get("speak_to_user") or "").strip()
+        if speak:
+            data["speak_to_user"] = speak
+            data["speak_verbatim"] = True
+        return ToolResult(ok=True, data=data, actions=result.actions)
+
+    if data.get("submitted"):
+        data.setdefault("speak_verbatim", True)
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+    if data.get("next_field") == "property_name" and not data.get("property_id"):
+        data.setdefault(
+            "instruction",
+            "Ask which property to pay rent on. If the user gave property #id, "
+            "pass that as property_name (e.g. '#4') — do not list every property by name.",
+        )
+    return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+
+async def try_server_tenant_pay_rent_turn(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Resolve explicit pay-rent orders server-side so #id is not confused with names."""
+    if canonical_role(user.role) != "tenant":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance:
+        return None
+
+    session = _get_workflow_session(_PAY_RENT_MODAL)
+    active = pay_rent_workflow_active(session)
+    if not active and not has_explicit_pay_rent_intent(utterance):
+        return None
+
+    hint = extract_pay_rent_property_hint_from_utterance(utterance)
+    fill_args: dict[str, Any] = {}
+    if hint:
+        fill_args["property_name"] = hint
+
+    if not fill_args and wants_to_begin_pay_rent_workflow(utterance) and not active:
+        started = await _start_pay_rent_property({}, user, db)
+        return _enrich_pay_rent_preflight_result(started)
+
+    if not fill_args and not active:
+        return None
+
+    if fill_args.get("property_name"):
+        fill_args["submit"] = True
+
+    if not active and fill_args.get("property_name"):
+        await _start_pay_rent_property({}, user, db)
+
+    result = await _fill_pay_rent_property(fill_args, user, db)
+    return _enrich_pay_rent_preflight_result(result)
+
+
 async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
     """Properties on the tenant Rentals dashboard — not the investor marketplace."""
     cursor = db.cursor(dictionary=True)
@@ -1162,6 +1268,18 @@ register(ToolSpec(
 # ---------------------------------------------------------------------------
 
 
+def _token_sale_price_eth_from_row(row: dict) -> str:
+    """Derive per-token sale price in ETH from properties.token_price_base (wei string)."""
+    if row.get("token_sale_price_eth") not in (None, ""):
+        return str(row.get("token_sale_price_eth"))
+    raw = row.get("token_price_base")
+    try:
+        price_wei = int(str(raw)) if raw not in (None, "", "0") else 0
+    except (TypeError, ValueError):
+        price_wei = 0
+    return _eth(price_wei) if price_wei else "0"
+
+
 def _refresh_investor_portfolio_from_chain(db: Any, user: AuthUser) -> None:
     """Sync token_ownerships from on-chain balances so post-invest portfolio is accurate."""
     from backend.api.routers.investments import _sync_wallet_holdings_from_chain
@@ -1194,7 +1312,7 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
         cursor.execute(
             f"""
             SELECT p.id AS property_id, p.name AS property_name, p.location,
-                   p.token_symbol, p.token_supply, p.token_sale_price_eth,
+                   p.token_symbol, p.token_supply, p.token_price_base,
                    o.token_amount AS token_amount_base
             FROM token_ownerships o
             {active_property_join("p.id = o.property_id")}
@@ -1223,7 +1341,7 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
             "token_amount": whole,
             "total_supply": total_supply_whole,
             "ownership_percentage": pct,
-            "token_sale_price_eth": r.get("token_sale_price_eth"),
+            "token_sale_price_eth": _token_sale_price_eth_from_row(r),
         })
     return ToolResult(
         ok=True,

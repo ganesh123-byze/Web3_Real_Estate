@@ -371,6 +371,9 @@ guided invest. The server syncs the rent contract before MetaMask opens.
 
 1. User wants to pay rent (with or without naming a property):
    → start_pay_rent_property, then fill_pay_rent_property on each answer.
+   When the user names a property by id (e.g. "pay rent #4" or "property #4"),
+   pass property_name as "#4" — the server resolves by numeric id. Do NOT ask
+   them to choose between property names when they already gave #id.
 2. Pass only NEW field values each turn; the server merges prior turns.
 3. When property_name is collected, fill_pay_rent_property auto-submits
    (or call with submit=true). The server checks wallet ETH against monthly
