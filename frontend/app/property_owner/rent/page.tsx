@@ -138,9 +138,19 @@ export default function RentManagementPage() {
             <CardDescription className="text-sm">Set monthly rent; blockchain sync is handled automatically.</CardDescription>
           </CardHeader>
           <CardContent className="px-0 pb-3">
-            <div className="[&>div]:max-h-[310px] [&>div]:overflow-auto [&>div]:scrollbar-thin">
-              <PropertiesRentTable properties={adminProperties} loading={properties.isLoading} />
-            </div>
+            {properties.isLoading || adminProperties.length > 0 ? (
+              <div className="[&>div]:max-h-[310px] [&>div]:overflow-auto [&>div]:scrollbar-thin">
+                <PropertiesRentTable properties={adminProperties} loading={properties.isLoading} />
+              </div>
+            ) : (
+              <div className="px-4 pb-1">
+                <EmptyState
+                  title="No properties yet"
+                  description="Create a property before setting monthly rent."
+                  className="min-h-[220px] border-0"
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -151,7 +161,30 @@ export default function RentManagementPage() {
               <CardDescription className="text-sm">From tenants on Sepolia.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              <div className={scrollTableViewportClass}>
+              {paymentsLoading ? (
+                <div className={scrollTableViewportClass}>
+              <Table className="min-w-[760px] text-sm">
+                <TableBody>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                      <TableRow key={i} className="hover:bg-transparent">
+                        <TableCell colSpan={4}>
+                          <Skeleton className="h-7 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+              </div>
+              ) : adminRentPayments.length === 0 ? (
+                <div className="px-4 pb-4">
+                  <EmptyState
+                    title="No rent payments yet"
+                    description="Tenant payments will appear here after confirmation."
+                    className="min-h-[220px] border-0"
+                  />
+                </div>
+              ) : (
+                <div className={scrollTableViewportClass}>
               <Table className="min-w-[760px] text-sm">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
@@ -162,22 +195,7 @@ export default function RentManagementPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paymentsLoading ? (
-                    Array.from({ length: 4 }).map((_, i) => (
-                      <TableRow key={i} className="hover:bg-transparent">
-                        <TableCell colSpan={4}>
-                          <Skeleton className="h-7 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : adminRentPayments.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="py-10">
-                        <EmptyState title="No rent payments yet" />
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    adminRentPayments.map((p) => {
+                  {adminRentPayments.map((p) => {
                       const tenantLabel = identityDisplayName(
                         {
                           wallet_address: p.tenant_wallet,
@@ -210,11 +228,11 @@ export default function RentManagementPage() {
                         </TableCell>
                       </TableRow>
                       );
-                    })
-                  )}
+                    })}
                 </TableBody>
               </Table>
               </div>
+              )}
             </CardContent>
           </Card>
 
@@ -224,7 +242,30 @@ export default function RentManagementPage() {
               <CardDescription className="text-sm">Splits broadcast to investor wallets.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              <div className={scrollTableViewportClass}>
+              {distributionsLoading ? (
+                <div className={scrollTableViewportClass}>
+              <Table className="min-w-[760px] text-sm">
+                <TableBody>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                      <TableRow key={i} className="hover:bg-transparent">
+                        <TableCell colSpan={4}>
+                          <Skeleton className="h-7 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+              </div>
+              ) : adminRentDistributions.length === 0 ? (
+                <div className="px-4 pb-4">
+                  <EmptyState
+                    title="No distributions yet"
+                    description="Investor distributions will appear here after rent is distributed."
+                    className="min-h-[220px] border-0"
+                  />
+                </div>
+              ) : (
+                <div className={scrollTableViewportClass}>
               <Table className="min-w-[760px] text-sm">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
@@ -235,22 +276,7 @@ export default function RentManagementPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {distributionsLoading ? (
-                    Array.from({ length: 4 }).map((_, i) => (
-                      <TableRow key={i} className="hover:bg-transparent">
-                        <TableCell colSpan={4}>
-                          <Skeleton className="h-7 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : adminRentDistributions.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="py-10">
-                        <EmptyState title="No distributions yet" />
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    adminRentDistributions.map((d) => (
+                  {adminRentDistributions.map((d) => (
                       <TableRow key={d.id ?? d.distribution_tx_hash}>
                         <TableCell className={tableCellClass}>
                           {d.property_name ?? `#${d.property_id}`}
@@ -265,11 +291,11 @@ export default function RentManagementPage() {
                           {formatDateTime(d.distributed_at)}
                         </TableCell>
                       </TableRow>
-                    ))
-                  )}
+                    ))}
                 </TableBody>
               </Table>
               </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -285,6 +311,16 @@ function PropertiesRentTable({
   properties: Property[];
   loading?: boolean;
 }) {
+  if (!loading && properties.length === 0) {
+    return (
+      <EmptyState
+        title="No properties yet"
+        description="Create a property before setting monthly rent."
+        className="min-h-[220px] border-0"
+      />
+    );
+  }
+
   return (
     <Table className="min-w-[760px] text-sm">
       <TableHeader>
@@ -304,12 +340,6 @@ function PropertiesRentTable({
               </TableCell>
             </TableRow>
           ))
-        ) : properties.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={4} className="py-10">
-              <EmptyState title="No properties" />
-            </TableCell>
-          </TableRow>
         ) : (
           properties.map((p) => (
             <PropertyRentRow key={p.id} property={p} />

@@ -5,6 +5,7 @@ import { Building2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { EmptyState } from "@/components/common/empty";
 import { cn, formatNumber, shortAddress } from "@/lib/utils";
 import type { OwnerInvestor, Property, Transaction } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
@@ -37,6 +38,27 @@ export function PropertiesOverviewTable({
     );
   }, [properties, search]);
 
+  if (!loading && properties.length === 0) {
+    return (
+      <div className="h-full overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-none backdrop-blur-2xl">
+        <div className="flex items-center gap-2 border-b border-border/60 p-3">
+          <div className="grid h-8 w-8 place-items-center rounded-xl bg-primary/10 text-primary">
+            <Building2 className="h-4 w-4" />
+          </div>
+          <h3 className="text-base font-semibold leading-none tracking-tight">Properties Overview</h3>
+        </div>
+        <div className="p-4">
+          <EmptyState
+            title="No properties yet"
+            description="Create your first property listing to start tracking token supply and investors."
+            icon={Building2}
+            className="min-h-[260px] border-0"
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-none backdrop-blur-2xl transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border/60 p-3 md:flex-row md:items-center md:justify-between">
@@ -63,6 +85,16 @@ export function PropertiesOverviewTable({
         </div>
       </div>
 
+      {!loading && filtered.length === 0 ? (
+        <div className="p-4">
+          <EmptyState
+            title="No properties"
+            description="No managed properties match your search."
+            icon={Building2}
+            className="min-h-[240px] border-0"
+          />
+        </div>
+      ) : (
       <div className="max-h-[300px] overflow-auto scrollbar-thin">
         <div className="min-w-[720px]">
         <div className="sticky top-0 z-10 grid grid-cols-[26px_minmax(0,1.5fr)_96px_minmax(88px,0.7fr)_94px_58px] gap-2 border-b border-border bg-card px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -142,6 +174,7 @@ export function PropertiesOverviewTable({
         </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

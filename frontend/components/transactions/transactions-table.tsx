@@ -144,6 +144,18 @@ export function TransactionsTable({
   const safePage = Math.min(page, totalPages);
   const visible = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
+  if (!loading && transactions.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-card p-4">
+        <EmptyState
+          title="No transactions yet"
+          description="Your activity will appear here after the first confirmed transaction."
+          className="min-h-[260px] border-0"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-border bg-card">
       <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -184,6 +196,16 @@ export function TransactionsTable({
         </span>
       </div>
 
+      {!loading && visible.length === 0 ? (
+        <div className="p-4">
+          <EmptyState
+            title="No transactions"
+            description="No activity matches the current filters."
+            className="min-h-[240px] border-0"
+          />
+        </div>
+      ) : (
+        <>
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
@@ -205,12 +227,6 @@ export function TransactionsTable({
                 </TableCell>
               </TableRow>
             ))
-          ) : visible.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={7} className="py-10">
-                <EmptyState title="No transactions" description="Activity will appear here as it gets indexed." />
-              </TableCell>
-            </TableRow>
           ) : (
             visible.map((t) => {
               const meta = TYPE_META[t.type] || TYPE_META.default;
@@ -287,6 +303,8 @@ export function TransactionsTable({
           Page {safePage} / {totalPages}
         </span>
       </div>
+        </>
+      )}
 
       <TransactionDialog tx={active} onClose={() => setActive(null)} />
     </div>

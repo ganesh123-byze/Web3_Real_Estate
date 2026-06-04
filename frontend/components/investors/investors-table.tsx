@@ -59,6 +59,18 @@ export function InvestorsTable({
   const safePage = Math.min(page, totalPages);
   const visible = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
+  if (!loading && investors.length === 0) {
+    return (
+      <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] p-4 shadow-none backdrop-blur-2xl">
+        <EmptyState
+          title="No investors yet"
+          description="Investors appear here after they purchase tokens in your listed properties."
+          className="min-h-[260px] border-0"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/[0.78] shadow-none backdrop-blur-2xl transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border/60 p-4 md:flex-row md:items-center md:justify-between">
@@ -79,6 +91,16 @@ export function InvestorsTable({
         </span>
       </div>
 
+      {!loading && visible.length === 0 ? (
+        <div className="p-4">
+          <EmptyState
+            title="No investors"
+            description="No investors match the current search."
+            className="min-h-[240px] border-0"
+          />
+        </div>
+      ) : (
+        <>
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
@@ -99,15 +121,6 @@ export function InvestorsTable({
                 </TableCell>
               </TableRow>
             ))
-          ) : visible.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={6} className="py-10">
-                <EmptyState
-                  title="No investors yet"
-                  description="Investors appear here after they purchase tokens in your listed properties."
-                />
-              </TableCell>
-            </TableRow>
           ) : (
             visible.map((it) => {
               const displayName = identityDisplayName(it, it.wallet_address);
@@ -182,6 +195,8 @@ export function InvestorsTable({
           Page {safePage} / {totalPages}
         </span>
       </div>
+        </>
+      )}
 
       <InvestorDetailsDialog row={active} onClose={() => setActive(null)} />
     </div>

@@ -27,7 +27,7 @@ export function InvestorSidebar({ mobile = false, onNavigate }: { mobile?: boole
     >
       <div className="px-4 pb-4 pt-5">
         <Link href="/investor" onClick={onNavigate} className="flex items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#1e3a8a] text-sm font-bold text-white shadow-sm dark:bg-[#2563eb]">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary via-chart-3 to-chart-2 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20">
             E
           </div>
           <div className="min-w-0 flex flex-col leading-tight">
