@@ -53,6 +53,7 @@ from backend.ai.tools import (
     try_server_delete_property_continuation,
     try_server_edit_property_continuation,
     try_server_investor_marketplace_browse,
+    try_server_invest_property_turn,
     try_server_owner_analytics_overview,
     try_server_owner_investors_overview,
     try_server_owner_rent_overview,
@@ -449,6 +450,8 @@ async def run_agent(
         preflight = None
         if role == "investor":
             preflight = await try_server_investor_marketplace_browse(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_invest_property_turn(user, db)
         elif role == "property_owner":
             preflight = await try_server_owner_analytics_overview(user, db)
         if preflight is None and role == "property_owner":
@@ -619,6 +622,8 @@ async def stream_agent(
         preflight = None
         if role == "investor":
             preflight = await try_server_investor_marketplace_browse(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_invest_property_turn(user, db)
         elif role == "property_owner":
             preflight = await try_server_owner_analytics_overview(user, db)
         if preflight is None and role == "property_owner":
