@@ -65,12 +65,14 @@ from backend.ai.copilot_property_scope import (
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_last_human_utterance,
+    format_invest_target_property_speak,
     format_investor_marketplace_catalog_speak,
     has_explicit_claim_intent,
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
     invest_tool_blocked_message,
     invest_workflow_active,
+    parse_invest_order_from_utterance,
     wants_to_begin_invest_workflow,
 )
 from backend.ai.owner_guards import (
@@ -881,6 +883,27 @@ async def _list_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResu
     if rent_only:
         items = [p for p in items if p["rent_enabled"]]
     if canonical_role(user.role) == "investor":
+        latest = _latest_human_utterance().strip()
+        if latest and has_explicit_invest_intent(latest) and not has_marketplace_browse_intent(
+            latest
+        ):
+            return ToolResult(
+                ok=True,
+                data={
+                    "invest_property_target": True,
+                    "speak_verbatim": True,
+                    "speak_to_user": (
+                        "I'll handle that as an investment order for the property you named — "
+                        "not a full marketplace listing. Say the property and how many tokens "
+                        "you want to buy (for example, invest 1 token in Gold Plaza)."
+                    ),
+                    "instruction": (
+                        "Do NOT read out every marketplace property. Use fill_invest_property "
+                        "with the property_name and token_amount from the user's invest order."
+                    ),
+                },
+                actions=[],
+            )
         payload = _investor_marketplace_catalog_data(items)
         actions = [AgentAction(type="NAVIGATE", route="/investor/marketplace")]
         return ToolResult(ok=True, data=payload, actions=actions)
@@ -902,6 +925,85 @@ async def try_server_investor_marketplace_browse(
         return None
 
     return await _list_properties_tool({}, user, db)
+
+
+def _enrich_invest_preflight_result(
+    result: ToolResult,
+    db: Any,
+    *,
+    parsed: dict[str, str],
+) -> ToolResult:
+    """Ensure invest preflight speaks about one property, not the full catalog."""
+    data = dict(result.data or {})
+    data["invest_property_target"] = True
+
+    if not result.ok:
+        message = (result.error or data.get("speak_to_user") or "").strip()
+        if message:
+            data["speak_to_user"] = message
+            data["speak_verbatim"] = True
+            return ToolResult(ok=True, data=data, actions=result.actions)
+        return result
+
+    if data.get("submitted") or data.get("insufficient_funds"):
+        data.setdefault("speak_verbatim", True)
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+    property_id = data.get("property_id")
+    next_field = data.get("next_field")
+    if property_id and next_field == "token_amount":
+        row = _load_invest_property_row(db, int(property_id)) if db is not None else None
+        if row:
+            amount_hint = parsed.get("token_amount") or data.get("token_amount")
+            summary = format_invest_target_property_speak(row, token_amount=amount_hint)
+            data["speak_to_user"] = (
+                f"{summary}\n\nHow many tokens would you like to buy?"
+            )
+            data["speak_verbatim"] = True
+            data["instruction"] = (
+                "Read speak_to_user verbatim. This is the single property the investor "
+                "named — do NOT list other marketplace properties."
+            )
+    elif property_id and parsed.get("property_name") and parsed.get("token_amount"):
+        row = _load_invest_property_row(db, int(property_id)) if db is not None else None
+        if row and not data.get("speak_to_user"):
+            data["speak_to_user"] = format_invest_target_property_speak(
+                row,
+                token_amount=parsed.get("token_amount"),
+            )
+
+    return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+
+async def try_server_invest_property_turn(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Resolve explicit invest orders server-side so the LLM cannot dump the full catalog."""
+    if canonical_role(user.role) != "investor":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance or has_marketplace_browse_intent(utterance):
+        return None
+
+    session = _get_workflow_session(_INVEST_MODAL)
+    active = invest_workflow_active(session)
+    if not active and not has_explicit_invest_intent(utterance):
+        return None
+
+    parsed = parse_invest_order_from_utterance(utterance)
+    fill_args: dict[str, Any] = {
+        k: str(v) for k, v in parsed.items() if v not in (None, "")
+    }
+
+    if not fill_args and wants_to_begin_invest_workflow(utterance) and not active:
+        return await _start_invest_property({}, user, db)
+
+    if fill_args.get("property_name") and fill_args.get("token_amount"):
+        fill_args["submit"] = True
+
+    result = await _fill_invest_property(fill_args, user, db)
+    return _enrich_invest_preflight_result(result, db, parsed=parsed)
 
 
 async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResult:
@@ -5103,6 +5205,12 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     tool_name = "fill_invest_property"
     accumulated = _recover_form_state(modal, tool_name, _INVEST_FIELDS)
 
+    utterance = extract_last_human_utterance(_current_history())
+    parsed_order = parse_invest_order_from_utterance(utterance)
+    for field in _INVEST_FIELDS:
+        if parsed_order.get(field) and not accumulated.get(field):
+            accumulated[field] = str(parsed_order[field])
+
     for field in _INVEST_FIELDS:
         value = args.get(field)
         if value is None or value == "":
@@ -5128,6 +5236,13 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
                     "missing": missing,
                     "next_field": "property_name",
                     "submitted": False,
+                    "invest_property_target": True,
+                    "speak_to_user": err,
+                    "speak_verbatim": True,
+                    "instruction": (
+                        "Read speak_to_user verbatim. Do NOT list every marketplace property — "
+                        "only help the user confirm the property they named."
+                    ),
                 },
             )
         resolved_prop = prop
@@ -5264,19 +5379,27 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
             "property_id": property_id,
         },
     )
-    return ToolResult(
-        ok=True,
-        data={
-            "filled": accumulated,
-            "missing": missing,
-            "submitted": False,
-            "next_field": next_field,
-            "property_id": property_id,
-            "property_name": resolved_name,
-            "instruction": instruction,
-        },
-        actions=[],
-    )
+    out_data: dict[str, Any] = {
+        "filled": accumulated,
+        "missing": missing,
+        "submitted": False,
+        "next_field": next_field,
+        "property_id": property_id,
+        "property_name": resolved_name,
+        "instruction": instruction,
+        "invest_property_target": True,
+    }
+    if property_id and resolved_prop and next_field == "token_amount":
+        out_data["speak_to_user"] = (
+            f"{format_invest_target_property_speak(resolved_prop)}\n\n"
+            "How many tokens would you like to buy?"
+        )
+        out_data["speak_verbatim"] = True
+        out_data["instruction"] = (
+            "Read speak_to_user verbatim. Show only this property — do NOT list the "
+            "full marketplace."
+        )
+    return ToolResult(ok=True, data=out_data, actions=[])
 
 
 register(ToolSpec(

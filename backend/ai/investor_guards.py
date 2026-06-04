@@ -273,6 +273,124 @@ def _format_token_count(raw: Any) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+_INVEST_ORDER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)(?:please\s+)?(?:buy|invest)\s+(?P<amount>\d+)\s*(?:tokens?)?\s*(?:in|into|of)\s+"
+        r"(?P<property>.+?)(?:\s+property)?\s*\.?$"
+    ),
+    re.compile(
+        r"(?i)(?:buy|invest)\s+(?:in|into)\s+(?P<property>.+?)\s+(?:for\s+)?(?P<amount>\d+)\s*tokens?"
+    ),
+    re.compile(
+        r"(?i)^(?P<amount>\d+)\s*tokens?\s*(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
+    ),
+    re.compile(
+        r"(?i)(?:buy|invest)\s+(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
+    ),
+)
+
+
+def _clean_invest_property_name(raw: str) -> str:
+    text = _normalize_text(raw)
+    text = re.sub(r"(?i)^(?:the\s+)?(?:property\s+)?", "", text).strip()
+    text = re.sub(r"(?i)\s+property\s*$", "", text).strip()
+    return text
+
+
+def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
+    """Extract property_name and/or token_amount from a buy/invest voice or chat line."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return {}
+
+    for pattern in _INVEST_ORDER_PATTERNS:
+        match = pattern.search(utterance)
+        if not match:
+            continue
+        groups = match.groupdict()
+        out: dict[str, str] = {}
+        amount = groups.get("amount")
+        if amount and str(amount).isdigit() and int(amount) > 0:
+            out["token_amount"] = str(int(amount))
+        prop = _clean_invest_property_name(groups.get("property") or "")
+        if prop:
+            out["property_name"] = prop
+        if out:
+            return out
+
+    amount_only = re.fullmatch(r"(?i)(\d+)\s*tokens?", utterance)
+    if amount_only:
+        return {"token_amount": str(int(amount_only.group(1)))}
+
+    return {}
+
+
+def _format_eth_amount(raw: Any) -> str:
+    text = str(raw or "0").strip()
+    if not text:
+        return "0"
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return text
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def format_invest_target_property_speak(
+    prop: dict[str, Any],
+    *,
+    token_amount: int | str | None = None,
+) -> str:
+    """Single-property summary for an invest order — not the full marketplace catalog."""
+    name = str(prop.get("name") or f"Property {prop.get('id')}")
+    pid = prop.get("id")
+    location = str(prop.get("location") or "").strip()
+    symbol = str(prop.get("token_symbol") or "").strip()
+    available = _format_token_count(prop.get("tokens_available"))
+    price = _format_eth_amount(prop.get("token_sale_price_eth"))
+    sold = str(prop.get("sold_percentage") or "0").strip()
+    rent = prop.get("monthly_rent_eth")
+
+    lines = [
+        f"Investment target: {name} (#{pid})",
+    ]
+    detail_bits: list[str] = []
+    if location:
+        detail_bits.append(location)
+    if symbol:
+        detail_bits.append(symbol)
+    detail_bits.append(f"{sold}% sold")
+    detail_bits.append(f"{available} tokens available")
+    if price and price not in ("0", "0.0"):
+        detail_bits.append(f"{price} ETH per token")
+    if rent not in (None, "", "0", "0.0"):
+        detail_bits.append(f"monthly rent {_format_eth_amount(rent)} ETH")
+    lines.append(" — ".join(detail_bits))
+
+    if token_amount is not None:
+        try:
+            amount_int = int(token_amount)
+        except (TypeError, ValueError):
+            amount_int = None
+        if amount_int and amount_int > 0 and price and price not in ("0", "0.0"):
+            try:
+                total = float(price) * amount_int
+                lines.append(
+                    f"Order: {amount_int} token{'s' if amount_int != 1 else ''} "
+                    f"(about {_format_eth_amount(total)} ETH plus gas)."
+                )
+            except (TypeError, ValueError):
+                lines.append(
+                    f"Order: {amount_int} token{'s' if amount_int != 1 else ''}."
+                )
+        elif amount_int and amount_int > 0:
+            lines.append(f"Order: {amount_int} token{'s' if amount_int != 1 else ''}.")
+
+    return "\n".join(lines)
+
+
 def format_investor_marketplace_catalog_speak(
     investable: list[dict[str, Any]],
     *,
