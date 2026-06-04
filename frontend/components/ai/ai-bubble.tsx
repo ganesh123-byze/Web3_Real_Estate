@@ -335,6 +335,78 @@ function isLongResponseValue(value: string) {
   return value.length > 56 || value.includes("?") || extractQuotedItems(value).length > 1;
 }
 
+function highlightRangesForLine(line: string, highlightWholeLine: boolean) {
+  const ranges: Array<{ start: number; end: number }> = [];
+  if (highlightWholeLine) {
+    const start = line.search(/\S/);
+    const end = line.trimEnd().length;
+    if (start >= 0 && end > start) ranges.push({ start, end });
+  }
+
+  const patterns = [
+    /\bproperty details for\s+([A-Za-z0-9][A-Za-z0-9&'’., -]{0,80}?)(?=\s+(?:were|was)\b)/gi,
+    /\bproperty\s+([A-Za-z0-9][A-Za-z0-9&'’., -]{0,80}?)(?=\s+(?:was successfully created|was created|is on|has been)\b)/gi,
+    /^(?:[-•]\s*)?(?:name|property name|property):\s*([^\n.]+)/gi,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of line.matchAll(pattern)) {
+      const value = match[1]?.trim();
+      if (!value || /^details$/i.test(value)) continue;
+      const startInMatch = match[0].indexOf(match[1]);
+      if (startInMatch < 0 || match.index === undefined) continue;
+      const start = match.index + startInMatch;
+      ranges.push({ start, end: start + match[1].length });
+    }
+  }
+
+  return ranges
+    .sort((a, b) => a.start - b.start || b.end - a.end)
+    .reduce<Array<{ start: number; end: number }>>((merged, range) => {
+      const previous = merged[merged.length - 1];
+      if (!previous || range.start > previous.end) {
+        merged.push(range);
+      } else {
+        previous.end = Math.max(previous.end, range.end);
+      }
+      return merged;
+    }, []);
+}
+
+function HighlightedAssistantText({ text }: { text: string }) {
+  const lines = text.split("\n");
+
+  return (
+    <>
+      {lines.map((line, lineIndex) => {
+        const previousLine = lines[lineIndex - 1] ?? "";
+        const highlightWholeLine = /\b\d+\s+listings?:\s*$/i.test(previousLine.trim());
+        const ranges = highlightRangesForLine(line, highlightWholeLine);
+        let cursor = 0;
+        const parts = ranges.flatMap((range, rangeIndex) => {
+          const before = line.slice(cursor, range.start);
+          const highlighted = line.slice(range.start, range.end);
+          cursor = range.end;
+          return [
+            before,
+            <strong key={`${lineIndex}-${rangeIndex}`} className="font-bold text-slate-950 dark:text-white">
+              {highlighted}
+            </strong>,
+          ];
+        });
+
+        return (
+          <span key={`${line}-${lineIndex}`}>
+            {parts}
+            {line.slice(cursor)}
+            {lineIndex < lines.length - 1 ? <br /> : null}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 function splitSummaryCardContent(content: string): { title: string; body: string } {
   const trimmed = content.trim();
   const lines = trimmed.split("\n");
@@ -359,7 +431,7 @@ function YieldSummaryCard({ content }: { content: string }) {
           <div key={metric.label} className="flex min-w-0 items-baseline justify-between gap-3 leading-snug">
             <span className="min-w-0 break-words text-[#474553] dark:text-slate-400">{metric.label}:</span>
             <span className={cn("min-w-0 break-words text-right font-bold", getMetricTone(metric.value))}>
-              {metric.value}
+              <HighlightedAssistantText text={metric.value} />
             </span>
           </div>
         ))}
@@ -509,7 +581,11 @@ function AssistantMessageContent({ content }: { content: string }) {
   );
 
   if (!hasStructuredRows) {
-    return <span className="whitespace-pre-wrap">{displayContent}</span>;
+    return (
+      <span className="whitespace-pre-wrap">
+        <HighlightedAssistantText text={displayContent} />
+      </span>
+    );
   }
 
   return (
@@ -542,7 +618,7 @@ function AssistantMessageContent({ content }: { content: string }) {
                         key={`${row}-${rowIndex}`}
                         className="min-w-0 overflow-hidden rounded-[9px] bg-[#fff9f1] px-3 py-1.5 text-[14px] leading-snug text-slate-700 [overflow-wrap:anywhere] dark:bg-[#11172b] dark:text-slate-300"
                       >
-                        {row}
+                        <HighlightedAssistantText text={row} />
                       </div>
                     );
                   }
@@ -576,7 +652,7 @@ function AssistantMessageContent({ content }: { content: string }) {
                             getMetricTone(value),
                           )}
                         >
-                          {value}
+                          <HighlightedAssistantText text={value} />
                         </span>
                       )}
                     </div>
