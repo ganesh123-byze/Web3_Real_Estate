@@ -329,15 +329,27 @@ async function submitCreatePropertyFromChat(
     return false;
   }
 
-  const payload = buildCreatePropertyApiPayload({
-    name: String(values.name),
-    location: String(values.location),
-    total_value: String(values.total_value),
-    token_supply: String(values.token_supply),
-    token_symbol: String(values.token_symbol),
-    monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth) : undefined,
-    images: [],
-  });
+  let payload;
+  try {
+    payload = buildCreatePropertyApiPayload({
+      name: String(values.name),
+      location: String(values.location),
+      total_value: String(values.total_value),
+      token_supply: String(values.token_supply),
+      token_symbol: String(values.token_symbol),
+      monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth) : undefined,
+      images: [],
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Invalid property details.";
+    emitCompletion({
+      modal: CREATE_PROPERTY_MODAL,
+      status: "error",
+      message,
+    });
+    focusChatInput();
+    return false;
+  }
   workflowFormValues.set(CREATE_PROPERTY_MODAL, {
     ...stored,
     name: payload.name,

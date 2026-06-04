@@ -44,3 +44,14 @@ def test_required_decimal_blank_rejected():
             token_supply="100",
             token_symbol="TVL",
         )
+
+
+def test_required_decimal_accepts_comma_grouping():
+    payload = PropertyCreate(
+        name="Test",
+        location="Austin",
+        total_value="1,000.5",
+        token_supply="100",
+        token_symbol="TVL",
+    )
+    assert payload.total_value == 1000.5

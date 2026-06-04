@@ -177,13 +177,14 @@ export function CreatePropertyDialog() {
       return el?.value ?? "";
     };
     const pick = (k: Exclude<keyof FormState, "images">): string => {
-      // String() because numeric inputs deliver everything as strings
-      // anyway, and JSON.stringify on the payload tolerates both.
-      const fromCache = cache[k];
-      if (fromCache !== undefined && fromCache !== "") return String(fromCache);
+      // Manual submit: live inputs beat stale copilot cache from earlier sessions.
       const fromDom = readDom(k);
       if (fromDom) return fromDom;
-      return String(fallback[k] ?? "");
+      const fromForm = String(fallback[k] ?? "");
+      if (fromForm.trim()) return fromForm;
+      const fromCache = cache[k];
+      if (fromCache !== undefined && fromCache !== "") return String(fromCache);
+      return fromForm;
     };
     return {
       name: pick("name"),
@@ -213,7 +214,15 @@ export function CreatePropertyDialog() {
     // See `resolveSubmitValues` for why the cache wins (it's untouched
     // by render races and is exactly what the agent intended to submit).
     const values = resolveSubmitValues(stateValues);
-    const apiPayload = buildCreatePropertyApiPayload(values);
+    let apiPayload;
+    try {
+      apiPayload = buildCreatePropertyApiPayload(values);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : "Invalid property details.";
+      toast.error(errMsg);
+      setStepEvents((prev) => (prev.includes("error") ? prev : [...prev, "error"]));
+      return;
+    }
     logCreatePropertyPayload("dialog", {
       name: apiPayload.name,
       location: apiPayload.location,

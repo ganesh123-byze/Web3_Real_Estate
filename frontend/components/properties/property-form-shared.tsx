@@ -37,21 +37,97 @@ export type CreatePropertyFormValues = {
   images?: string[];
 };
 
+/** Matches backend MAX_PROPERTY_IMAGE_CHARS (base64 + data-URL prefix slack). */
+export const MAX_PROPERTY_IMAGE_ENCODED_CHARS = 2_800_000;
+
+export function normalizeDecimalField(value: string | undefined): string {
+  return String(value ?? "").trim().replace(/,/g, "");
+}
+
+function isPositiveDecimal(value: string): boolean {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+
+function isNonNegativeDecimal(value: string): boolean {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0;
+}
+
+export type CreatePropertyValidationResult =
+  | { ok: true; values: CreatePropertyFormValues }
+  | { ok: false; message: string };
+
+/** Client-side checks so invalid payloads never hit POST /properties/stream. */
+export function validateCreatePropertyFormValues(
+  values: CreatePropertyFormValues,
+): CreatePropertyValidationResult {
+  const name = String(values.name ?? "").trim();
+  const location = String(values.location ?? "").trim();
+  const total_value = normalizeDecimalField(values.total_value);
+  const token_supply = normalizeDecimalField(values.token_supply);
+  const token_symbol = String(values.token_symbol ?? "").trim();
+  const monthly_rent_eth = normalizeDecimalField(values.monthly_rent_eth);
+  const images = values.images ?? [];
+
+  if (!name) return { ok: false, message: "Property name is required." };
+  if (!location) return { ok: false, message: "Location is required." };
+  if (!isPositiveDecimal(total_value)) {
+    return { ok: false, message: "Total value must be a positive number." };
+  }
+  if (!isPositiveDecimal(token_supply)) {
+    return { ok: false, message: "Token supply must be a positive whole number." };
+  }
+  if (!token_symbol) return { ok: false, message: "Token symbol is required." };
+  if (token_symbol.length > 12) {
+    return { ok: false, message: "Token symbol must be 12 characters or fewer." };
+  }
+  if (monthly_rent_eth && !isNonNegativeDecimal(monthly_rent_eth)) {
+    return { ok: false, message: "Monthly rent must be a valid number." };
+  }
+  for (let i = 0; i < images.length; i += 1) {
+    if (images[i].length > MAX_PROPERTY_IMAGE_ENCODED_CHARS) {
+      return {
+        ok: false,
+        message: `Image ${i + 1} is too large. Use images under 1.5 MB each.`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    values: {
+      name,
+      location,
+      total_value,
+      token_supply,
+      token_symbol,
+      ...(monthly_rent_eth ? { monthly_rent_eth } : {}),
+      images,
+    },
+  };
+}
+
 /** JSON body for POST /properties and /properties/stream (no empty-string decimals). */
 export function buildCreatePropertyApiPayload(
   values: CreatePropertyFormValues,
 ): CreatePropertyPayload {
-  const total = String(values.total_value ?? "").trim();
-  const supply = String(values.token_supply ?? "").trim();
-  const rent = String(values.monthly_rent_eth ?? "").trim();
+  const validated = validateCreatePropertyFormValues(values);
+  if (!validated.ok) {
+    throw new Error(validated.message);
+  }
+  const normalized = validated.values;
+  const total = normalized.total_value;
+  const supply = normalized.token_supply;
+  const rent = normalized.monthly_rent_eth ?? "";
   const sale = tokenSalePriceEthForPayload(total, supply);
   const payload: CreatePropertyPayload = {
-    name: String(values.name ?? "").trim(),
-    location: String(values.location ?? "").trim(),
+    name: normalized.name,
+    location: normalized.location,
     total_value: total,
     token_supply: supply,
-    token_symbol: String(values.token_symbol ?? "").trim(),
-    images: values.images ?? [],
+    token_symbol: normalized.token_symbol,
+    images: normalized.images ?? [],
   };
   if (sale) {
     payload.token_sale_price_eth = sale;
