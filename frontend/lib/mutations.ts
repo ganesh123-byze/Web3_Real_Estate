@@ -17,7 +17,7 @@ export type CreatePropertyPayload = {
   total_value: string | number;
   token_supply: string | number;
   token_symbol: string;
-  token_sale_price_eth: string | number;
+  token_sale_price_eth?: string | number;
   monthly_rent_eth?: string | number | null;
   images?: string[];
 };

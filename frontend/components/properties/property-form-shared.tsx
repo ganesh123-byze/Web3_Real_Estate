@@ -1,6 +1,7 @@
 "use client";
 
 import { Label } from "@/components/ui/label";
+import type { CreatePropertyPayload } from "@/lib/mutations";
 import { cn, formatEth } from "@/lib/utils";
 
 /** Per-token sale price in ETH from total property value (ETH) ÷ token supply. */
@@ -24,6 +25,41 @@ export function tokenSalePriceEthForPayload(
   return formatTokenPriceEth(
     calculateTokenPriceEth(String(totalValueEth ?? ""), String(tokenSupply ?? "")),
   );
+}
+
+export type CreatePropertyFormValues = {
+  name: string;
+  location: string;
+  total_value: string;
+  token_supply: string;
+  token_symbol: string;
+  monthly_rent_eth?: string;
+  images?: string[];
+};
+
+/** JSON body for POST /properties and /properties/stream (no empty-string decimals). */
+export function buildCreatePropertyApiPayload(
+  values: CreatePropertyFormValues,
+): CreatePropertyPayload {
+  const total = String(values.total_value ?? "").trim();
+  const supply = String(values.token_supply ?? "").trim();
+  const rent = String(values.monthly_rent_eth ?? "").trim();
+  const sale = tokenSalePriceEthForPayload(total, supply);
+  const payload: CreatePropertyPayload = {
+    name: String(values.name ?? "").trim(),
+    location: String(values.location ?? "").trim(),
+    total_value: total,
+    token_supply: supply,
+    token_symbol: String(values.token_symbol ?? "").trim(),
+    images: values.images ?? [],
+  };
+  if (sale) {
+    payload.token_sale_price_eth = sale;
+  }
+  if (rent) {
+    payload.monthly_rent_eth = rent;
+  }
+  return payload;
 }
 
 export const propertyDialogContentClass =
