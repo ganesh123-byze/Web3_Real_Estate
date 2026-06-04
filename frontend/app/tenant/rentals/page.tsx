@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Building2, CheckCircle2, CreditCard, MapPin, Receipt, Search, ShieldCheck, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
+import { formatWalletTransactionError } from "@/lib/wallet-errors";
 import { queryKeys, useTenantActiveRentals, useTenantProperties } from "@/lib/queries";
 import { AdminTopbar } from "@/components/layout/topbar";
 import { Badge } from "@/components/ui/badge";
@@ -335,9 +336,9 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
       queryClient.invalidateQueries({ queryKey: ["investor"] });
       onOpenChange(false);
       setStep("idle");
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearPendingWorkflowActions("PAY_RENT");
-      const errMsg = err?.message || "Rent payment failed.";
+      const errMsg = formatWalletTransactionError(err, "Rent payment failed. Please try again.");
       toast.error(errMsg);
       emitWorkflowCompletion({ modal: "PAY_RENT", status: "error", message: errMsg });
     } finally {
