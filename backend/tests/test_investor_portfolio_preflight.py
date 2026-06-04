@@ -8,6 +8,7 @@ from backend.ai.investor_guards import (
     format_investor_portfolio_speak,
     has_investor_portfolio_intent,
 )
+from backend.ai.tools import _token_sale_price_eth_from_row
 from backend.ai.tools import (
     reset_current_messages,
     reset_current_thread_id,
@@ -27,6 +28,11 @@ def _investor() -> AuthUser:
         kyc_status="verified",
         active=True,
     )
+
+
+def test_token_sale_price_eth_from_token_price_base_wei():
+    wei = str(10**17)
+    assert _token_sale_price_eth_from_row({"token_price_base": wei}) == "0.1000"
 
 
 def test_has_investor_portfolio_intent():
@@ -76,7 +82,7 @@ def test_preflight_portfolio_refreshes_chain_and_returns_verbatim():
             "location": "Paris",
             "token_symbol": "ECR",
             "token_supply": 500 * 10**18,
-            "token_sale_price_eth": "0.09",
+            "token_price_base": str(int(0.09 * 10**18)),
             "token_amount_base": 1 * 10**18,
         },
     ]
