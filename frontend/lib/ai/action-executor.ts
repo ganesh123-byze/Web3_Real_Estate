@@ -17,6 +17,7 @@ import { queryKeys } from "@/lib/queries";
 import {
   buildCreatePropertyApiPayload,
   tokenSalePriceEthForPayload,
+  validateAndBuildCreatePropertyApiPayload,
 } from "@/components/properties/property-form-shared";
 import type { Property } from "@/lib/types";
 
@@ -329,27 +330,25 @@ async function submitCreatePropertyFromChat(
     return false;
   }
 
-  let payload;
-  try {
-    payload = buildCreatePropertyApiPayload({
-      name: String(values.name),
-      location: String(values.location),
-      total_value: String(values.total_value),
-      token_supply: String(values.token_supply),
-      token_symbol: String(values.token_symbol),
-      monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth) : undefined,
-      images: [],
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Invalid property details.";
+  const built = validateAndBuildCreatePropertyApiPayload({
+    name: String(values.name),
+    location: String(values.location),
+    total_value: String(values.total_value),
+    token_supply: String(values.token_supply),
+    token_symbol: String(values.token_symbol),
+    monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth) : undefined,
+    images: [],
+  });
+  if (!built.ok) {
     emitCompletion({
       modal: CREATE_PROPERTY_MODAL,
       status: "error",
-      message,
+      message: built.message,
     });
     focusChatInput();
     return false;
   }
+  const payload = built.payload;
   workflowFormValues.set(CREATE_PROPERTY_MODAL, {
     ...stored,
     name: payload.name,

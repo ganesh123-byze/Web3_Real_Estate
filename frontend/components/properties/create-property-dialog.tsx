@@ -40,7 +40,7 @@ import {
 } from "@/lib/properties/create-property-debug";
 import {
   PropertyFormField,
-  buildCreatePropertyApiPayload,
+  validateAndBuildCreatePropertyApiPayload,
   calculateTokenPriceEth,
   formatTokenPriceEth,
   propertyDialogBodyClass,
@@ -177,14 +177,16 @@ export function CreatePropertyDialog() {
       return el?.value ?? "";
     };
     const pick = (k: Exclude<keyof FormState, "images">): string => {
-      // Manual submit: live inputs beat stale copilot cache from earlier sessions.
-      const fromDom = readDom(k);
+      // React state + DOM beat stale workflow cache so manual edits always win.
+      const fromState = String(fallback[k] ?? "").trim();
+      if (fromState) return fromState;
+      const fromDom = readDom(k).trim();
       if (fromDom) return fromDom;
-      const fromForm = String(fallback[k] ?? "");
-      if (fromForm.trim()) return fromForm;
       const fromCache = cache[k];
-      if (fromCache !== undefined && fromCache !== "") return String(fromCache);
-      return fromForm;
+      if (fromCache !== undefined && String(fromCache).trim() !== "") {
+        return String(fromCache).trim();
+      }
+      return "";
     };
     return {
       name: pick("name"),
@@ -214,15 +216,13 @@ export function CreatePropertyDialog() {
     // See `resolveSubmitValues` for why the cache wins (it's untouched
     // by render races and is exactly what the agent intended to submit).
     const values = resolveSubmitValues(stateValues);
-    let apiPayload;
-    try {
-      apiPayload = buildCreatePropertyApiPayload(values);
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : "Invalid property details.";
-      toast.error(errMsg);
-      setStepEvents((prev) => (prev.includes("error") ? prev : [...prev, "error"]));
+    const built = validateAndBuildCreatePropertyApiPayload(values);
+    if (!built.ok) {
+      toast.error(built.message);
+      setStepEvents([]);
       return;
     }
+    const apiPayload = built.payload;
     logCreatePropertyPayload("dialog", {
       name: apiPayload.name,
       location: apiPayload.location,

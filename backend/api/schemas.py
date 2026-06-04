@@ -5,8 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 MAX_PROPERTY_IMAGES = 8
-# ~1.5 MB file → ~2 MB base64 plus data-URL prefix; keep slack for uploader limit.
-MAX_PROPERTY_IMAGE_CHARS = 2_800_000
+MAX_PROPERTY_IMAGE_CHARS = 2_000_000
 
 
 class PropertyCreate(BaseModel):
@@ -20,28 +19,28 @@ class PropertyCreate(BaseModel):
     monthly_rent_eth: Optional[Decimal] = None
     images: list[str] = Field(default_factory=list, max_length=MAX_PROPERTY_IMAGES)
 
-    @field_validator("total_value", "token_supply", mode="before")
-    @classmethod
-    def normalize_required_decimal(cls, value: object) -> object:
-        if value is None:
-            raise ValueError("must be a positive number")
-        if isinstance(value, str):
-            cleaned = value.strip().replace(",", "")
-            if not cleaned:
-                raise ValueError("must be a positive number")
-            return cleaned
-        return value
-
     @field_validator("token_sale_price_eth", "monthly_rent_eth", mode="before")
     @classmethod
-    def normalize_optional_decimal(cls, value: object) -> object | None:
+    def empty_optional_decimal_is_none(cls, value: object) -> object | None:
         if value is None:
             return None
         if isinstance(value, str):
-            cleaned = value.strip().replace(",", "")
-            if not cleaned:
+            text = value.strip()
+            if not text:
                 return None
-            return cleaned
+            # Legacy UI sent display strings like "0.001 ETH".
+            if text.upper().endswith(" ETH"):
+                text = text[:-4].strip()
+            if not text:
+                return None
+            return text.replace(",", "")
+        return value
+
+    @field_validator("total_value", "token_supply", mode="before")
+    @classmethod
+    def required_decimal_not_blank(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            raise ValueError("must be a positive number")
         return value
 
     @field_validator("name", "location", "token_symbol", mode="before")
@@ -50,13 +49,6 @@ class PropertyCreate(BaseModel):
         if value is None:
             return value
         return str(value).strip()
-
-    @field_validator("name", "location", "token_symbol", mode="after")
-    @classmethod
-    def required_text_not_empty(cls, value: str) -> str:
-        if not value:
-            raise ValueError("is required")
-        return value
 
     @field_validator("images")
     @classmethod

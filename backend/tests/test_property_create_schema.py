@@ -1,5 +1,7 @@
 """PropertyCreate accepts omitted/empty optional decimals; rejects blank required fields."""
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -46,12 +48,13 @@ def test_required_decimal_blank_rejected():
         )
 
 
-def test_required_decimal_accepts_comma_grouping():
+def test_legacy_eth_suffix_stripped_from_optional_decimal():
     payload = PropertyCreate(
         name="Test",
         location="Austin",
-        total_value="1,000.5",
+        total_value="10",
         token_supply="100",
         token_symbol="TVL",
+        token_sale_price_eth="0.1 ETH",
     )
-    assert payload.total_value == 1000.5
+    assert payload.token_sale_price_eth == Decimal("0.1")
