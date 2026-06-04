@@ -29,6 +29,8 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("marketplace_catalog"):
         return True
+    if data.get("invest_property_target"):
+        return True
     if data.get("owner_analytics_overview"):
         return True
     if data.get("owner_investors_overview"):
