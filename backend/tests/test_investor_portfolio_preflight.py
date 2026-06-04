@@ -43,6 +43,19 @@ def test_has_investor_portfolio_intent():
     ) is True
 
 
+def test_portfolio_ownership_uses_whole_token_supply():
+    """token_supply is stored as whole tokens; balances are wei — not 0% ownership."""
+    from backend.config.settings import TOKEN_DECIMALS
+    from backend.services.blockchain import from_base_units
+
+    base = 1 * 10**18
+    supply = 500
+    whole = int(from_base_units(base, TOKEN_DECIMALS))
+    pct = round((whole / supply) * 100, 4)
+    assert whole == 1
+    assert pct == 0.2
+
+
 def test_format_portfolio_lists_property_names():
     text = format_investor_portfolio_speak(
         {
@@ -66,9 +79,13 @@ def test_format_portfolio_lists_property_names():
         },
         {"total_earned_eth": "0.5", "total_claimable_eth": "0.1", "total_claimed_eth": "0.4"},
     )
-    assert "Yield & returns summary" in text
-    assert "Eiffel Crown Residences (#4)" in text
-    assert "Siddiq villa (#1)" in text
+    assert "Your portfolio details" in text
+    assert "Properties invested: 2" in text
+    assert "Property: Eiffel Crown Residences (#4)" in text
+    assert "Tokens held: 1" in text
+    assert "Ownership: 0.20%" in text
+    assert "Property: Siddiq villa (#1)" in text
+    assert "Tokens held: 3" in text
     assert "Total rental yield earned: 0.5 ETH" in text
 
 
@@ -84,7 +101,7 @@ def test_preflight_portfolio_refreshes_chain_and_returns_verbatim():
             "property_name": "Eiffel Crown Residences",
             "location": "Paris",
             "token_symbol": "ECR",
-            "token_supply": 500 * 10**18,
+                "token_supply": 500,
             "token_price_base": str(int(0.09 * 10**18)),
             "token_amount_base": 1 * 10**18,
         },
@@ -113,7 +130,8 @@ def test_preflight_portfolio_refreshes_chain_and_returns_verbatim():
         assert result.data.get("speak_verbatim") is True
         speak = str(result.data.get("speak_to_user") or "")
         assert "Eiffel Crown Residences (#4)" in speak
-        assert "1 tokens" in speak
+        assert "Tokens held: 1" in speak
+        assert not result.actions
     finally:
         reset_current_messages(msg_token)
         reset_current_thread_id(token)

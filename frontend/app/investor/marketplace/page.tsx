@@ -82,15 +82,20 @@ function MarketplaceCard({ property, wallet }: { property: Property; wallet: str
   const [investOpen, setInvestOpen] = useState(false);
 
   useEffect(() => {
-    if (takePendingModalOpen("INVEST_PROPERTY", property.id)) {
-      setDetailOpen(true);
+    const openInvestFromCopilot = () => {
+      // Copilot invest workflow: MetaMask dialog only — do not open property detail
+      // (detail dialog collapses the chat panel and stacks modals behind invest).
+      setDetailOpen(false);
       setInvestOpen(true);
+    };
+
+    if (takePendingModalOpen("INVEST_PROPERTY", property.id)) {
+      openInvestFromCopilot();
     }
     return subscribeWorkflowAction((action) => {
       if (!isWorkflowModalAction(action, "INVEST_PROPERTY")) return;
       if (action.type === "OPEN_MODAL" && workflowPropertyMatches(action, property.id)) {
-        setDetailOpen(true);
-        setInvestOpen(true);
+        openInvestFromCopilot();
       }
     });
   }, [property.id]);
