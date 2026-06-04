@@ -31,6 +31,10 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("owner_analytics_overview"):
         return True
+    if data.get("owner_investors_overview"):
+        return True
+    if data.get("owner_rent_overview"):
+        return True
     if data.get("insufficient_funds"):
         return True
     if data.get("submit_in_flight"):
