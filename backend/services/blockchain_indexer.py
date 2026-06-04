@@ -669,6 +669,7 @@ def _handle_rent_events(cursor, web3, tx: dict[str, Any], receipt: dict[str, Any
         "distribution_id": distribution_id,
         "investors_paid": investor_count,
         "tx_hash": normalized_tx_hash,
+        "distributed_at": timestamp,
     }
 
 

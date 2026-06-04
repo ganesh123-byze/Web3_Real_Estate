@@ -8,11 +8,11 @@ from unittest.mock import MagicMock, patch
 from backend.api._helpers import backfill_investor_payout_rows_for_distribution
 
 
-@patch("backend.api._helpers.calculate_rent_distribution")
+@patch("backend.api._helpers.build_rent_distribution_preview_from_db")
 @patch("backend.api._helpers.get_web3")
-def test_backfill_inserts_rows_when_distribution_has_no_payouts(mock_web3, mock_calc):
+def test_backfill_inserts_rows_when_distribution_has_no_payouts(mock_web3, mock_preview):
     mock_web3.return_value.to_checksum_address.side_effect = lambda a: a
-    mock_calc.return_value = [
+    mock_preview.return_value = [
         {
             "investor": "0xInvestorA",
             "payout_wei": 300_000_000_000_000_000,
@@ -26,11 +26,8 @@ def test_backfill_inserts_rows_when_distribution_has_no_payouts(mock_web3, mock_
     ]
 
     cursor = MagicMock()
-    cursor.fetchone.side_effect = [
-        {"row_count": 0},
-        None,
-        None,
-    ]
+    # Per investor: no existing payout row, no prior claim tx.
+    cursor.fetchone.side_effect = [None, None, None, None, None, None]
     cursor.rowcount = 1
 
     ts = datetime(2026, 6, 1, 12, 0, 0)
@@ -46,15 +43,19 @@ def test_backfill_inserts_rows_when_distribution_has_no_payouts(mock_web3, mock_
 
     assert written == 2
     assert cursor.execute.call_count >= 3
-    mock_calc.assert_called_once_with(4, 500_000_000_000_000_000)
+    mock_preview.assert_called_once_with(cursor, 4, 500_000_000_000_000_000)
 
 
-@patch("backend.api._helpers.calculate_rent_distribution")
+@patch("backend.api._helpers.build_rent_distribution_preview_from_db")
 @patch("backend.api._helpers.get_web3")
-def test_backfill_skips_when_payout_rows_already_exist(mock_web3, mock_calc):
+def test_backfill_skips_investor_when_payout_row_already_exists(mock_web3, mock_preview):
     mock_web3.return_value.to_checksum_address.side_effect = lambda a: a
+    mock_preview.return_value = [
+        {"investor": "0xInvestorA", "payout_wei": 300_000_000_000_000_000, "ownership_pct": 60.0},
+        {"investor": "0xInvestorB", "payout_wei": 200_000_000_000_000_000, "ownership_pct": 40.0},
+    ]
     cursor = MagicMock()
-    cursor.fetchone.return_value = {"row_count": 2}
+    cursor.fetchone.side_effect = [{"exists": 1}, None, None]
 
     written = backfill_investor_payout_rows_for_distribution(
         cursor,
@@ -66,5 +67,5 @@ def test_backfill_skips_when_payout_rows_already_exist(mock_web3, mock_calc):
         distributed_at=datetime(2026, 6, 1, 12, 0, 0),
     )
 
-    assert written == 0
-    mock_calc.assert_not_called()
+    assert written == 1
+    mock_preview.assert_called_once()
