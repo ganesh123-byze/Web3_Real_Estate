@@ -133,7 +133,7 @@ function EditPropertyDialog({ property, onClose }: { property: Property; onClose
   }, []);
 
   const tokenPriceDisplay = property.token_address
-    ? formatEth(tokenPriceEth, { digits: 6 })
+    ? formatEth(tokenPriceEth)
     : formatTokenPriceEth(tokenPriceEth);
 
   return (

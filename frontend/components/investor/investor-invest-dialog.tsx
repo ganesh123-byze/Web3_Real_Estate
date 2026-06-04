@@ -18,7 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn, formatNumber, shortAddress } from "@/lib/utils";
+import { cn, formatEth, formatNumber, shortAddress } from "@/lib/utils";
 import type { InvestmentPrepareResponse, Property } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { investmentCostWei } from "@/components/investor/investor-utils";
@@ -165,9 +165,9 @@ export function InvestorInvestDialog({
             />
           </div>
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
-            <InvestFact label="Estimated cost" value={`${costEth.toFixed(6)} ETH`} />
+            <InvestFact label="Estimated cost" value={formatEth(costEth)} />
             <InvestFact label="Wallet" value={walletLabel} />
-            <InvestFact label="Token price" value={`${Number(property.token_sale_price_eth ?? 0).toFixed(4)} ETH`} />
+            <InvestFact label="Token price" value={formatEth(property.token_sale_price_eth ?? 0)} />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
           </div>
           <div className="space-y-2 text-xs text-muted-foreground">

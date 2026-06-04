@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { PropertyListingCover } from "@/components/properties/property-listing-cover";
 import type { Property } from "@/lib/types";
-import { cn, formatCurrency, formatNumber, percent, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatEth, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 export type PropertyListingCardProps = {
   property: Property;
@@ -90,7 +90,7 @@ export function PropertyListingCard({
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
-          <Metric label="Monthly rent" value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "—"} />
+          <Metric label="Monthly rent" value={monthlyRent > 0 ? formatEth(monthlyRent) : "—"} />
           <Metric label="Property value" value={formatCurrency(property.total_value)} />
           <Metric label="Supply" value={formatNumber(supply)} />
           <Metric label="Ownership sold" value={`${soldPct.toFixed(1)}%`} />

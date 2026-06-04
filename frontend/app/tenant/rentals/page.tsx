@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/common/empty";
-import { cn, formatCurrency, formatDateTime, formatNumber, percent, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime, formatEth, formatNumber, percent, shortAddress } from "@/lib/utils";
 import { PropertyImageCarousel } from "@/components/properties/property-image-carousel";
 import { PropertyDetailDialog } from "@/components/properties/property-detail-dialog";
 import type { PayRentPrepareResponse, Property } from "@/lib/types";
@@ -206,7 +206,7 @@ function RentalCard({
             </Badge>
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <Fact label="Monthly Rent" value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "Not set"} />
+            <Fact label="Monthly Rent" value={monthlyRent > 0 ? formatEth(monthlyRent) : "Not set"} />
             <Fact label="Property Value" value={formatCurrency(property.total_value)} />
             <Fact label="Supply" value={formatNumber(supply)} />
             <Fact label="Ownership Sold" value={`${soldPct.toFixed(1)}%`} />
@@ -380,7 +380,7 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
         <form ref={formRef} onSubmit={onSubmit} className="space-y-4" data-workflow-form="PAY_RENT">
           <input data-workflow-field="PAY_RENT.confirm" type="hidden" value="ready" readOnly />
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
-            <Fact label="Monthly rent" value={`${monthlyRentEth.toFixed(4)} ETH`} />
+            <Fact label="Monthly rent" value={formatEth(monthlyRentEth)} />
             <Fact label="Wallet" value={walletLabel} />
             <Fact label="Property ID" value={`#${property.id}`} />
             <Fact label="Location" value={property.location} />
@@ -398,7 +398,7 @@ function PayRentDialog({ property, wallet, open, onOpenChange }: { property: Pro
                   preview.data.breakdown.map((b, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
                       <span className="text-[11px]">{shortAddress(b.investor, 6, 4)}</span>
-                      <span className="tabular-nums">{b.payout_eth} ETH ({b.ownership_pct}%)</span>
+                      <span className="tabular-nums">{formatEth(b.payout_eth)} ({b.ownership_pct}%)</span>
                     </div>
                   ))
                 )}

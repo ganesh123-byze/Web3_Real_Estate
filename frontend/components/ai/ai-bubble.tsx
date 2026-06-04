@@ -22,7 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { cn } from "@/lib/utils";
+import { cn, formatEthText } from "@/lib/utils";
 import { useAgentStore } from "@/lib/ai/agent-store";
 import type { AIState } from "@/lib/ai/types";
 import { unlockAudio } from "@/lib/ai/voice";
@@ -471,7 +471,8 @@ function normalizeInvestSummaryForCard(content: string): string {
 }
 
 function AssistantMessageContent({ content }: { content: string }) {
-  const normalizedContent = content.toLowerCase();
+  const displayContent = formatEthText(content);
+  const normalizedContent = displayContent.toLowerCase();
   if (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
@@ -482,10 +483,10 @@ function AssistantMessageContent({ content }: { content: string }) {
       <div className="space-y-3">
         <YieldSummaryCard
           content={normalizeInvestSummaryForCard(
-            content.replace(/\n\nhow many tokens would you like to buy\??\s*$/i, "").trim(),
+            displayContent.replace(/\n\nhow many tokens would you like to buy\??\s*$/i, "").trim(),
           )}
         />
-        {/\n\nhow many tokens would you like to buy\??\s*$/i.test(content) ? (
+        {/\n\nhow many tokens would you like to buy\??\s*$/i.test(displayContent) ? (
           <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
             How many tokens would you like to buy?
           </p>
@@ -494,10 +495,10 @@ function AssistantMessageContent({ content }: { content: string }) {
     );
   }
   if (normalizedContent.includes("portfolio insight") || normalizedContent.includes("total invested")) {
-    return <PortfolioInsightCard content={content} />;
+    return <PortfolioInsightCard content={displayContent} />;
   }
 
-  const blocks = content
+  const blocks = displayContent
     .trim()
     .split(/\n\s*\n/)
     .map((block) => block.split("\n").map((line) => line.trim()).filter(Boolean))
@@ -508,7 +509,7 @@ function AssistantMessageContent({ content }: { content: string }) {
   );
 
   if (!hasStructuredRows) {
-    return <span className="whitespace-pre-wrap">{content}</span>;
+    return <span className="whitespace-pre-wrap">{displayContent}</span>;
   }
 
   return (

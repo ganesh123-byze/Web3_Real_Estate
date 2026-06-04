@@ -38,7 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import { cn, formatDateTime, shortAddress } from "@/lib/utils";
+import { cn, formatDateTime, formatEth, shortAddress } from "@/lib/utils";
 import type { Transaction } from "@/lib/types";
 
 const PAGE_SIZE = 12;
@@ -407,10 +407,10 @@ function TransactionDialog({ tx, onClose }: { tx: Transaction | null; onClose: (
           />
           <DetailField label="Block" value={tx.block_number ?? "—"} />
           <DetailField label="Date" value={formatDateTime(tx.timestamp)} />
-          {tx.gas_fee ? <DetailField label="Gas Fee" value={`${tx.gas_fee} ETH`} /> : null}
-          {tx.amount_spent ? <DetailField label="Amount Spent" value={`${tx.amount_spent} ETH`} /> : null}
+          {tx.gas_fee ? <DetailField label="Gas Fee" value={formatEth(tx.gas_fee)} /> : null}
+          {tx.amount_spent ? <DetailField label="Amount Spent" value={formatEth(tx.amount_spent)} /> : null}
           {tx.remaining_balance ? (
-            <DetailField label="Remaining Balance" value={`${tx.remaining_balance} ETH`} />
+            <DetailField label="Remaining Balance" value={formatEth(tx.remaining_balance)} />
           ) : null}
         </div>
 

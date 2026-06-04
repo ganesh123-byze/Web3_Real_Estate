@@ -39,13 +39,37 @@ export function formatTokenAmount(value: number | string | null | undefined): st
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
 }
 
-export function formatEth(weiOrEth: string | number | null | undefined, opts?: { fromWei?: boolean; digits?: number }): string {
+type FormatEthOptions = { fromWei?: boolean; digits?: number };
+
+export function toEthNumber(weiOrEth: string | number | null | undefined, opts?: FormatEthOptions): number {
   const fromWei = opts?.fromWei ?? false;
-  const digits = opts?.digits ?? 4;
-  const raw = Number(weiOrEth ?? 0);
-  if (!Number.isFinite(raw)) return `0 ETH`;
-  const eth = fromWei ? raw / 1e18 : raw;
-  return `${eth.toFixed(digits)} ETH`;
+  const textValue = typeof weiOrEth === "string" ? weiOrEth.trim().replace(/,/g, "") : undefined;
+  const raw = Number(textValue ?? weiOrEth ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  const looksLikeWei =
+    fromWei ||
+    (textValue ? /^-?\d+$/.test(textValue) && textValue.replace(/^-/, "").length >= 16 : Math.abs(raw) >= 1e15);
+  return looksLikeWei ? raw / 1e18 : raw;
+}
+
+export function formatEth(weiOrEth: string | number | null | undefined, opts?: FormatEthOptions): string {
+  const digits = opts?.digits ?? 3;
+  const eth = toEthNumber(weiOrEth, opts);
+  if (!Number.isFinite(eth)) return "0 ETH";
+  const abs = Math.abs(eth);
+  const minimumVisible = 10 ** -digits;
+  if (abs > 0 && abs < minimumVisible) {
+    return `<${minimumVisible.toFixed(digits)} ETH`;
+  }
+  return `${new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: digits,
+  }).format(eth)} ETH`;
+}
+
+export function formatEthText(text: string): string {
+  return text.replace(/(^|[^\w.])([+-]?\d[\d,]*(?:\.\d+)?)\s*ETH\b/gi, (_match, prefix: string, amount: string) => {
+    return `${prefix}${formatEth(amount)}`;
+  });
 }
 
 export function percent(numerator: number | string | null | undefined, denominator: number | string | null | undefined, digits = 1): number {

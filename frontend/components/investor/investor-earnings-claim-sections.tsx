@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/common/empty";
 import { useClaimHistory, useInvestorDistributions } from "@/lib/queries";
-import { formatDateTime, shortAddress } from "@/lib/utils";
+import { formatDateTime, formatEth, shortAddress } from "@/lib/utils";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
 
@@ -37,7 +37,7 @@ export function InvestorEarningsAndClaimSections() {
                     {row.payment_count} payments · {row.current_ownership}% ownership
                   </div>
                 </div>
-                <div className="text-sm font-semibold tabular-nums">{row.total_earned_eth} ETH</div>
+                <div className="text-sm font-semibold tabular-nums">{formatEth(row.total_earned_eth)}</div>
               </div>
             ))
           )}
@@ -70,7 +70,7 @@ export function InvestorEarningsAndClaimSections() {
                     {shortAddress(claim.claim_tx_hash, 7, 5)}
                   </div>
                 </div>
-                <div className="text-sm font-semibold tabular-nums text-success">{claim.claimed_amount_eth} ETH</div>
+                <div className="text-sm font-semibold tabular-nums text-success">{formatEth(claim.claimed_amount_eth)}</div>
               </a>
             ))
           )}

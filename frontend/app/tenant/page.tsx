@@ -54,7 +54,7 @@ export default function TenantDashboardPage() {
           <GradientStatCard
             icon={Receipt}
             title="Total Rent Paid"
-            value={`${totalPaid.toFixed(4)} ETH`}
+            value={formatEth(totalPaid)}
             sub={`${payments.data?.length ?? 0} payments`}
             loading={payments.isLoading}
             accent="violet"
@@ -72,7 +72,7 @@ export default function TenantDashboardPage() {
           <GradientStatCard
             icon={Wallet}
             title="Available Balance"
-            value={balances.isLoading ? "" : formatEth(balances.data?.native?.balance ?? "0", { digits: 4 })}
+            value={balances.isLoading ? "" : formatEth(balances.data?.native?.balance ?? "0")}
             sub={walletLabel}
             loading={balances.isLoading}
             accent="cyan"
@@ -163,7 +163,7 @@ export default function TenantDashboardPage() {
                             {payment.payment_status}
                           </Badge>
                         </TableCell>
-                        <TableCell className="tabular-nums text-sm font-medium">{payment.amount_eth} ETH</TableCell>
+                        <TableCell className="tabular-nums text-sm font-medium">{formatEth(payment.amount_eth)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
