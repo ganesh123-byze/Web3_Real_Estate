@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { Building2, Coins, Receipt, Wallet } from "lucide-react";
 import { AdminTopbar } from "@/components/layout/topbar";
-import { useDashboardSummary, useOwnerInvestors, useProperties, useRentAnalytics, useTransactions } from "@/lib/queries";
+import { useDashboardSummary, useManagedProperties, useOwnerInvestors, useRentAnalytics, useTransactions } from "@/lib/queries";
 import { PropertiesOverviewTable } from "@/components/dashboard/properties-overview-table";
 import { InvestorShareChart } from "@/components/dashboard/investor-share-chart";
 import { GradientStatCard } from "@/components/dashboard/gradient-stat-card";
@@ -23,7 +23,6 @@ import type { Property } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
 import { formatCurrency, formatEth, formatNumber } from "@/lib/utils";
 import { propertyOwnershipFor } from "@/lib/ownership";
-import { currentSessionIdentity } from "@/lib/identity";
 
 type DonutHover = {
   key: string;
@@ -34,22 +33,18 @@ type DonutHover = {
   color: string;
 };
 
-function sameWallet(a?: string | null, b?: string | null): boolean {
-  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
-}
-
 export default function DashboardPage() {
-  const properties = useProperties();
+  const properties = useManagedProperties();
   const transactions = useTransactions();
   const rent = useRentAnalytics();
   const summary = useDashboardSummary();
   const ownerInvestors = useOwnerInvestors();
-  const sessionIdentity = currentSessionIdentity();
-  const adminWallet = sessionIdentity?.wallet_address ?? null;
+
+  const managedProperties = properties.data ?? [];
 
   const [selected, setSelected] = useState<Property | null>(null);
   useEffect(() => {
-    const list = properties.data ?? [];
+    const list = managedProperties;
     if (list.length === 0) return;
     if (selected && list.some((property) => property.id === selected.id)) return;
 
@@ -57,16 +52,7 @@ export default function DashboardPage() {
       (property) => !!property.token_address && Number(property.tokens_sold ?? 0) > 0,
     );
     setSelected(firstInvestedProperty ?? list[0]);
-  }, [properties.data, selected]);
-
-  const allProperties = properties.data ?? [];
-  const adminProperties = useMemo(
-    () =>
-      allProperties.filter(
-        (property) => property.can_manage || sameWallet(property.owner_wallet, adminWallet),
-      ),
-    [adminWallet, allProperties],
-  );
+  }, [managedProperties, selected]);
   const investments = useMemo(
     () => (transactions.data ?? []).filter((transaction) => {
       const type = transaction.type.toLowerCase();
@@ -80,10 +66,10 @@ export default function DashboardPage() {
   );
   const totalPortfolio = Number(summary.data?.total_portfolio_value ?? 0) / 1e18;
   const selectedProperty = selected
-    ? allProperties.find((property) => property.id === selected.id) ?? selected
+    ? managedProperties.find((property) => property.id === selected.id) ?? selected
     : null;
   const selectedOwnership = propertyOwnershipFor(ownerInvestors.data, selectedProperty, transactions.data ?? []);
-  const propertyPerf = adminProperties
+  const propertyPerf = managedProperties
     .map((property) => ({
       id: property.id,
       name: property.name || `Property #${property.id}`,
@@ -116,7 +102,7 @@ export default function DashboardPage() {
           <GradientStatCard
             title="Total Portfolio Value"
             value={formatCurrency(totalPortfolio)}
-            sub={`${summary.data?.properties_loaded ?? allProperties.length} properties indexed`}
+            sub={`${managedProperties.length} ${managedProperties.length === 1 ? "property" : "properties"} in your portfolio`}
             icon={Wallet}
             loading={summary.isLoading}
             accent="violet"
@@ -142,8 +128,8 @@ export default function DashboardPage() {
           />
           <GradientStatCard
             title="Total Properties"
-            value={String(allProperties.length)}
-            sub="Available properties"
+            value={String(managedProperties.length)}
+            sub="Listings you created"
             icon={Building2}
             loading={properties.isLoading}
             accent="lavender"
@@ -154,7 +140,7 @@ export default function DashboardPage() {
         <section className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
           <div className="min-w-0">
             <PropertiesOverviewTable
-              properties={properties.data ?? []}
+              properties={managedProperties}
               loading={properties.isLoading}
               selectedId={selected?.id ?? null}
               onSelectProperty={(property) => setSelected(property)}
@@ -174,7 +160,7 @@ export default function DashboardPage() {
           <Card className="h-full">
             <CardHeader>
               <CardTitle>Property Performance</CardTitle>
-              <CardDescription>Sold percentage for all available properties.</CardDescription>
+              <CardDescription>Sold percentage for your properties.</CardDescription>
             </CardHeader>
             <CardContent>
               {properties.isLoading ? (

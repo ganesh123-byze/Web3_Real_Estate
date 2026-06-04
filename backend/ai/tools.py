@@ -73,6 +73,10 @@ from backend.ai.investor_guards import (
     invest_workflow_active,
     wants_to_begin_invest_workflow,
 )
+from backend.ai.owner_guards import (
+    has_owner_analytics_intent,
+    owner_analytics_tool_payload,
+)
 from backend.ai.schemas import AgentAction, ToolResult
 from backend.api._helpers import (
     append_sql_owned_property_filter,
@@ -1520,9 +1524,23 @@ async def _get_owner_analytics_overview(_args: dict, user: AuthUser, db: Any) ->
         cursor.close()
     return ToolResult(
         ok=True,
-        data=data,
+        data=owner_analytics_tool_payload(data),
         actions=[],
     )
+
+
+async def try_server_owner_analytics_overview(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return portfolio analytics verbatim when the admin taps View Analytics."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or not has_owner_analytics_intent(utterance):
+        return None
+
+    return await _get_owner_analytics_overview({}, user, db)
 
 
 register(ToolSpec(
