@@ -12,7 +12,7 @@ import { useEditPropertyDialog } from "./edit-property-dialog";
 import { PropertyImageCarousel } from "@/components/properties/property-image-carousel";
 import { PropertyDetailDialog } from "@/components/properties/property-detail-dialog";
 import type { Property } from "@/lib/types";
-import { cn, formatCurrency, formatNumber, percent, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatEth, formatNumber, percent, shortAddress } from "@/lib/utils";
 import { isWorkflowModalAction, subscribeWorkflowAction, workflowPropertyMatches } from "@/lib/ai/action-executor";
 import { useEffect, useState } from "react";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
@@ -115,10 +115,10 @@ export function PropertyCard({ property }: { property: Property }) {
 
         <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs">
           <Stat label="Total Value" value={formatCurrency(property.total_value)} />
-          <Stat label="Token Price" value={`${tokenPriceEth.toFixed(4)} ETH`} />
+          <Stat label="Token Price" value={formatEth(tokenPriceEth)} />
           <Stat label="Supply" value={formatNumber(total)} />
           <Stat label="Available" value={formatNumber(Number(property.tokens_available ?? 0))} />
-          <Stat label="Rent" value={monthlyRentEth > 0 ? `${monthlyRentEth.toFixed(4)} ETH/mo` : "Not set"} />
+          <Stat label="Rent" value={monthlyRentEth > 0 ? `${formatEth(monthlyRentEth)}/mo` : "Not set"} />
           <Stat
             label="Created By"
             value={creatorWallet ? creatorLabel : "Not recorded"}

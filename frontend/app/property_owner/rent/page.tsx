@@ -221,7 +221,7 @@ export default function RentManagementPage() {
                           {p.property_name ?? `#${p.property_id}`}
                         </TableCell>
                         <TableCell className={`${tableCellClass} tabular-nums`}>
-                          {Number(p.amount_eth).toFixed(4)} ETH
+                          {formatEth(p.amount_eth)}
                         </TableCell>
                         <TableCell className={`${tableCellClass} text-muted-foreground`}>
                           {formatDateTime(p.payment_date)}
@@ -282,7 +282,7 @@ export default function RentManagementPage() {
                           {d.property_name ?? `#${d.property_id}`}
                         </TableCell>
                         <TableCell className={`${tableCellClass} tabular-nums`}>
-                          {(Number(d.total_distributed) / 1e18).toFixed(4)} ETH
+                          {formatEth(d.total_distributed, { fromWei: true })}
                         </TableCell>
                         <TableCell className={`${tableCellClass} tabular-nums`}>
                           {d.investor_count}
@@ -377,7 +377,7 @@ function PropertyRentRow({ property }: { property: Property }) {
         </div>
       </TableCell>
       <TableCell className={`${tableCellClass} tabular-nums`}>
-        {monthly > 0 ? `${monthly.toFixed(4)} ETH` : <span className="text-muted-foreground">Not set</span>}
+        {monthly > 0 ? formatEth(monthly) : <span className="text-muted-foreground">Not set</span>}
       </TableCell>
       <TableCell className={tableCellClass}>
         {property.token_address ? (

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/common/empty";
-import { cn, formatNumber, shortAddress } from "@/lib/utils";
+import { cn, formatEth, formatNumber, shortAddress } from "@/lib/utils";
 import type { OwnerInvestor, Property, Transaction } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
 import { propertyOwnershipFor, type PropertyOwnershipItem } from "@/lib/ownership";
@@ -158,7 +158,7 @@ export function PropertiesOverviewTable({
                     {formatNumber(tokensSold)} ({soldPct.toFixed(1)}%)
                   </span>
                   <span className="text-left text-xs tabular-nums">
-                    {Number(priceEth).toFixed(4)} ETH
+                    {formatEth(priceEth)}
                   </span>
                   <span className="text-left">
                     <InvestorAvatars

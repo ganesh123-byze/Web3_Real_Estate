@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cn, shortAddress } from "@/lib/utils";
+import { cn, formatEth, shortAddress } from "@/lib/utils";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { sendClaimRewardsTx } from "@/components/investor/contract-actions";
 import {
@@ -82,11 +82,11 @@ export function InvestorClaimDialog({
         investor_wallet: wallet,
         tx_hash: tx.hash,
       });
-      toast.success(`Claimed ${result.claimed_amount_eth} ETH.`);
+      toast.success(`Claimed ${formatEth(result.claimed_amount_eth)}.`);
       emitWorkflowCompletion({
         modal: "CLAIM_REWARDS",
         status: "success",
-        message: `Claimed ${result.claimed_amount_eth} ETH from ${reward.property_name ?? `Property #${reward.property_id}`}.`,
+        message: `Claimed ${formatEth(result.claimed_amount_eth)} from ${reward.property_name ?? `Property #${reward.property_id}`}.`,
       });
       queryClient.invalidateQueries({ queryKey: ["investor"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions });
@@ -130,7 +130,7 @@ export function InvestorClaimDialog({
         <div className="space-y-4">
           <div className="rounded-lg border border-border bg-muted/30 p-3">
             <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Claimable amount</div>
-            <div className="mt-1 text-2xl font-semibold">{reward?.claimable_amount_eth ?? "0"} ETH</div>
+            <div className="mt-1 text-2xl font-semibold">{formatEth(reward?.claimable_amount_eth ?? "0")}</div>
             <div className="mt-1 text-xs text-muted-foreground">Profile {walletLabel}</div>
           </div>
           <div className="space-y-2 text-xs text-muted-foreground">

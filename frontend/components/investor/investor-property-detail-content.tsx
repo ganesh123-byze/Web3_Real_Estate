@@ -11,7 +11,7 @@ import { availablePropertyTokens, propertyUnitValue } from "@/components/investo
 import { addressExplorerUrl, RUNTIME_CONFIG } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import { cn, formatCurrency, formatNumber, percent, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatEth, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 const CHAIN_LABELS: Record<number, string> = {
   1: "Ethereum Mainnet",
@@ -95,14 +95,14 @@ export function InvestorPropertyDetailContent({ property }: { property: Property
         <div className="grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-3 sm:grid-cols-3">
           <DetailMetric
             label="Monthly rent"
-            value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "—"}
+            value={monthlyRent > 0 ? formatEth(monthlyRent) : "—"}
           />
           <DetailMetric label="Property value" value={formatCurrency(property.total_value)} />
           <DetailMetric label="Supply" value={formatNumber(supply)} />
           <DetailMetric label="Ownership sold" value={`${soldPct.toFixed(1)}%`} />
           <DetailMetric
             label="Token price"
-            value={tokenPrice > 0 ? `${tokenPrice.toFixed(4)} ETH` : "—"}
+            value={tokenPrice > 0 ? formatEth(tokenPrice) : "—"}
             subValue={unitValue > 0 ? `~${formatCurrency(unitValue)}` : undefined}
           />
         </div>
@@ -157,7 +157,7 @@ function PropertyInfoGrid({
         <Row label="Available tokens" value={formatNumber(available)} emphasize />
         <Row
           label="Monthly rent"
-          value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "Not set"}
+          value={monthlyRent > 0 ? formatEth(monthlyRent) : "Not set"}
         />
       </Panel>
 

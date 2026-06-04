@@ -27,7 +27,7 @@ import {
   useRentDistributions,
   useTransactions,
 } from "@/lib/queries";
-import { cn, formatEth, formatNumber, formatShortDate, parseBackendDate } from "@/lib/utils";
+import { cn, formatEth, formatNumber, formatShortDate, parseBackendDate, toEthNumber } from "@/lib/utils";
 import { pickColor } from "@/lib/charts";
 
 export default function AnalyticsPage() {
@@ -42,7 +42,7 @@ export default function AnalyticsPage() {
   );
 
   const totalInvestmentEth = investments.reduce(
-    (acc, t) => acc + Number(t.amount_spent ?? t.amount ?? 0),
+    (acc, t) => acc + toEthNumber(t.amount_spent ?? t.amount ?? 0),
     0,
   );
   const avgInvestmentEth = investments.length ? totalInvestmentEth / investments.length : 0;
@@ -91,7 +91,7 @@ export default function AnalyticsPage() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <GradientStatCard
             title="Investment Volume"
-            value={`${totalInvestmentEth.toFixed(3)} ETH`}
+            value={formatEth(totalInvestmentEth)}
             sub={`${investments.length} investments`}
             icon={Wallet}
             loading={transactions.isLoading}
@@ -100,7 +100,7 @@ export default function AnalyticsPage() {
           />
           <GradientStatCard
             title="Avg Investment Size"
-            value={`${avgInvestmentEth.toFixed(4)} ETH`}
+            value={formatEth(avgInvestmentEth)}
             sub={investments.length ? `Across ${investments.length} txs` : "No investments yet"}
             icon={Coins}
             loading={transactions.isLoading}
@@ -170,7 +170,7 @@ export default function AnalyticsPage() {
                         borderRadius: 8,
                         fontSize: 12,
                       }}
-                      formatter={(v: number) => [`${v.toFixed(4)} ETH`, "Distributed"]}
+                      formatter={(v: number) => [formatEth(v), "Distributed"]}
                     />
                     <Area
                       type="monotone"

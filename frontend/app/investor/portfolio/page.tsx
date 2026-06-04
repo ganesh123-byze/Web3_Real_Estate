@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { EmptyState } from "@/components/common/empty";
 import { InvestmentSimulationWorkbench } from "@/components/investor/investment-simulation-workbench";
 import { useInvestorYieldSummary, usePortfolio, useProperties, useWalletBalances } from "@/lib/queries";
-import { cn, formatCurrency, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatEth, shortAddress } from "@/lib/utils";
 import { buildInvestorMetrics, holdingValue, humanTokenAmount, ownershipPercent } from "@/components/investor/investor-utils";
 import { useCurrentWallet } from "@/components/investor/use-current-wallet";
 import type { PortfolioItem, Property, WalletBalanceToken } from "@/lib/types";
@@ -83,7 +83,7 @@ export default function InvestorPortfolioPage() {
           />
           <InvestorKpiCard
             title="Total Earned"
-            value={`${yieldSummary.data?.total_earned_eth ?? "0"} ETH`}
+            value={formatEth(yieldSummary.data?.total_earned_eth ?? "0")}
             icon={Coins}
             variant="sky"
             loading={yieldSummary.isLoading}

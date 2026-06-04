@@ -147,6 +147,9 @@ function ContinuousOwnershipDonut({ items }: { items: OwnershipChartItem[] }) {
   const radius = 76;
   const strokeWidth = 30;
   const circumference = 2 * Math.PI * radius;
+  const indexedItems = items.map((item, index) => ({ item, index }));
+  const allocatedItems = indexedItems.filter(({ item }) => !item.isUnallocated);
+  const unallocatedItem = indexedItems.find(({ item }) => item.isUnallocated);
   let start = 0;
 
   function updateHover(event: MouseEvent<SVGCircleElement>, item: OwnershipChartItem, index: number) {
@@ -172,10 +175,28 @@ function ContinuousOwnershipDonut({ items }: { items: OwnershipChartItem[] }) {
         aria-label="Investor ownership allocation chart"
         onMouseLeave={() => setHover(null)}
       >
-        {items.map((item, index) => {
+        {unallocatedItem ? (
+          <circle
+            className="cursor-pointer transition-all duration-150"
+            cx="110"
+            cy="110"
+            r={radius}
+            fill="none"
+            stroke={getOwnershipColor(unallocatedItem.index, true)}
+            strokeWidth={hover?.key === unallocatedItem.item.investor ? strokeWidth + 4 : strokeWidth}
+            opacity={hover && hover.key !== unallocatedItem.item.investor ? 0.58 : 1}
+            onMouseEnter={(event) => updateHover(event, unallocatedItem.item, unallocatedItem.index)}
+            onMouseMove={(event) => updateHover(event, unallocatedItem.item, unallocatedItem.index)}
+          >
+            <title>
+              Unallocated: {unallocatedItem.item.share_pct.toFixed(unallocatedItem.item.share_pct >= 10 ? 0 : 1)}%
+            </title>
+          </circle>
+        ) : null}
+        {allocatedItems.map(({ item, index }) => {
           const value = Math.max(0, item.share_pct);
           if (value <= 0) return null;
-          const dash = Math.min(circumference, (value / 100) * circumference + 3);
+          const dash = Math.min(circumference, Math.max((value / 100) * circumference, 4));
           const rotation = -112 + (start / 100) * 360;
           start += value;
 

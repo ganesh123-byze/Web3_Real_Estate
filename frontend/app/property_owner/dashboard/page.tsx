@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/common/empty";
 import type { Property } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
-import { formatCurrency, formatEth, formatNumber } from "@/lib/utils";
+import { formatCurrency, formatEth, formatNumber, toEthNumber } from "@/lib/utils";
 import { propertyOwnershipFor } from "@/lib/ownership";
 
 type DonutHover = {
@@ -61,7 +61,7 @@ export default function DashboardPage() {
     [transactions.data],
   );
   const totalInvestmentEth = investments.reduce(
-    (acc, transaction) => acc + toEthDisplayAmount(transaction.amount_spent ?? transaction.amount ?? 0),
+    (acc, transaction) => acc + toEthNumber(transaction.amount_spent ?? transaction.amount ?? 0),
     0,
   );
   const totalPortfolio = managedProperties.reduce(
@@ -113,7 +113,7 @@ export default function DashboardPage() {
           />
           <GradientStatCard
             title="Investment Volume"
-            value={`${totalInvestmentEth.toFixed(3)} ETH`}
+            value={formatEth(totalInvestmentEth)}
             sub={`${investments.length} investments`}
             icon={Coins}
             loading={transactions.isLoading}
@@ -379,10 +379,4 @@ function ContinuousTransactionDonut({
       ) : null}
     </div>
   );
-}
-
-function toEthDisplayAmount(value: string | number | null | undefined) {
-  const amount = Number(value ?? 0);
-  if (!Number.isFinite(amount)) return 0;
-  return Math.abs(amount) > 1_000_000 ? amount / 1e18 : amount;
 }

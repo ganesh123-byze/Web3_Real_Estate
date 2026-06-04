@@ -31,7 +31,7 @@ import { addressExplorerUrl, RUNTIME_CONFIG } from "@/lib/runtime-config";
 import type { Property, Role } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { useAgentStore } from "@/lib/ai/agent-store";
-import { cn, formatCurrency, formatDateTime, formatNumber, percent, shortAddress } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime, formatEth, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 export type PropertyDetailRole = Role;
 
@@ -261,13 +261,13 @@ export function PropertyDetailDialog({
 
                 <div className="mt-3 rounded-lg border border-border bg-card px-3 py-3 shadow-sm sm:px-4">
                   <div className="grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-3 sm:grid-cols-3">
-                    <StatPill label="Monthly rent" value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "—"} />
+                    <StatPill label="Monthly rent" value={monthlyRent > 0 ? formatEth(monthlyRent) : "—"} />
                     <StatPill label="Property value" value={formatCurrency(property.total_value)} />
                     <StatPill label="Supply" value={formatNumber(supply)} />
                     <StatPill label="Ownership sold" value={`${soldPct.toFixed(1)}%`} />
                     <StatPill
                       label="Token price"
-                      value={tokenPrice > 0 ? `${tokenPrice.toFixed(4)} ETH` : "—"}
+                      value={tokenPrice > 0 ? formatEth(tokenPrice) : "—"}
                       subValue={unitValue > 0 ? `~${formatCurrency(unitValue)}` : undefined}
                     />
                   </div>
@@ -296,7 +296,7 @@ export function PropertyDetailDialog({
                     <InfoRow label="Available tokens" value={formatNumber(available)} />
                     <InfoRow
                       label="Monthly rent"
-                      value={monthlyRent > 0 ? `${monthlyRent.toFixed(4)} ETH` : "Not set"}
+                      value={monthlyRent > 0 ? formatEth(monthlyRent) : "Not set"}
                     />
                   </InfoCard>
 

@@ -78,7 +78,7 @@ export default function InvestorDashboardPage() {
           />
           <InvestorKpiCard
             title="Wallet Balance"
-            value={formatEth(balances.data?.native?.balance ?? "0", { digits: 4 })}
+            value={formatEth(balances.data?.native?.balance ?? "0")}
             icon={LineChart}
             variant="mint"
             loading={balances.isLoading}
@@ -141,9 +141,11 @@ export default function InvestorDashboardPage() {
               ) : nextClaim ? (
                 <>
                   <div>
-                    <div className="text-3xl font-semibold tracking-tight">{claimable.data?.total_claimable_eth ?? "0"} ETH</div>
+                    <div className="text-3xl font-semibold tracking-tight">
+                      {formatEth(claimable.data?.total_claimable_eth ?? "0")}
+                    </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Total claimed: {claimable.data?.total_claimed_eth ?? yieldSummary.data?.total_claimed_eth ?? "0"} ETH
+                      Total claimed: {formatEth(claimable.data?.total_claimed_eth ?? yieldSummary.data?.total_claimed_eth ?? "0")}
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-3">
@@ -152,7 +154,7 @@ export default function InvestorDashboardPage() {
                         <div className="text-sm font-medium">{nextClaim.property_name ?? `Property #${nextClaim.property_id}`}</div>
                         <div className="text-xs text-muted-foreground">{nextClaim.pending_payouts} pending accruals</div>
                       </div>
-                      <Badge variant="success">{nextClaim.claimable_amount_eth} ETH</Badge>
+                      <Badge variant="success">{formatEth(nextClaim.claimable_amount_eth)}</Badge>
                     </div>
                   </div>
                   <Button
