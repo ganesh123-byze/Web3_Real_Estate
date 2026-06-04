@@ -49,27 +49,27 @@ const ICON_MAP: Record<string, LucideIcon> = {
 /** Soft Figma-like tint per quick-action slot. */
 const ACTION_TINTS: { bg: string; border: string; iconBg: string; icon: string }[] = [
   {
-    bg: "bg-violet-50/80 dark:bg-[#111326]/80",
+    bg: "bg-violet-50/80 dark:bg-gradient-to-br dark:from-[#151a3a] dark:via-[#0b1028] dark:to-[#111629]",
     border: "border-[#4d3bb6] hover:border-[#3f2fa2] dark:border-[#3B309E] dark:hover:border-[#7c6cff]",
-    iconBg: "bg-violet-100 dark:bg-[#211a54]",
+    iconBg: "bg-violet-100 dark:bg-gradient-to-br dark:from-[#211a54] dark:to-[#10172f]",
     icon: "text-violet-600 dark:text-[#9b8cff]",
   },
   {
-    bg: "bg-cyan-50/80 dark:bg-[#071d2a]/80",
+    bg: "bg-cyan-50/80 dark:bg-gradient-to-br dark:from-[#101b36] dark:via-[#08152c] dark:to-[#071f2c]",
     border: "border-[#4ca8a8] hover:border-[#2f8e8e] dark:border-[#2f8e8e] dark:hover:border-[#62d4d4]",
-    iconBg: "bg-cyan-100 dark:bg-[#0d3443]",
+    iconBg: "bg-cyan-100 dark:bg-gradient-to-br dark:from-[#0d3443] dark:to-[#0a1b2f]",
     icon: "text-cyan-600 dark:text-[#5dd5e8]",
   },
   {
-    bg: "bg-lime-50/80 dark:bg-[#0c2213]/80",
+    bg: "bg-lime-50/80 dark:bg-gradient-to-br dark:from-[#101d2f] dark:via-[#0b122a] dark:to-[#102412]",
     border: "border-[#20bf1a] hover:border-[#169b12] dark:border-[#20bf1a] dark:hover:border-[#69ef63]",
-    iconBg: "bg-lime-100 dark:bg-[#14351b]",
+    iconBg: "bg-lime-100 dark:bg-gradient-to-br dark:from-[#14351b] dark:to-[#0a1f17]",
     icon: "text-lime-600 dark:text-[#7bea70]",
   },
   {
-    bg: "bg-orange-50/80 dark:bg-[#261507]/80",
+    bg: "bg-orange-50/80 dark:bg-gradient-to-br dark:from-[#1d1b2f] dark:via-[#101226] dark:to-[#27170a]",
     border: "border-[#ef8800] hover:border-[#d97706] dark:border-[#ef8800] dark:hover:border-[#ffad3d]",
-    iconBg: "bg-orange-100 dark:bg-[#3d230c]",
+    iconBg: "bg-orange-100 dark:bg-gradient-to-br dark:from-[#3d230c] dark:to-[#211827]",
     icon: "text-orange-600 dark:text-[#ffad3d]",
   },
 ];
@@ -240,8 +240,8 @@ function QuickActionCard({
       whileTap={{ scale: 0.985 }}
       className={cn(
         "group flex h-[72px] w-full items-center gap-3 rounded-[10px] border px-4 text-left max-sm:h-[72px] max-sm:gap-3 max-sm:px-4",
-        "bg-white/70 backdrop-blur-sm dark:bg-[#080d20]/80",
-        "transition-all hover:-translate-y-0.5 hover:bg-white dark:hover:bg-[#0d1430]",
+        "bg-white/70 backdrop-blur-sm",
+        "transition-all hover:-translate-y-0.5 hover:bg-white dark:hover:brightness-110",
         "disabled:cursor-not-allowed disabled:opacity-50",
         tint.bg,
         tint.border,
@@ -285,13 +285,13 @@ function QuickActionChip({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-full border bg-white/70 px-2.5 text-[13px] font-medium text-slate-900 dark:bg-[#070b1a]/80 dark:text-slate-100",
-        "backdrop-blur-sm transition-all",
+        "inline-flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-full border bg-white/70 px-2 text-[13px] font-medium text-slate-900 dark:bg-gradient-to-r dark:from-[#141c40]/95 dark:via-[#0b1d2e]/95 dark:to-[#1f1739]/95 dark:text-slate-100",
+        "backdrop-blur-sm transition-all max-sm:h-8 max-sm:px-1.5 max-sm:text-[12px]",
         "hover:-translate-y-0.5 hover:bg-white dark:hover:bg-[#101936] disabled:cursor-not-allowed disabled:opacity-50",
         tint.border,
       )}
     >
-      <Icon className={cn("h-4 w-4 shrink-0", tint.icon)} />
+      <Icon className={cn("h-4 w-4 shrink-0 max-sm:h-3.5 max-sm:w-3.5", tint.icon)} />
       <span className="min-w-0 truncate">{action.label}</span>
     </button>
   );
@@ -729,7 +729,7 @@ export function AIBubble() {
               showWelcome
                 ? "h-[min(640px,calc(100dvh-1rem))] w-[min(600px,calc(100vw-1rem))]"
                 : "h-[min(1038px,calc(100dvh-1rem))] w-[min(600px,calc(100vw-1rem))]",
-              "rounded-[12px] border border-white/80 bg-[#f1f1f1] text-slate-950 backdrop-blur-2xl dark:border-[#252b4a] dark:bg-[#020617] dark:text-slate-100",
+              "rounded-[12px] border border-white/80 bg-[#f1f1f1] text-slate-950 backdrop-blur-2xl dark:border-[#252b4a] dark:bg-gradient-to-br dark:from-[#040817] dark:via-[#060b1d] dark:to-[#091427] dark:text-slate-100",
               "shadow-[0_28px_70px_-30px_rgba(15,23,42,0.55)]",
             )}
             role="dialog"
@@ -747,7 +747,7 @@ export function AIBubble() {
               className="pointer-events-none absolute inset-0 hidden opacity-95 dark:block"
               style={{
                 background:
-                  "radial-gradient(circle at 18px 18px, rgba(120,133,180,0.28) 1px, transparent 1.5px), radial-gradient(circle at 78% 72%, rgba(18,63,105,0.5), transparent 36%), radial-gradient(circle at 14% 88%, rgba(116,74,21,0.25), transparent 30%), radial-gradient(circle at 52% 82%, rgba(88,28,135,0.18), transparent 40%), linear-gradient(180deg,#020617 0%,#060a18 100%)",
+                  "radial-gradient(circle at 18px 18px, rgba(120,133,180,0.3) 1px, transparent 1.5px), radial-gradient(circle at 76% 70%, rgba(94,187,209,0.24), transparent 35%), radial-gradient(circle at 18% 88%, rgba(248,205,142,0.16), transparent 30%), radial-gradient(circle at 48% 78%, rgba(59,48,158,0.22), transparent 42%), linear-gradient(135deg,#050817 0%,#080d20 44%,#07192a 100%)",
                 backgroundSize: "28px 28px, 100% 100%, 100% 100%, 100% 100%, 100% 100%",
               }}
             />
@@ -823,7 +823,7 @@ export function AIBubble() {
                   <>
                     <div className="flex w-[560px] max-w-full items-start gap-3 overflow-hidden">
                       <ChatAssistantLogo className="h-8 w-8 shrink-0" variant="avatar" />
-                      <div className="min-w-0 max-w-[474px] overflow-hidden rounded-[13px] border border-[#dedcf1] bg-white px-4 py-2.5 text-[14px] leading-relaxed text-slate-900 [overflow-wrap:anywhere] dark:border-[#252b4a] dark:bg-[#070b1a] dark:text-slate-100">
+                      <div className="min-w-0 max-w-[474px] overflow-hidden rounded-[13px] rounded-tl-[3px] border border-[#dedcf1] bg-white px-4 py-2.5 text-[14px] leading-relaxed text-slate-900 [overflow-wrap:anywhere] dark:border-[#252b4a] dark:bg-[#070b1a] dark:text-slate-100">
                         Welcome back! What would you like to do today?
                       </div>
                     </div>
@@ -844,10 +844,10 @@ export function AIBubble() {
                             className={cn(
                               "min-w-0 overflow-hidden whitespace-pre-wrap text-[14px] leading-relaxed [overflow-wrap:anywhere]",
                               isUser
-                                ? "min-h-12 max-w-[78%] rounded-[15px] rounded-br-md border border-rose-200 bg-rose-100/80 px-5 py-2.5 text-slate-900 dark:border-[#5f2b3c] dark:bg-[#351622]/85 dark:text-slate-100"
+                                ? "min-h-12 max-w-[78%] rounded-[15px] rounded-br-[3px] border border-rose-200 bg-rose-100/80 px-5 py-2.5 text-slate-900 dark:border-[#5f2b3c] dark:bg-gradient-to-r dark:from-[#351622]/95 dark:to-[#4a1c2b]/95 dark:text-slate-100"
                                 : richAssistant
                                   ? "max-w-[516px] flex-1 rounded-none border-0 bg-transparent p-0 text-slate-900 shadow-none"
-                                  : "w-fit max-w-[516px] rounded-[16px] border border-white bg-white px-4 py-3 text-slate-900 dark:border-[#1e2947] dark:bg-[#070b1a] dark:text-slate-100",
+                                  : "w-fit max-w-[516px] rounded-[16px] rounded-tl-[3px] border border-white bg-white px-4 py-3 text-slate-900 dark:border-[#1e2947] dark:bg-gradient-to-r dark:from-[#071126] dark:to-[#090d1d] dark:text-slate-100",
                             )}
                           >
                             {isUser ? msg.content : <AssistantMessageContent content={msg.content} />}
@@ -868,7 +868,7 @@ export function AIBubble() {
                         className="flex w-[560px] max-w-full items-start gap-3 overflow-hidden"
                       >
                         <ChatAssistantLogo className="h-8 w-8 shrink-0" variant="avatar" />
-                        <div className="rounded-[3px] border border-white bg-white px-4 py-2.5 dark:border-[#1e2947] dark:bg-[#070b1a]">
+                        <div className="rounded-[14px] border border-white bg-white px-4 py-2.5 dark:border-[#1e2947] dark:bg-gradient-to-r dark:from-[#071126] dark:to-[#090d1d]">
                           <AgentActivityDots state={state} />
                         </div>
                       </motion.div>
@@ -884,8 +884,8 @@ export function AIBubble() {
             </div>
 
             {!voiceMode && !showWelcome && quickActions.length > 0 && (
-              <div className="relative z-10 px-3 py-3">
-                <div className="grid min-w-0 grid-cols-4 gap-2">
+              <div className="relative z-10 px-5 py-3">
+                <div className="mx-auto grid w-[480px] max-w-full min-w-0 grid-cols-4 gap-2">
                   {quickActions.map((action, idx) => (
                     <QuickActionChip
                       key={action.id}
@@ -978,12 +978,12 @@ export function AIBubble() {
                 </div>
               </div>
             ) : (
-              <div className="relative z-10 bg-transparent px-12 pb-7 pt-2 max-sm:px-5 max-sm:pb-5">
+              <div className="relative z-10 bg-transparent px-5 pb-7 pt-2 max-sm:pb-5">
                 <form
                   name="ai-text-input"
                   onSubmit={handleSubmit}
                   className={cn(
-                    "relative flex min-h-[34px] items-end gap-1 rounded-[9px] border border-cyan-200/80 bg-white dark:border-[#265a72] dark:bg-[#070b1a]",
+                    "relative mx-auto flex min-h-[42px] w-[480px] max-w-full items-center gap-1 rounded-[12px] border border-cyan-200/80 bg-white dark:border-[#5EBBD1] dark:bg-gradient-to-r dark:from-[#071126] dark:via-[#07192a] dark:to-[#141c40]",
                     "transition-all focus-within:border-cyan-400 dark:focus-within:border-[#5dd5e8]",
                   )}
                 >
@@ -997,27 +997,27 @@ export function AIBubble() {
                     type="button"
                     onClick={handleVoiceClick}
                     className={cn(
-                      "mb-1 mr-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md text-rose-400 transition-all",
+                      "grid h-8 w-8 shrink-0 place-items-center rounded-[10px] text-rose-400 transition-all",
                       "hover:bg-rose-50 hover:text-rose-500 active:scale-[0.96] dark:hover:bg-[#351622] dark:hover:text-rose-300",
                     )}
                     title="Start voice conversation"
                     aria-label="Start voice conversation"
                   >
-                    <Mic className="h-3.5 w-3.5" />
+                    <Mic className="h-4 w-4" />
                   </button>
 
                   <button
                     type="submit"
                     disabled={busy}
                     className={cn(
-                      "mb-1 mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md transition-all",
+                      "mr-1 grid h-8 w-8 shrink-0 place-items-center rounded-[10px] transition-all",
                       "bg-orange-300 text-white hover:bg-orange-400 dark:bg-[#f59e0b] dark:hover:bg-[#fbbf24]",
                       "disabled:cursor-not-allowed disabled:opacity-40",
                     )}
                     title="Send"
                     aria-label="Send"
                   >
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-4 w-4" />
                   </button>
                 </form>
               </div>
