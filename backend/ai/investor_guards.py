@@ -403,6 +403,44 @@ def _clean_invest_property_name(raw: str) -> str:
     return text
 
 
+def invest_turn_explicit_token_amount(
+    text: str,
+    *,
+    args_token: str | None = None,
+) -> str | None:
+    """Token count explicitly provided this turn (utterance or tool args)."""
+    if args_token not in (None, ""):
+        value = str(args_token).strip()
+        return value if value else None
+    return parse_invest_order_from_utterance(text).get("token_amount")
+
+
+def invest_turn_specifies_property(
+    text: str,
+    *,
+    args_property: str | None = None,
+) -> bool:
+    """True when this turn names a property (id, #id, or name) via speech or tool args."""
+    if args_property not in (None, ""):
+        return True
+    parsed = parse_invest_order_from_utterance(text)
+    if parsed.get("property_name"):
+        return True
+    return bool(extract_invest_property_hint_from_utterance(text))
+
+
+def should_clear_stale_invest_token_amount(
+    text: str,
+    *,
+    args_property: str | None = None,
+    args_token: str | None = None,
+) -> bool:
+    """Drop a prior token_amount when the user names a property/id without a new count."""
+    if invest_turn_explicit_token_amount(text, args_token=args_token):
+        return False
+    return invest_turn_specifies_property(text, args_property=args_property)
+
+
 def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
     """Extract property_name and/or token_amount from a buy/invest voice or chat line."""
     utterance = _normalize_text(text)

@@ -9,9 +9,12 @@ from backend.ai.investor_guards import (
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
     parse_invest_order_from_utterance,
+    should_clear_stale_invest_token_amount,
 )
 from backend.ai.tools import (
     _clear_workflow_session,
+    _fill_invest_property,
+    _set_workflow_session,
     reset_current_messages,
     reset_current_thread_id,
     set_current_messages,
@@ -37,6 +40,60 @@ def test_parse_invest_one_token_in_property():
     parsed = parse_invest_order_from_utterance("Invest 1 token in Gold Plaza")
     assert parsed.get("token_amount") == "1"
     assert parsed.get("property_name") == "Gold Plaza"
+
+
+def test_property_id_only_should_clear_stale_token():
+    assert should_clear_stale_invest_token_amount("Invest in #12") is True
+    assert should_clear_stale_invest_token_amount("Invest 3 tokens in #12") is False
+    assert should_clear_stale_invest_token_amount("Invest 1 token in Gold Plaza") is False
+
+
+def test_invest_property_id_asks_for_token_count_not_previous_amount():
+    token = set_current_thread_id("test:invest-hash-id-only")
+    msg_token = set_current_messages(
+        [{"type": "human", "content": "Invest in property #7"}]
+    )
+    prop = {
+        "id": 7,
+        "name": "Burj Vista Residences",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "1",
+        "sold_percentage": "0",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        _set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "submitted": False,
+                "filled": {
+                    "property_name": "Old Tower",
+                    "token_amount": "9",
+                    "property_id": "3",
+                },
+                "next_field": "token_amount",
+                "property_id": 3,
+            },
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ):
+            result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
+        assert result.data.get("submitted") is False
+        assert result.data.get("next_field") == "token_amount"
+        assert "token_amount" in (result.data.get("missing") or [])
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "How many tokens" in speak
+        assert "Burj Vista" in speak
+        assert "MetaMask" not in speak
+        assert result.data.get("filled", {}).get("token_amount") in (None, "")
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_parse_invest_spoken_one_token_voice():
