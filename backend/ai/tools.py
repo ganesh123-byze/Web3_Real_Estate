@@ -74,6 +74,7 @@ from backend.ai.investor_guards import (
     invest_tool_blocked_message,
     invest_workflow_active,
     invest_turn_explicit_token_amount,
+    invest_utterance_is_token_count_only,
     parse_invest_order_from_utterance,
     should_clear_stale_invest_token_amount,
     wants_to_begin_invest_workflow,
@@ -5281,6 +5282,12 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
 
     utterance = extract_last_human_utterance(_current_history())
     parsed_order = parse_invest_order_from_utterance(utterance)
+    if invest_utterance_is_token_count_only(utterance):
+        parsed_order = {
+            k: str(v)
+            for k, v in parsed_order.items()
+            if k == "token_amount" and v not in (None, "")
+        }
     for field in _INVEST_FIELDS:
         if parsed_order.get(field) and not accumulated.get(field):
             accumulated[field] = str(parsed_order[field])
@@ -5483,15 +5490,20 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         "instruction": instruction,
         "invest_property_target": True,
     }
-    if property_id and resolved_prop and next_field == "token_amount":
+    if (
+        property_id
+        and resolved_prop
+        and next_field == "token_amount"
+        and not explicit_token_this_turn
+    ):
         out_data["speak_to_user"] = (
             f"{format_invest_target_property_speak(resolved_prop)}\n\n"
             "How many tokens would you like to buy?"
         )
         out_data["speak_verbatim"] = True
         out_data["instruction"] = (
-            "Read speak_to_user verbatim. Show only this property — do NOT list the "
-            "full marketplace."
+            "Read speak_to_user verbatim once. Show only this property — do NOT list the "
+            "full marketplace or repeat the summary on the next turn."
         )
     return ToolResult(ok=True, data=out_data, actions=[])
 

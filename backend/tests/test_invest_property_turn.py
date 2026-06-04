@@ -8,6 +8,7 @@ from backend.ai.investor_guards import (
     format_invest_target_property_speak,
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
+    invest_utterance_is_token_count_only,
     parse_invest_order_from_utterance,
     should_clear_stale_invest_token_amount,
 )
@@ -42,10 +43,81 @@ def test_parse_invest_one_token_in_property():
     assert parsed.get("property_name") == "Gold Plaza"
 
 
+def test_bare_digit_is_token_count_not_property_id():
+    assert invest_utterance_is_token_count_only("1") is True
+    assert parse_invest_order_from_utterance("1") == {"token_amount": "1"}
+    assert should_clear_stale_invest_token_amount("1") is False
+
+
 def test_property_id_only_should_clear_stale_token():
     assert should_clear_stale_invest_token_amount("Invest in #12") is True
     assert should_clear_stale_invest_token_amount("Invest 3 tokens in #12") is False
     assert should_clear_stale_invest_token_amount("Invest 1 token in Gold Plaza") is False
+
+
+def test_token_only_reply_keeps_property_and_submits():
+    token = set_current_thread_id("test:invest-token-only-submit")
+    msg_token = set_current_messages(
+        [
+            {"type": "human", "content": "Invest in #7"},
+            {"type": "ai", "content": "How many tokens would you like to buy?"},
+            {"type": "human", "content": "1"},
+        ]
+    )
+    prop = {
+        "id": 7,
+        "name": "Burj Vista Residences",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "0.1",
+        "monthly_rent_eth": "0.01",
+        "sold_percentage": "1",
+        "token_supply": "500",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        _set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "submitted": False,
+                "filled": {
+                    "property_name": "Burj Vista Residences",
+                    "property_id": "7",
+                },
+                "next_field": "token_amount",
+                "property_id": 7,
+            },
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ), patch(
+            "backend.ai.tools.check_investor_can_fund_investment",
+        ) as funding:
+            from backend.services.investment_funding import InvestmentFundingCheck
+
+            funding.return_value = InvestmentFundingCheck(
+                ok=True,
+                required_wei=1,
+                balance_wei=10**18,
+                required_eth="0",
+                balance_eth="1",
+                shortfall_wei=0,
+                shortfall_eth="0",
+                sale_price_per_token_wei=1,
+                token_amount=1,
+            )
+            with patch("backend.ai.tools._load_invest_property_row", return_value=prop):
+                result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
+        assert result.data.get("property_id") == 7
+        assert result.data.get("submitted") is True
+        assert result.data.get("token_amount") == 1
+        assert "How many tokens" not in str(result.data.get("speak_to_user") or "")
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_invest_property_id_asks_for_token_count_not_previous_amount():
@@ -88,6 +160,8 @@ def test_invest_property_id_asks_for_token_count_not_previous_amount():
         speak = str(result.data.get("speak_to_user") or "")
         assert "How many tokens" in speak
         assert "Burj Vista" in speak
+        assert "Yield & returns summary" in speak
+        assert "How many tokens" in speak
         assert "MetaMask" not in speak
         assert result.data.get("filled", {}).get("token_amount") in (None, "")
     finally:
@@ -185,8 +259,10 @@ def test_format_invest_target_is_single_property_not_catalog():
         },
         token_amount=1,
     )
-    assert "Investment target: Gold Plaza" in text
-    assert "Order: 1 token" in text
+    assert "Yield & returns summary" in text
+    assert "Property: Gold Plaza (#5)" in text
+    assert "Avg. rental yield:" in text
+    assert "Order size: 1 token" in text
     assert "Here are the properties open for investment" not in text
 
 
