@@ -3,6 +3,7 @@
 import { useState, type MouseEvent } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/common/empty";
 import { shortAddress } from "@/lib/utils";
 import type { Property } from "@/lib/types";
 import type { PropertyOwnershipItem } from "@/lib/ownership";
@@ -76,20 +77,26 @@ export function InvestorShareChart({
           </span>
         </div>
       </CardHeader>
-      <CardContent className="grid flex-1 grid-cols-1 gap-4 pt-0 md:grid-cols-2">
-        <div className="relative grid place-items-center">
-          {!property ? (
-            <div className="grid h-[220px] place-items-center text-sm text-muted-foreground">
-              Select a property
-            </div>
-          ) : loading ? (
+      <CardContent className="flex-1 pt-0">
+        {!property ? (
+          <EmptyState
+            title="Select a property"
+            description="Pick a property to see investor ownership."
+            className="min-h-[240px] border-0"
+          />
+        ) : loading ? (
+          <div className="grid min-h-[240px] place-items-center">
             <Skeleton className="h-[220px] w-[220px] rounded-full" />
-          ) : items.length === 0 ? (
-            <div className="grid h-[220px] place-items-center px-4 text-center text-xs text-muted-foreground">
-              No investor data yet for this property.
-            </div>
-          ) : (
-            <>
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="No investors yet"
+            description="Investor ownership will appear here after tokens are purchased."
+            className="min-h-[240px] border-0"
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="relative grid place-items-center">
               <ContinuousOwnershipDonut items={chartItems} />
               <div className="pointer-events-none absolute inset-0 grid place-items-center">
                 <div className="flex flex-col items-center text-center">
@@ -99,42 +106,37 @@ export function InvestorShareChart({
                   <span className="text-[11px] text-muted-foreground">Total Allocated</span>
                 </div>
               </div>
-            </>
-          )}
-        </div>
-        <div className="flex max-h-[220px] min-h-[220px] flex-col gap-1.5 overflow-y-scroll overscroll-contain pr-1 scrollbar-thin">
-          <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] gap-2 bg-card px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <span>Investor</span>
-            <span>Share</span>
-          </div>
-          {chartItems.map((it, i) => (
-            <div
-              key={it.investor}
-              className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-muted/50"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ background: getOwnershipColor(i, it.isUnallocated) }}
-                />
-                <span
-                  className={it.isUnallocated ? "truncate font-mono text-[11px] text-muted-foreground" : "truncate font-mono text-[11px] text-foreground/90"}
-                  title={it.investor}
-                >
-                  {it.isUnallocated ? "Unallocated" : shortAddress(it.investor, 6, 4)}
-                </span>
+            </div>
+            <div className="flex max-h-[220px] min-h-[220px] flex-col gap-1.5 overflow-y-scroll overscroll-contain pr-1 scrollbar-thin">
+              <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] gap-2 bg-card px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <span>Investor</span>
+                <span>Share</span>
               </div>
-              <span className={it.isUnallocated ? "tabular-nums font-medium text-muted-foreground" : "tabular-nums font-medium"}>
-                {it.share_pct.toFixed(it.share_pct >= 10 ? 0 : 1)}%
-              </span>
+              {chartItems.map((it, i) => (
+                <div
+                  key={it.investor}
+                  className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-muted/50"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ background: getOwnershipColor(i, it.isUnallocated) }}
+                    />
+                    <span
+                      className={it.isUnallocated ? "truncate font-mono text-[11px] text-muted-foreground" : "truncate font-mono text-[11px] text-foreground/90"}
+                      title={it.investor}
+                    >
+                      {it.isUnallocated ? "Unallocated" : shortAddress(it.investor, 6, 4)}
+                    </span>
+                  </div>
+                  <span className={it.isUnallocated ? "tabular-nums font-medium text-muted-foreground" : "tabular-nums font-medium"}>
+                    {it.share_pct.toFixed(it.share_pct >= 10 ? 0 : 1)}%
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-          {!items.length && property ? (
-            <div className="grid flex-1 place-items-center text-xs text-muted-foreground">
-              No investors yet.
-            </div>
-          ) : null}
-        </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

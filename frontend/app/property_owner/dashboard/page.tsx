@@ -13,12 +13,13 @@ import {
 } from "recharts";
 import { Building2, Coins, Receipt, Wallet } from "lucide-react";
 import { AdminTopbar } from "@/components/layout/topbar";
-import { useDashboardSummary, useManagedProperties, useOwnerInvestors, useRentAnalytics, useTransactions } from "@/lib/queries";
+import { useManagedProperties, useOwnerInvestors, useRentAnalytics, useTransactions } from "@/lib/queries";
 import { PropertiesOverviewTable } from "@/components/dashboard/properties-overview-table";
 import { InvestorShareChart } from "@/components/dashboard/investor-share-chart";
 import { GradientStatCard } from "@/components/dashboard/gradient-stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/common/empty";
 import type { Property } from "@/lib/types";
 import { pickColor } from "@/lib/charts";
 import { formatCurrency, formatEth, formatNumber } from "@/lib/utils";
@@ -37,7 +38,6 @@ export default function DashboardPage() {
   const properties = useManagedProperties();
   const transactions = useTransactions();
   const rent = useRentAnalytics();
-  const summary = useDashboardSummary();
   const ownerInvestors = useOwnerInvestors();
 
   const managedProperties = properties.data ?? [];
@@ -64,7 +64,10 @@ export default function DashboardPage() {
     (acc, transaction) => acc + toEthDisplayAmount(transaction.amount_spent ?? transaction.amount ?? 0),
     0,
   );
-  const totalPortfolio = Number(summary.data?.total_portfolio_value ?? 0) / 1e18;
+  const totalPortfolio = managedProperties.reduce(
+    (acc, property) => acc + Number(property.total_value ?? 0),
+    0,
+  );
   const selectedProperty = selected
     ? managedProperties.find((property) => property.id === selected.id) ?? selected
     : null;
@@ -104,7 +107,7 @@ export default function DashboardPage() {
             value={formatCurrency(totalPortfolio)}
             sub={`${managedProperties.length} ${managedProperties.length === 1 ? "property" : "properties"} in your portfolio`}
             icon={Wallet}
-            loading={summary.isLoading}
+            loading={properties.isLoading}
             accent="violet"
             graph="dots"
           />
@@ -166,9 +169,11 @@ export default function DashboardPage() {
               {properties.isLoading ? (
                 <Skeleton className="h-[280px] w-full" />
               ) : propertyPerf.length === 0 ? (
-                <div className="grid h-[280px] place-items-center text-sm text-muted-foreground">
-                  No properties.
-                </div>
+                <EmptyState
+                  title="No properties yet"
+                  description="Performance charts appear after you create property listings."
+                  className="min-h-[280px] border-0"
+                />
               ) : (
                 <div className="overflow-x-auto overflow-y-hidden pb-2 scrollbar-thin">
                   <div style={{ width: propertyPerfChartWidth, minWidth: "100%" }}>
@@ -229,9 +234,11 @@ export default function DashboardPage() {
               {transactions.isLoading ? (
                 <Skeleton className="h-[280px] w-full" />
               ) : txByType.length === 0 ? (
-                <div className="grid h-[280px] place-items-center text-sm text-muted-foreground">
-                  No transaction data.
-                </div>
+                <EmptyState
+                  title="No transaction data"
+                  description="Transaction breakdown appears after indexed activity is available."
+                  className="min-h-[280px] border-0"
+                />
               ) : (
                 <div className="grid gap-4 md:grid-cols-[1fr_0.78fr] md:items-center">
                   <div className="relative">

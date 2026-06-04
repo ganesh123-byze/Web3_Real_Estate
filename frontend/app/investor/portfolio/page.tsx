@@ -107,7 +107,11 @@ export default function InvestorPortfolioPage() {
               {portfolio.isLoading || properties.isLoading ? (
                 <Skeleton className="h-[260px] w-full" />
               ) : chartData.length === 0 ? (
-                <div className="grid h-[260px] place-items-center text-sm text-muted-foreground">No holdings yet.</div>
+                <EmptyState
+                  title="No holdings yet"
+                  description="Allocation appears after you purchase property tokens."
+                  className="min-h-[260px] border-0"
+                />
               ) : (
                 <>
                   <PortfolioAllocationDonut items={chartData} />

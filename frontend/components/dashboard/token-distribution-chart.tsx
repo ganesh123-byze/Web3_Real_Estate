@@ -3,6 +3,7 @@
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/common/empty";
 import { pickColor } from "@/lib/charts";
 import type { Property } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -42,9 +43,11 @@ export function TokenDistributionChart({
         {loading && data.length === 0 ? (
           <Skeleton className="h-[260px] w-full" />
         ) : data.length === 0 ? (
-          <div className="grid h-[260px] place-items-center text-sm text-muted-foreground">
-            No properties yet.
-          </div>
+          <EmptyState
+            title="No properties yet"
+            description="Property token distribution will appear here after listings are created."
+            className="min-h-[260px] border-0"
+          />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data} margin={{ top: 16, right: 8, left: -10, bottom: 8 }}>

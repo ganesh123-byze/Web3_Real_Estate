@@ -20,6 +20,7 @@ import { AdminTopbar } from "@/components/layout/topbar";
 import { GradientStatCard } from "@/components/dashboard/gradient-stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/common/empty";
 import {
   useProperties,
   useRentAnalytics,
@@ -136,9 +137,11 @@ export default function AnalyticsPage() {
               {distributions.isLoading ? (
                 <Skeleton className="h-[260px] w-full" />
               ) : distributionTimeline.length === 0 ? (
-                <div className="grid h-[260px] place-items-center text-sm text-muted-foreground">
-                  No distributions yet.
-                </div>
+                <EmptyState
+                  title="No distributions yet"
+                  description="Distribution charts appear after rent is distributed."
+                  className="min-h-[260px] border-0"
+                />
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <AreaChart data={distributionTimeline} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
@@ -191,9 +194,11 @@ export default function AnalyticsPage() {
               {transactions.isLoading ? (
                 <Skeleton className="h-[200px] w-full" />
               ) : txByType.length === 0 ? (
-                <div className="grid h-[200px] place-items-center text-sm text-muted-foreground">
-                  No data
-                </div>
+                <EmptyState
+                  title="No transaction data"
+                  description="Breakdown appears after indexed activity is available."
+                  className="min-h-[200px] border-0"
+                />
               ) : (
                 <>
                   <ResponsiveContainer width="100%" height={180}>
@@ -253,9 +258,11 @@ export default function AnalyticsPage() {
             {properties.isLoading ? (
               <Skeleton className="h-[260px] w-full" />
             ) : propertyPerf.length === 0 ? (
-              <div className="grid h-[260px] place-items-center text-sm text-muted-foreground">
-                No properties.
-              </div>
+              <EmptyState
+                title="No properties yet"
+                description="Property performance appears after listings are created."
+                className="min-h-[260px] border-0"
+              />
             ) : (
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={propertyPerf} margin={{ top: 12, right: 16, left: -12, bottom: 8 }}>
