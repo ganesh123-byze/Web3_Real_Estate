@@ -11,10 +11,10 @@ import { MintNftDialog } from "@/components/properties/mint-nft-dialog";
 import { PropertyCard } from "@/components/properties/property-card";
 import { EditPropertyDialogHost } from "@/components/properties/edit-property-dialog";
 import { EmptyState } from "@/components/common/empty";
-import { useProperties } from "@/lib/queries";
+import { useManagedProperties } from "@/lib/queries";
 
 export default function PropertiesPage() {
-  const properties = useProperties();
+  const properties = useManagedProperties();
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
