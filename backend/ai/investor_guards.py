@@ -361,10 +361,30 @@ def _normalize_invest_amount_token(raw: str | None) -> str | None:
     return str(amount) if amount and amount > 0 else None
 
 
+def invest_utterance_is_token_count_only(text: str) -> bool:
+    """True when the user is answering with a token count (e.g. '1' or '5 tokens'), not a property id."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return False
+    if parse_invest_token_amount(utterance):
+        return True
+    if re.fullmatch(r"\d+", utterance):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?i)(one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)",
+            utterance,
+        )
+    )
+
+
 def extract_invest_property_hint_from_utterance(text: str) -> str:
     """Best-effort property name when the user did not use a strict invest pattern."""
     utterance = _normalize_text(text)
     if not utterance:
+        return ""
+
+    if invest_utterance_is_token_count_only(utterance):
         return ""
 
     if parse_invest_token_amount(utterance) and not re.search(
@@ -436,6 +456,8 @@ def should_clear_stale_invest_token_amount(
     args_token: str | None = None,
 ) -> bool:
     """Drop a prior token_amount when the user names a property/id without a new count."""
+    if invest_utterance_is_token_count_only(text):
+        return False
     if invest_turn_explicit_token_amount(text, args_token=args_token):
         return False
     return invest_turn_specifies_property(text, args_property=args_property)
@@ -461,6 +483,16 @@ def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
             out["property_name"] = prop
         if out:
             return out
+
+    if invest_utterance_is_token_count_only(utterance):
+        amount = parse_invest_token_amount(utterance)
+        if not amount and utterance.isdigit():
+            value = int(utterance)
+            if value > 0:
+                return {"token_amount": str(value)}
+        if amount:
+            return {"token_amount": amount}
+        return {}
 
     amount = parse_invest_token_amount(utterance)
     if amount:
@@ -492,55 +524,85 @@ def _format_eth_amount(raw: Any) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
+def _derive_invest_yield_metrics(prop: dict[str, Any]) -> list[str]:
+    """Label: value rows for the investor Yield & returns summary card in chat."""
+    name = str(prop.get("name") or f"Property {prop.get('id')}")
+    pid = prop.get("id")
+    rows: list[str] = [f"Property: {name} (#{pid})"]
+
+    try:
+        monthly_rent = float(prop.get("monthly_rent_eth") or 0)
+    except (TypeError, ValueError):
+        monthly_rent = 0.0
+    try:
+        token_price = float(prop.get("token_sale_price_eth") or 0)
+    except (TypeError, ValueError):
+        token_price = 0.0
+    try:
+        supply = float(prop.get("token_supply") or 0)
+    except (TypeError, ValueError):
+        supply = 0.0
+    try:
+        sold_pct = float(str(prop.get("sold_percentage") or "0").replace("%", ""))
+    except (TypeError, ValueError):
+        sold_pct = 0.0
+
+    nav_eth = token_price * supply if token_price > 0 and supply > 0 else 0.0
+    annual_rent = monthly_rent * 12 if monthly_rent > 0 else 0.0
+
+    if nav_eth > 0 and annual_rent > 0:
+        roi = (annual_rent / nav_eth) * 100
+        rows.append(f"Avg. rental yield: {roi:.1f}% p.a.")
+        rows.append(f"Projected 5-yr return: +{min(roi * 5, 250):.0f}%")
+    else:
+        rows.append("Avg. rental yield: —")
+        rows.append("Projected 5-yr return: —")
+
+    rows.append(f"Capital appreciation: +{sold_pct:.1f}% sold")
+    rows.append(
+        f"Monthly rental income: {_format_eth_amount(monthly_rent)} ETH"
+        if monthly_rent > 0
+        else "Monthly rental income: —"
+    )
+
+    if token_price > 0:
+        rows.append(f"Token price: {_format_eth_amount(token_price)} ETH")
+    available = _format_token_count(prop.get("tokens_available"))
+    rows.append(f"Tokens available: {available}")
+    rows.append("Next payout: When rent is collected on-chain")
+    return rows
+
+
 def format_invest_target_property_speak(
     prop: dict[str, Any],
     *,
     token_amount: int | str | None = None,
 ) -> str:
-    """Single-property summary for an invest order — not the full marketplace catalog."""
-    name = str(prop.get("name") or f"Property {prop.get('id')}")
-    pid = prop.get("id")
-    location = str(prop.get("location") or "").strip()
-    symbol = str(prop.get("token_symbol") or "").strip()
-    available = _format_token_count(prop.get("tokens_available"))
-    price = _format_eth_amount(prop.get("token_sale_price_eth"))
-    sold = str(prop.get("sold_percentage") or "0").strip()
-    rent = prop.get("monthly_rent_eth")
-
-    lines = [
-        f"Investment target: {name} (#{pid})",
-    ]
-    detail_bits: list[str] = []
-    if location:
-        detail_bits.append(location)
-    if symbol:
-        detail_bits.append(symbol)
-    detail_bits.append(f"{sold}% sold")
-    detail_bits.append(f"{available} tokens available")
-    if price and price not in ("0", "0.0"):
-        detail_bits.append(f"{price} ETH per token")
-    if rent not in (None, "", "0", "0.0"):
-        detail_bits.append(f"monthly rent {_format_eth_amount(rent)} ETH")
-    lines.append(" — ".join(detail_bits))
+    """Single-property summary for an invest order — Yield & returns card format."""
+    lines = ["Yield & returns summary", *_derive_invest_yield_metrics(prop)]
 
     if token_amount is not None:
         try:
             amount_int = int(token_amount)
         except (TypeError, ValueError):
             amount_int = None
-        if amount_int and amount_int > 0 and price and price not in ("0", "0.0"):
-            try:
-                total = float(price) * amount_int
+        price = _format_eth_amount(prop.get("token_sale_price_eth"))
+        if amount_int and amount_int > 0:
+            if price and price not in ("0", "0.0"):
+                try:
+                    total = float(price) * amount_int
+                    lines.append(
+                        f"Order size: {amount_int} token{'s' if amount_int != 1 else ''} "
+                        f"(about {_format_eth_amount(total)} ETH plus gas)"
+                    )
+                except (TypeError, ValueError):
+                    lines.append(
+                        f"Order size: {amount_int} token{'s' if amount_int != 1 else ''}"
+                    )
+            else:
                 lines.append(
-                    f"Order: {amount_int} token{'s' if amount_int != 1 else ''} "
-                    f"(about {_format_eth_amount(total)} ETH plus gas)."
+                    f"Order size: {amount_int} token{'s' if amount_int != 1 else ''}"
                 )
-            except (TypeError, ValueError):
-                lines.append(
-                    f"Order: {amount_int} token{'s' if amount_int != 1 else ''}."
-                )
-        elif amount_int and amount_int > 0:
-            lines.append(f"Order: {amount_int} token{'s' if amount_int != 1 else ''}.")
 
     return "\n".join(lines)
 
