@@ -3,7 +3,7 @@ import { ApiError } from "@/lib/api";
 const INSUFFICIENT_FUNDS_MESSAGE =
   "Your wallet funds are insufficient for this transaction. Please check your ETH balance or reduce the amount, then try again.";
 
-const USER_REJECTED_MESSAGE = "Transaction cancelled in MetaMask.";
+const USER_REJECTED_MESSAGE = "You cancelled the payment in MetaMask.";
 const PENDING_WALLET_REQUEST_MESSAGE =
   "A MetaMask request is already open. Please finish or close it in MetaMask, then try again.";
 

@@ -335,12 +335,25 @@ function isLongResponseValue(value: string) {
   return value.length > 56 || value.includes("?") || extractQuotedItems(value).length > 1;
 }
 
+function splitSummaryCardContent(content: string): { title: string; body: string } {
+  const trimmed = content.trim();
+  const lines = trimmed.split("\n");
+  const first = lines[0]?.trim() ?? "";
+  if (/^(yield & returns summary|investment summary)$/i.test(first)) {
+    return { title: first, body: lines.slice(1).join("\n").trim() };
+  }
+  return { title: "Yield & returns summary", body: trimmed };
+}
+
 function YieldSummaryCard({ content }: { content: string }) {
-  const metrics = parseMetricRows(content).slice(0, 5);
+  const { title, body } = splitSummaryCardContent(content);
+  const metrics = parseMetricRows(body).slice(0, 5);
+  const heading =
+    /^investment summary$/i.test(title) ? "Investment summary" : "Yield & returns summary";
 
   return (
     <section className="w-full min-w-0 overflow-hidden rounded-[16px] bg-white px-4 py-3 text-[14px] text-[#1A1A2E] dark:border dark:border-[#1e2947] dark:bg-[#070b1a] dark:text-slate-100">
-      <h3 className="mb-2 text-[14px] font-bold text-[#1A1A2E] dark:text-slate-100">Yield &amp; returns summary</h3>
+      <h3 className="mb-2 text-[14px] font-bold text-[#1A1A2E] dark:text-slate-100">{heading}</h3>
       <div className="space-y-1">
         {metrics.map((metric) => (
           <div key={metric.label} className="flex min-w-0 items-baseline justify-between gap-3 leading-snug">
@@ -423,6 +436,7 @@ function isRichAssistantContent(content: string) {
   const normalizedContent = content.toLowerCase();
   return (
     normalizedContent.includes("yield & returns summary") ||
+    normalizedContent.includes("investment summary") ||
     normalizedContent.includes("avg. rental yield") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
@@ -451,7 +465,7 @@ function normalizeInvestSummaryForCard(content: string): string {
       else if (/eth per token/i.test(part)) rows.push(`Token price: ${part.replace(/per token/i, "").trim()}`);
       else if (/monthly rent/i.test(part)) rows.push(`Monthly rental income: ${part.replace(/monthly rent/i, "").trim()}`);
     }
-    return ["Yield & returns summary", ...rows.filter(Boolean)].join("\n");
+    return ["Investment summary", ...rows.filter(Boolean)].join("\n");
   }
   return normalized;
 }
@@ -460,6 +474,7 @@ function AssistantMessageContent({ content }: { content: string }) {
   const normalizedContent = content.toLowerCase();
   if (
     normalizedContent.includes("yield & returns summary") ||
+    normalizedContent.includes("investment summary") ||
     normalizedContent.includes("avg. rental yield") ||
     normalizedContent.includes("investment target:")
   ) {

@@ -38,6 +38,9 @@ def test_token_sale_price_eth_from_token_price_base_wei():
 def test_has_investor_portfolio_intent():
     assert has_investor_portfolio_intent("show my portfolio") is True
     assert has_investor_portfolio_intent("invest 1 token in Gold Plaza") is False
+    assert has_investor_portfolio_intent(
+        "Show me my investment portfolio with current valuations."
+    ) is True
 
 
 def test_format_portfolio_lists_property_names():

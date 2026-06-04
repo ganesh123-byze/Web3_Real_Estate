@@ -69,6 +69,30 @@ def has_explicit_pay_rent_intent(text: str) -> bool:
     return wants_to_begin_pay_rent_workflow(t)
 
 
+def pay_rent_utterance_names_property(text: str) -> bool:
+    """True when the user named a concrete property (id or title), not only 'pay rent'."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return False
+    if re.search(r"(?i)(?:property\s*)?#(\d+)\b", utterance):
+        return True
+    hint = re.sub(r"[.!?]+$", "", _pay_rent_property_hint_after_strip(utterance)).strip()
+    if not hint or hint in {".", "-", "?"}:
+        return False
+    return len(hint) >= 2
+
+
+def _pay_rent_property_hint_after_strip(utterance: str) -> str:
+    stripped = re.sub(
+        r"(?i)^(?:please\s+)?(?:help\s+me\s+)?(?:i\s+want\s+to\s+)?"
+        r"(?:pay|submit|send|make)\s+(?:the\s+|my\s+|this\s+)?"
+        r"(?:month(?:'s|s)?\s+)?rent\s*(?:for|on)?\s*",
+        "",
+        utterance,
+    ).strip()
+    return re.sub(r"(?i)^(?:for|on)\s+", "", stripped).strip()
+
+
 def extract_pay_rent_property_hint_from_utterance(text: str) -> str:
     """Property id (#n) or spoken name from a pay-rent utterance."""
     utterance = _normalize_text(text)
@@ -79,12 +103,7 @@ def extract_pay_rent_property_hint_from_utterance(text: str) -> str:
     if id_match:
         return f"#{id_match.group(1)}"
 
-    stripped = re.sub(
-        r"(?i)^(?:please\s+)?(?:help\s+me\s+)?(?:i\s+want\s+to\s+)?"
-        r"(?:pay|submit|send|make)\s+(?:the\s+|my\s+|this\s+)?"
-        r"(?:month(?:'s|s)?\s+)?rent\s*(?:for|on)?\s*",
-        "",
-        utterance,
-    ).strip()
-    stripped = re.sub(r"(?i)^(?:for|on)\s+", "", stripped).strip()
+    stripped = re.sub(r"[.!?]+$", "", _pay_rent_property_hint_after_strip(utterance)).strip()
+    if not stripped or stripped.endswith("rent"):
+        return ""
     return stripped

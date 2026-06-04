@@ -453,9 +453,9 @@ async def run_agent(
         if role == "investor":
             preflight = await try_server_investor_marketplace_browse(user, db)
         if preflight is None and role == "investor":
-            preflight = await try_server_invest_property_turn(user, db)
-        if preflight is None and role == "investor":
             preflight = await try_server_investor_portfolio_overview(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_invest_property_turn(user, db)
         if preflight is None and role == "tenant":
             preflight = await try_server_tenant_pay_rent_turn(user, db)
         elif role == "property_owner":
@@ -629,9 +629,9 @@ async def stream_agent(
         if role == "investor":
             preflight = await try_server_investor_marketplace_browse(user, db)
         if preflight is None and role == "investor":
-            preflight = await try_server_invest_property_turn(user, db)
-        if preflight is None and role == "investor":
             preflight = await try_server_investor_portfolio_overview(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_invest_property_turn(user, db)
         if preflight is None and role == "tenant":
             preflight = await try_server_tenant_pay_rent_turn(user, db)
         elif role == "property_owner":

@@ -5,9 +5,11 @@ import asyncio
 from unittest.mock import patch
 
 import backend.ai.tools as tools
+from backend.ai.investor_guards import has_investor_portfolio_intent
 from backend.ai.tenant_guards import (
     extract_pay_rent_property_hint_from_utterance,
     has_explicit_pay_rent_intent,
+    pay_rent_utterance_names_property,
 )
 from backend.services.auth import AuthUser
 
@@ -43,6 +45,32 @@ def test_extract_pay_rent_hint_from_hash_id():
 def test_has_explicit_pay_rent_intent():
     assert has_explicit_pay_rent_intent("pay the rent #4") is True
     assert has_explicit_pay_rent_intent("when is my rent due") is False
+
+
+def test_pay_rent_quick_action_does_not_name_property():
+    utterance = "I want to pay this month's rent."
+    assert extract_pay_rent_property_hint_from_utterance(utterance) == ""
+    assert pay_rent_utterance_names_property(utterance) is False
+
+
+def test_try_server_pay_rent_quick_action_asks_for_property(monkeypatch):
+    token = tools.set_current_thread_id("test:tenant-pay-rent-ask")
+    msg_token = tools.set_current_messages(
+        [{"type": "human", "content": "I want to pay this month's rent."}]
+    )
+    try:
+        tools._clear_workflow_session("PAY_RENT")
+        with patch.object(tools, "canonical_role", return_value="tenant"):
+            result = asyncio.run(tools.try_server_tenant_pay_rent_turn(_tenant(), None))
+        assert result is not None
+        assert result.ok
+        assert result.data.get("next_field") == "property_name"
+        assert "which property" in (result.data.get("speak_to_user") or "").lower()
+        assert not result.data.get("submitted")
+    finally:
+        tools._clear_workflow_session("PAY_RENT")
+        tools.reset_current_thread_id(token)
+        tools.reset_current_messages(msg_token)
 
 
 def test_resolve_rentable_property_by_hash_id(monkeypatch):

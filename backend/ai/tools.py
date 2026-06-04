@@ -94,6 +94,7 @@ from backend.ai.owner_guards import (
 from backend.ai.tenant_guards import (
     extract_pay_rent_property_hint_from_utterance,
     has_explicit_pay_rent_intent,
+    pay_rent_utterance_names_property,
     pay_rent_workflow_active,
     wants_to_begin_pay_rent_workflow,
 )
@@ -1063,6 +1064,8 @@ async def try_server_invest_property_turn(
     utterance = _latest_human_utterance().strip()
     if not utterance or has_marketplace_browse_intent(utterance):
         return None
+    if has_investor_portfolio_intent(utterance):
+        return None
 
     session = _get_workflow_session(_INVEST_MODAL)
     active = invest_workflow_active(session)
@@ -1125,10 +1128,14 @@ def _enrich_pay_rent_preflight_result(result: ToolResult) -> ToolResult:
         return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
     if data.get("next_field") == "property_name" and not data.get("property_id"):
+        ask = "Which property would you like to pay rent for? You can say the name or #id."
+        data.setdefault("speak_to_user", ask)
+        data["speak_verbatim"] = True
         data.setdefault(
             "instruction",
-            "Ask which property to pay rent on. If the user gave property #id, "
-            "pass that as property_name (e.g. '#4') — do not list every property by name.",
+            "Read speak_to_user verbatim. Ask which property to pay rent on. "
+            "If the user gave property #id, pass property_name as '#4' — do not list "
+            "every property by name.",
         )
     return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
@@ -1154,17 +1161,21 @@ async def try_server_tenant_pay_rent_turn(
     if hint:
         fill_args["property_name"] = hint
 
-    if not fill_args and wants_to_begin_pay_rent_workflow(utterance) and not active:
+    names_property = pay_rent_utterance_names_property(utterance)
+
+    if not names_property and (
+        has_explicit_pay_rent_intent(utterance) or wants_to_begin_pay_rent_workflow(utterance)
+    ) and not active:
         started = await _start_pay_rent_property({}, user, db)
         return _enrich_pay_rent_preflight_result(started)
 
-    if not fill_args and not active:
+    if not names_property and not active:
         return None
 
-    if fill_args.get("property_name"):
+    if names_property and fill_args.get("property_name"):
         fill_args["submit"] = True
 
-    if not active and fill_args.get("property_name"):
+    if not active and names_property:
         await _start_pay_rent_property({}, user, db)
 
     result = await _fill_pay_rent_property(fill_args, user, db)

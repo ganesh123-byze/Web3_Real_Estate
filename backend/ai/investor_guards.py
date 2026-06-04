@@ -14,6 +14,9 @@ from backend.ai.schemas import AgentAction
 
 _INVESTOR_WALLET_MODALS = frozenset({"INVEST_PROPERTY", "CLAIM_REWARDS"})
 
+INVEST_TARGET_SUMMARY_HEADING = "Investment summary"
+PORTFOLIO_YIELD_SUMMARY_HEADING = "Yield & returns summary"
+
 # Informational / browse phrasing — never open wallet UI when this matches alone.
 _INFO_OR_BROWSE = re.compile(
     r"\b("
@@ -151,6 +154,8 @@ def has_explicit_invest_intent(text: str) -> bool:
     t = _normalize_text(text)
     if not t:
         return False
+    if has_investor_portfolio_intent(t):
+        return False
     if _INVEST_RESEARCH.search(t):
         return False
     parsed = parse_invest_order_from_utterance(t)
@@ -172,12 +177,12 @@ def has_explicit_invest_intent(text: str) -> bool:
 
 
 def invest_workflow_active(session: dict | None) -> bool:
-    """True while a guided invest form is being collected or submitted."""
+    """True while a guided invest form is collecting fields (not after a completed order)."""
     if not session:
         return False
-    if session.get("completing_submit"):
-        return True
-    return bool(session.get("in_progress")) and not session.get("submitted")
+    if session.get("submitted"):
+        return False
+    return bool(session.get("in_progress"))
 
 
 def investor_invest_wallet_permitted(
@@ -202,14 +207,15 @@ def has_explicit_claim_intent(text: str) -> bool:
 
 _PORTFOLIO_INTENT = re.compile(
     r"\b("
-    r"(?:my\s+)?portfolio\b|"
+    r"(?:my\s+)?(?:investment\s+)?portfolio\b|"
     r"(?:my\s+)?holdings?\b|"
     r"my\s+tokens?\b|"
     r"my\s+shares?\b|"
     r"what\s+do\s+i\s+own\b|"
-    r"show\s+my\s+investments?\b|"
+    r"show\s+(?:me\s+)?(?:my\s+)?investments?\b|"
     r"portfolio\s+summary\b|"
-    r"summarize\s+my\s+portfolio\b"
+    r"summarize\s+my\s+portfolio\b|"
+    r"current\s+valuations?\b"
     r")\b",
     re.IGNORECASE,
 )
@@ -222,8 +228,8 @@ def has_investor_portfolio_intent(text: str) -> bool:
         return False
     if not _PORTFOLIO_INTENT.search(utterance):
         return False
-    if has_explicit_invest_intent(utterance) and not re.search(
-        r"(?i)\b(?:portfolio|holdings?|my\s+tokens?|my\s+shares?)\b",
+    if _INVEST_TRANSACTIONAL.search(utterance) and not re.search(
+        r"(?i)\b(?:portfolio|holdings?|my\s+tokens?|my\s+shares?|investment\s+portfolio|valuations?)\b",
         utterance,
     ):
         return False
@@ -239,7 +245,7 @@ def format_investor_portfolio_speak(
     count = int(portfolio_data.get("count") or len(holdings))
 
     lines = [
-        "Yield & returns summary",
+        PORTFOLIO_YIELD_SUMMARY_HEADING,
         "Portfolio snapshot (live)",
         f"Properties held: {count}",
     ]
@@ -468,6 +474,9 @@ def extract_invest_property_hint_from_utterance(text: str) -> str:
     if not utterance:
         return ""
 
+    if has_investor_portfolio_intent(utterance):
+        return ""
+
     if invest_utterance_is_token_count_only(utterance):
         return ""
 
@@ -662,8 +671,8 @@ def format_invest_target_property_speak(
     *,
     token_amount: int | str | None = None,
 ) -> str:
-    """Single-property summary for an invest order — Yield & returns card format."""
-    lines = ["Yield & returns summary", *_derive_invest_yield_metrics(prop)]
+    """Single-property summary for an invest order — investment summary card format."""
+    lines = [INVEST_TARGET_SUMMARY_HEADING, *_derive_invest_yield_metrics(prop)]
 
     if token_amount is not None:
         try:

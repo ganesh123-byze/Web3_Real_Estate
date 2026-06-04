@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from backend.ai.investor_guards import (
     format_invest_target_property_speak,
     has_explicit_invest_intent,
+    has_investor_portfolio_intent,
     has_marketplace_browse_intent,
     invest_utterance_is_token_count_only,
     parse_invest_order_from_utterance,
@@ -35,6 +36,12 @@ def _investor() -> AuthUser:
         kyc_status="verified",
         active=True,
     )
+
+
+def test_portfolio_phrase_is_not_invest_intent():
+    utterance = "Show me my investment portfolio with current valuations."
+    assert has_investor_portfolio_intent(utterance) is True
+    assert has_explicit_invest_intent(utterance) is False
 
 
 def test_parse_invest_one_token_in_property():
@@ -160,7 +167,7 @@ def test_invest_property_id_asks_for_token_count_not_previous_amount():
         speak = str(result.data.get("speak_to_user") or "")
         assert "How many tokens" in speak
         assert "Burj Vista" in speak
-        assert "Yield & returns summary" in speak
+        assert "Investment summary" in speak
         assert "How many tokens" in speak
         assert "MetaMask" not in speak
         assert result.data.get("filled", {}).get("token_amount") in (None, "")
@@ -259,7 +266,7 @@ def test_format_invest_target_is_single_property_not_catalog():
         },
         token_amount=1,
     )
-    assert "Yield & returns summary" in text
+    assert "Investment summary" in text
     assert "Property: Gold Plaza (#5)" in text
     assert "Avg. rental yield:" in text
     assert "Order size: 1 token" in text
