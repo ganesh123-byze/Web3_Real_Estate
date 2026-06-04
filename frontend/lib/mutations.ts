@@ -14,11 +14,11 @@ import type { Property } from "./types";
 export type CreatePropertyPayload = {
   name: string;
   location: string;
-  total_value: string | number;
-  token_supply: string | number;
+  total_value: string;
+  token_supply: string;
   token_symbol: string;
-  token_sale_price_eth?: string | number;
-  monthly_rent_eth?: string | number | null;
+  token_sale_price_eth?: string;
+  monthly_rent_eth?: string | null;
   images?: string[];
 };
 

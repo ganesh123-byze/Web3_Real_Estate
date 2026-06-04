@@ -345,7 +345,9 @@ async function submitCreatePropertyFromChat(
     total_value: payload.total_value,
     token_supply: payload.token_supply,
     token_symbol: payload.token_symbol,
-    ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
+    ...(payload.monthly_rent_eth?.trim()
+      ? { monthly_rent_eth: payload.monthly_rent_eth }
+      : {}),
   });
 
   logCreatePropertyPayload("chat", payload);
