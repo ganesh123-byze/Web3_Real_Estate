@@ -154,14 +154,6 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href="https://sepolia.etherscan.io"
-            target="_blank"
-            rel="noreferrer"
-            className="hidden rounded-full border border-border/70 bg-card/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur transition hover:border-primary/30 hover:text-foreground sm:inline"
-          >
-            Sepolia explorer
-          </a>
           <ThemeToggle />
         </div>
       </header>
@@ -239,7 +231,7 @@ export default function LandingPage() {
               <ul className="space-y-1.5 text-xs leading-5 text-muted-foreground">
                 <li>* You'll sign a one-time message. Nothing is broadcast on-chain.</li>
                 <li>* Your wallet is your identity. Roles are bound at sign-up.</li>
-                <li>* Network: Sepolia (chainId 11155111).</li>
+                <li>* Network: Sepolia.</li>
               </ul>
             </div>
           )}
@@ -345,8 +337,7 @@ export default function LandingPage() {
 
       <footer className="border-t border-border/60 px-6 py-5 text-xs text-muted-foreground md:px-8">
         <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-2 md:flex-row md:items-center">
-          <span>© {new Date().getFullYear()} EstateChain — Tokenized real estate on Sepolia.</span>
-          <span className="font-mono">chainId 0xaa36a7</span>
+          <span>© {new Date().getFullYear()} EstateChain</span>
         </div>
       </footer>
     </div>
