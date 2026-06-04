@@ -200,6 +200,90 @@ def has_explicit_claim_intent(text: str) -> bool:
     return False
 
 
+_PORTFOLIO_INTENT = re.compile(
+    r"\b("
+    r"(?:my\s+)?portfolio\b|"
+    r"(?:my\s+)?holdings?\b|"
+    r"my\s+tokens?\b|"
+    r"my\s+shares?\b|"
+    r"what\s+do\s+i\s+own\b|"
+    r"show\s+my\s+investments?\b|"
+    r"portfolio\s+summary\b|"
+    r"summarize\s+my\s+portfolio\b"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def has_investor_portfolio_intent(text: str) -> bool:
+    """True when the user wants a fresh portfolio/holdings snapshot (read-only)."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return False
+    if not _PORTFOLIO_INTENT.search(utterance):
+        return False
+    if has_explicit_invest_intent(utterance) and not re.search(
+        r"(?i)\b(?:portfolio|holdings?|my\s+tokens?|my\s+shares?)\b",
+        utterance,
+    ):
+        return False
+    return True
+
+
+def format_investor_portfolio_speak(
+    portfolio_data: dict[str, Any],
+    yield_data: dict[str, Any] | None = None,
+) -> str:
+    """Live portfolio snapshot for chat — renders as Yield & returns summary card."""
+    holdings = list(portfolio_data.get("holdings") or [])
+    count = int(portfolio_data.get("count") or len(holdings))
+
+    lines = [
+        "Yield & returns summary",
+        "Portfolio snapshot (live)",
+        f"Properties held: {count}",
+    ]
+
+    total_tokens = 0
+    total_invested_eth = 0.0
+    for holding in holdings:
+        name = str(holding.get("property_name") or f"Property {holding.get('property_id')}")
+        pid = holding.get("property_id")
+        tokens = int(holding.get("token_amount") or 0)
+        pct = holding.get("ownership_percentage")
+        pct_text = f"{pct}%" if pct is not None else "—"
+        lines.append(f"{name} (#{pid}): {tokens} tokens ({pct_text} ownership)")
+        total_tokens += tokens
+        try:
+            price = float(holding.get("token_sale_price_eth") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price > 0 and tokens > 0:
+            total_invested_eth += price * tokens
+
+    if count == 0:
+        lines.append("Holdings: You have no token holdings recorded yet.")
+        lines.append(
+            "Tip: After investing, ask for your portfolio again — this snapshot "
+            "refreshes from your wallet on-chain."
+        )
+    else:
+        lines.append(f"Total tokens held: {total_tokens}")
+        if total_invested_eth > 0:
+            lines.append(f"Estimated cost basis: {_format_eth_amount(total_invested_eth)} ETH")
+
+    if yield_data:
+        earned = str(yield_data.get("total_earned_eth") or "0").strip()
+        claimable = str(yield_data.get("total_claimable_eth") or "0").strip()
+        claimed = str(yield_data.get("total_claimed_eth") or "0").strip()
+        lines.append(f"Total rental yield earned: {earned} ETH")
+        lines.append(f"Claimable rewards: {claimable} ETH")
+        lines.append(f"Already claimed: {claimed} ETH")
+
+    lines.append("Next payout: When rent is distributed to token holders")
+    return "\n".join(lines)
+
+
 def has_marketplace_browse_intent(text: str) -> bool:
     """True when the user wants to browse/list marketplace listings (not buy yet)."""
     t = _normalize_text(text).lower()
