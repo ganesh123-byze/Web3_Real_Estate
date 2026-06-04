@@ -424,15 +424,59 @@ function isRichAssistantContent(content: string) {
   return (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("avg. rental yield") ||
+    normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
     normalizedContent.includes("total invested")
   );
 }
 
+function normalizeInvestSummaryForCard(content: string): string {
+  const normalized = content.trim();
+  if (/^investment target:/im.test(normalized)) {
+    const body = normalized
+      .replace(/^investment target:[^\n]*\n?/im, "")
+      .replace(/\nhow many tokens would you like to buy\??\s*$/i, "")
+      .trim();
+    const firstLine = normalized.match(/^investment target:\s*(.+)$/im)?.[1]?.trim() ?? "";
+    const propertyLine = firstLine ? `Property: ${firstLine}` : "";
+    const detailLine = body.split("\n").find((line) => line.includes("—")) ?? body.split("\n")[0] ?? "";
+    const parts = detailLine
+      .split("—")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const rows = [propertyLine];
+    for (const part of parts) {
+      if (/sold/i.test(part)) rows.push(`Capital appreciation: +${part.replace(/sold/i, "").trim()} sold`);
+      else if (/tokens available/i.test(part)) rows.push(`Tokens available: ${part.replace(/tokens available/i, "").trim()}`);
+      else if (/eth per token/i.test(part)) rows.push(`Token price: ${part.replace(/per token/i, "").trim()}`);
+      else if (/monthly rent/i.test(part)) rows.push(`Monthly rental income: ${part.replace(/monthly rent/i, "").trim()}`);
+    }
+    return ["Yield & returns summary", ...rows.filter(Boolean)].join("\n");
+  }
+  return normalized;
+}
+
 function AssistantMessageContent({ content }: { content: string }) {
   const normalizedContent = content.toLowerCase();
-  if (normalizedContent.includes("yield & returns summary") || normalizedContent.includes("avg. rental yield")) {
-    return <YieldSummaryCard content={content} />;
+  if (
+    normalizedContent.includes("yield & returns summary") ||
+    normalizedContent.includes("avg. rental yield") ||
+    normalizedContent.includes("investment target:")
+  ) {
+    return (
+      <div className="space-y-3">
+        <YieldSummaryCard
+          content={normalizeInvestSummaryForCard(
+            content.replace(/\n\nhow many tokens would you like to buy\??\s*$/i, "").trim(),
+          )}
+        />
+        {/\n\nhow many tokens would you like to buy\??\s*$/i.test(content) ? (
+          <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
+            How many tokens would you like to buy?
+          </p>
+        ) : null}
+      </div>
+    );
   }
   if (normalizedContent.includes("portfolio insight") || normalizedContent.includes("total invested")) {
     return <PortfolioInsightCard content={content} />;
