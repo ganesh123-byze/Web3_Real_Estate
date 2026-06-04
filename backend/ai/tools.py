@@ -73,7 +73,9 @@ from backend.ai.investor_guards import (
     has_marketplace_browse_intent,
     invest_tool_blocked_message,
     invest_workflow_active,
+    invest_turn_explicit_token_amount,
     parse_invest_order_from_utterance,
+    should_clear_stale_invest_token_amount,
     wants_to_begin_invest_workflow,
     parse_invest_token_amount,
 )
@@ -1049,7 +1051,11 @@ async def try_server_invest_property_turn(
     if not fill_args and not active:
         return None
 
-    if fill_args.get("property_name") and fill_args.get("token_amount"):
+    if (
+        fill_args.get("property_name")
+        and fill_args.get("token_amount")
+        and invest_turn_explicit_token_amount(utterance, args_token=fill_args.get("token_amount"))
+    ):
         fill_args["submit"] = True
 
     result = await _fill_invest_property(fill_args, user, db)
@@ -5266,6 +5272,11 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     """Collect property name + token amount, then auto-fill and submit the invest form."""
     modal = _INVEST_MODAL
     tool_name = "fill_invest_property"
+    prior_session = _get_workflow_session(modal)
+    if prior_session.get("submitted") and not prior_session.get("completing_submit"):
+        _clear_workflow_session(modal)
+        prior_session = {}
+
     accumulated = _recover_form_state(modal, tool_name, _INVEST_FIELDS)
 
     utterance = extract_last_human_utterance(_current_history())
@@ -5283,6 +5294,13 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     accumulated = _merge_last_user_utterance(
         accumulated, modal, _INVEST_FIELDS, _INVEST_REQUIRED
     )
+
+    if should_clear_stale_invest_token_amount(
+        utterance,
+        args_property=args.get("property_name"),
+        args_token=args.get("token_amount"),
+    ):
+        accumulated.pop("token_amount", None)
 
     property_id: int | None = None
     resolved_name: str | None = None
@@ -5314,14 +5332,27 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         accumulated["property_id"] = str(property_id)
         accumulated["property_name"] = resolved_name
 
+        prev_pid = prior_session.get("property_id")
+        if prev_pid is not None and int(prev_pid) != property_id:
+            accumulated.pop("token_amount", None)
+
     missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
     submit = bool(args.get("submit"))
     next_field = missing[0] if missing else None
 
-    # Reliability guard: if all required invest fields are already present,
-    # auto-submit in this same turn so the workflow does not stall waiting for
-    # the model to make an extra submit=true tool call.
-    if not submit and not missing and property_id is not None:
+    explicit_token_this_turn = invest_turn_explicit_token_amount(
+        utterance,
+        args_token=args.get("token_amount"),
+    )
+
+    # Reliability guard: auto-submit only when the user supplied a token count this turn.
+    # Never reuse a token_amount from a previous investment when only property/#id changed.
+    if (
+        not submit
+        and not missing
+        and property_id is not None
+        and explicit_token_this_turn
+    ):
         return await _fill_invest_property({**args, "submit": True}, _user, db)
 
     instruction: str | None = None

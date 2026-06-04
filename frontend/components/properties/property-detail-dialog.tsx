@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BadgeCheck, Check, Copy, MapPin, Pencil, Receipt } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -30,6 +30,7 @@ import { useProperty, useTransactions } from "@/lib/queries";
 import { addressExplorerUrl, RUNTIME_CONFIG } from "@/lib/runtime-config";
 import type { Property, Role } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
+import { useAgentStore } from "@/lib/ai/agent-store";
 import { cn, formatCurrency, formatDateTime, formatNumber, percent, shortAddress } from "@/lib/utils";
 
 export type PropertyDetailRole = Role;
@@ -95,6 +96,13 @@ export function PropertyDetailDialog({
   actionDisabled?: boolean;
   onAction?: () => void;
 }) {
+  const collapseCopilotPanel = useAgentStore((s) => s.collapsePanel);
+
+  useEffect(() => {
+    if (!open) return;
+    collapseCopilotPanel();
+  }, [collapseCopilotPanel, open]);
+
   const propertyQuery = useProperty(open ? initialProperty?.id : null);
   const transactionsQuery = useTransactions();
   const property = propertyQuery.data ?? initialProperty;

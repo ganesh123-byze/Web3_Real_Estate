@@ -101,6 +101,8 @@ export type AgentStore = {
   micLevel: number;
 
   setOpen: (open: boolean) => void;
+  /** Collapse the chat panel without clearing messages or ending voice sessions. */
+  collapsePanel: () => void;
   setState: (state: AIState) => void;
   clear: () => void;
 
@@ -202,6 +204,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   setOpen(open) {
     set({ open });
+  },
+  collapsePanel() {
+    if (!get().open) return;
+    set({ open: false });
   },
   setState(state) {
     set({ state });
