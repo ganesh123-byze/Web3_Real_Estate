@@ -176,7 +176,7 @@ function ChatAssistantLogo({
 function AgentActivityText({ state }: { state: AIState }) {
   const label = state === "transcribing" ? "Analyzing" : state === "speaking" ? "Speaking" : "Thinking";
   return (
-    <span className="px-1 py-0.5 text-[14px] font-medium text-muted-foreground">
+    <span className="px-1 py-0.5 text-[14px] font-medium text-muted-foreground dark:!text-white">
       {label}
     </span>
   );
@@ -901,14 +901,14 @@ export function AIBubble() {
 
             {/* ─── Footer: voice panel OR composer ────────── */}
             {voiceMode ? (
-              <div className="border-t border-border/40 bg-gradient-to-b from-transparent to-primary/[0.04] px-5 py-5">
+              <div className="relative z-10 border-t border-border/40 bg-gradient-to-b from-transparent to-primary/[0.04] px-5 py-5 dark:border-[#263250]/80">
                 <div className="flex flex-col items-center gap-3">
                   <div className="flex h-10 items-center justify-center gap-[3px]">
                     {isListening ? (
                       [...Array(16)].map((_, i) => (
                         <motion.div
                           key={i}
-                          className="w-[2px] rounded-full bg-primary"
+                          className="w-[2px] rounded-full bg-primary dark:bg-[#8b7cff] dark:shadow-[0_0_8px_rgba(139,124,255,0.65)]"
                           animate={{
                             height: [4, 4 + micLevel * 26, 4],
                             opacity: [0.5, 0.9, 0.5],
@@ -925,7 +925,7 @@ export function AIBubble() {
                       [...Array(16)].map((_, i) => (
                         <motion.div
                           key={i}
-                          className="w-[2px] rounded-full bg-[hsl(var(--chart-3))]"
+                          className="w-[2px] rounded-full bg-[hsl(var(--chart-3))] dark:bg-[#a78bfa] dark:shadow-[0_0_8px_rgba(167,139,250,0.7)]"
                           animate={{ height: [6, 22, 6] }}
                           transition={{
                             duration: 0.8,
@@ -936,23 +936,23 @@ export function AIBubble() {
                         />
                       ))
                     ) : busy ? (
-                      <div className="flex items-center gap-1.5 text-[14px] text-muted-foreground">
+                      <div className="flex items-center gap-1.5 text-[14px] font-semibold text-muted-foreground dark:!text-white">
                         <motion.span
-                          className="inline-block h-1.5 w-1.5 rounded-full bg-warning"
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-warning dark:bg-[#fbbf24]"
                           animate={{ scale: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
                           transition={{ duration: 1.2, repeat: Infinity }}
                         />
                         Thinking…
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1.5 text-[14px] text-muted-foreground">
-                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      <div className="flex items-center gap-1.5 text-[14px] font-semibold text-muted-foreground dark:!text-white">
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary dark:bg-[#7c6cff]" />
                         Ready to listen
                       </div>
                     )}
                   </div>
 
-                  <div className="flex min-h-[18px] items-center justify-center text-[14px] text-muted-foreground">
+                  <div className="flex min-h-[18px] items-center justify-center text-[14px] font-semibold text-muted-foreground dark:!text-white dark:[text-shadow:0_1px_10px_rgba(255,255,255,0.22)]">
                     {showAgentActivity ? (
                       <AgentActivityText state={state} />
                     ) : isSpeaking ? (
@@ -969,7 +969,7 @@ export function AIBubble() {
                     onClick={handleVoiceClick}
                     className={cn(
                       "grid h-12 w-12 place-items-center rounded-full transition-all",
-                      "bg-destructive text-destructive-foreground shadow-lg shadow-destructive/30 hover:bg-destructive/90 hover:shadow-destructive/40",
+                      "bg-destructive text-destructive-foreground shadow-lg shadow-destructive/30 hover:bg-destructive/90 hover:shadow-destructive/40 dark:bg-[#5f1f3c] dark:text-white dark:shadow-[0_0_22px_rgba(244,114,182,0.28)]",
                     )}
                     title="Stop voice conversation"
                   >
