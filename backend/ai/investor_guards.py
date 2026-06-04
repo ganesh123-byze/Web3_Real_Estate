@@ -31,11 +31,28 @@ _INFO_OR_BROWSE = re.compile(
     re.IGNORECASE,
 )
 
+_INVEST_TOKEN_AMOUNT_WORDS: dict[str, int] = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "single": 1,
+}
+
 # Imperative buy / invest — user wants the invest dialog, not just research.
 _INVEST_TRANSACTIONAL = re.compile(
     r"\b("
-    r"(?:please\s+)?(?:buy|purchase)\s+(?:\d+\s+)?tokens?|"
-    r"(?:please\s+)?invest\s+(?:\d+\s+)?(?:tokens?\s+)?(?:in|into)\b|"
+    r"(?:please\s+)?(?:buy|purchase)\s+(?:\d+|one|two|three|four|five|a|an|single)\s+tokens?|"
+    r"(?:please\s+)?invest\s+(?:\d+|one|two|three|four|five|a|an|single)\s+tokens?\s+(?:in|into|of)\b|"
+    r"(?:please\s+)?invest\s+(?:\d+\s+)?(?:tokens?\s+)?(?:in|into|of)\b|"
     r"(?:please\s+)?invest\s+\d+\b|"
     r"open\s+(?:the\s+)?invest(?:ment)?\s+dialog|"
     r"i\s+want\s+to\s+(?:buy|invest)|"
@@ -136,11 +153,18 @@ def has_explicit_invest_intent(text: str) -> bool:
         return False
     if _INVEST_RESEARCH.search(t):
         return False
+    parsed = parse_invest_order_from_utterance(t)
+    if parsed.get("property_name") and parsed.get("token_amount"):
+        return True
+    if parsed.get("property_name") and re.search(
+        r"(?i)\b(?:buy|invest|purchase|tokens?)\b", t
+    ):
+        return True
     if _INVEST_TRANSACTIONAL.search(t):
         if _INFO_OR_BROWSE.search(t) and not re.search(
-            r"\b(?:buy|purchase)\s+\d+|invest\s+\d+\s+tokens?",
+            r"(?i)\b(?:buy|purchase)\s+(?:\d+|one|two|a|an)\s+tokens?|"
+            r"invest\s+(?:\d+|one|two|a|an)\s+tokens?",
             t,
-            re.IGNORECASE,
         ):
             return False
         return True
@@ -275,19 +299,101 @@ def _format_token_count(raw: Any) -> str:
 
 _INVEST_ORDER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"(?i)(?:please\s+)?(?:buy|invest)\s+(?P<amount>\d+)\s*(?:tokens?)?\s*(?:in|into|of)\s+"
+        r"(?i)(?:please\s+)?(?:buy|invest|purchase)\s+"
+        r"(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)\s*"
+        r"(?:tokens?)?\s*(?:in|into|of)\s+"
         r"(?P<property>.+?)(?:\s+property)?\s*\.?$"
     ),
     re.compile(
-        r"(?i)(?:buy|invest)\s+(?:in|into)\s+(?P<property>.+?)\s+(?:for\s+)?(?P<amount>\d+)\s*tokens?"
+        r"(?i)(?:buy|invest|purchase)\s+(?:in|into|of)\s+(?P<property>.+?)\s+"
+        r"(?:for\s+)?(?P<amount>\d+|one|two|three|four|five|a|an|single)\s*tokens?"
     ),
     re.compile(
-        r"(?i)^(?P<amount>\d+)\s*tokens?\s*(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
+        r"(?i)^(?P<amount>\d+|one|two|three|four|five|a|an|single)\s*tokens?\s*"
+        r"(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
     ),
     re.compile(
-        r"(?i)(?:buy|invest)\s+(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
+        r"(?i)(?:buy|invest|purchase)\s+(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
     ),
 )
+
+
+def parse_invest_token_amount(text: str) -> str | None:
+    """Parse a whole token count from voice/chat (digits or spoken words)."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return None
+    digit = re.search(r"(?i)\b(\d+)\s*tokens?\b", utterance)
+    if digit:
+        value = int(digit.group(1))
+        return str(value) if value > 0 else None
+    word = re.search(
+        r"(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)\s+tokens?\b",
+        utterance,
+    )
+    if word:
+        amount = _INVEST_TOKEN_AMOUNT_WORDS.get(word.group(1).lower())
+        if amount and amount > 0:
+            return str(amount)
+    lone = re.fullmatch(r"(?i)(\d+)\s*tokens?", utterance)
+    if lone:
+        value = int(lone.group(1))
+        return str(value) if value > 0 else None
+    lone_word = re.fullmatch(
+        r"(?i)(one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)\s+tokens?",
+        utterance,
+    )
+    if lone_word:
+        amount = _INVEST_TOKEN_AMOUNT_WORDS.get(lone_word.group(1).lower())
+        if amount and amount > 0:
+            return str(amount)
+    return None
+
+
+def _normalize_invest_amount_token(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    if token.isdigit():
+        value = int(token)
+        return str(value) if value > 0 else None
+    amount = _INVEST_TOKEN_AMOUNT_WORDS.get(token)
+    return str(amount) if amount and amount > 0 else None
+
+
+def extract_invest_property_hint_from_utterance(text: str) -> str:
+    """Best-effort property name when the user did not use a strict invest pattern."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return ""
+
+    if parse_invest_token_amount(utterance) and not re.search(
+        r"(?i)\b(?:in|into|of)\b", utterance
+    ):
+        return ""
+
+    id_match = re.search(r"(?i)(?:property\s*)?#(\d+)\b", utterance)
+    if id_match:
+        return f"#{id_match.group(1)}"
+
+    stripped = re.sub(
+        r"(?i)^(?:please\s+)?(?:help\s+me\s+)?(?:i\s+want\s+to\s+)?(?:buy|invest|purchase)\s+",
+        "",
+        utterance,
+    )
+    stripped = re.sub(
+        r"(?i)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)\s*"
+        r"tokens?\s*(?:in|into|of)\s+",
+        "",
+        stripped,
+    )
+    stripped = re.sub(
+        r"(?i)\s+(?:for\s+)?(?:\d+|one|two|three|four|five|a|an|single)\s*tokens?\s*$",
+        "",
+        stripped,
+    )
+    stripped = re.sub(r"(?i)^(?:in|into|of)\s+", "", stripped).strip()
+    return _clean_invest_property_name(stripped)
 
 
 def _clean_invest_property_name(raw: str) -> str:
@@ -303,24 +409,34 @@ def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
     if not utterance:
         return {}
 
+    out: dict[str, str] = {}
     for pattern in _INVEST_ORDER_PATTERNS:
         match = pattern.search(utterance)
         if not match:
             continue
         groups = match.groupdict()
-        out: dict[str, str] = {}
-        amount = groups.get("amount")
-        if amount and str(amount).isdigit() and int(amount) > 0:
-            out["token_amount"] = str(int(amount))
+        amount = _normalize_invest_amount_token(groups.get("amount"))
+        if amount:
+            out["token_amount"] = amount
         prop = _clean_invest_property_name(groups.get("property") or "")
         if prop:
             out["property_name"] = prop
         if out:
             return out
 
-    amount_only = re.fullmatch(r"(?i)(\d+)\s*tokens?", utterance)
-    if amount_only:
-        return {"token_amount": str(int(amount_only.group(1)))}
+    amount = parse_invest_token_amount(utterance)
+    if amount:
+        out["token_amount"] = amount
+
+    hint = extract_invest_property_hint_from_utterance(utterance)
+    if hint and "property_name" not in out:
+        out["property_name"] = hint
+
+    if out:
+        return out
+
+    if hint:
+        return {"property_name": hint}
 
     return {}
 

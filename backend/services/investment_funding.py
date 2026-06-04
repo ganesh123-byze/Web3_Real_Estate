@@ -15,7 +15,7 @@ from backend.services.blockchain import from_wei, get_contract, get_web3
 from backend.services.wallet_funding import (
     WalletFundingError,
     check_wallet_covers_required_wei,
-    format_eth_display,
+    format_eth_funding_display,
 )
 
 
@@ -106,21 +106,24 @@ def check_investor_can_fund_investment(
         )
 
     property_name = str(property_item.get("name") or "this property").strip()
+    required_eth = format_eth_funding_display(base.required_wei)
+    balance_eth = format_eth_funding_display(base.balance_wei)
+    shortfall_eth = format_eth_funding_display(base.shortfall_wei)
     speak = (
         "You have insufficient funds in your account. "
         f"Buying {amount} token(s) in {property_name} requires "
-        f"{base.required_eth} ETH, but your wallet balance is {base.balance_eth} ETH "
-        f"(about {base.shortfall_eth} ETH short). "
+        f"{required_eth} ETH, but your wallet balance is {balance_eth} ETH "
+        f"(about {shortfall_eth} ETH short). "
         "Add ETH to your wallet or reduce the number of tokens, then try again."
     )
     return InvestmentFundingCheck(
         ok=False,
         required_wei=base.required_wei,
         balance_wei=base.balance_wei,
-        required_eth=base.required_eth,
-        balance_eth=base.balance_eth,
+        required_eth=required_eth,
+        balance_eth=balance_eth,
         shortfall_wei=base.shortfall_wei,
-        shortfall_eth=base.shortfall_eth,
+        shortfall_eth=shortfall_eth,
         sale_price_per_token_wei=sale_price_per_token_wei,
         token_amount=amount,
         speak_to_user=speak,

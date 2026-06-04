@@ -64,6 +64,7 @@ from backend.ai.copilot_property_scope import (
 )
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
+    extract_invest_property_hint_from_utterance,
     extract_last_human_utterance,
     format_invest_target_property_speak,
     format_investor_marketplace_catalog_speak,
@@ -74,6 +75,7 @@ from backend.ai.investor_guards import (
     invest_workflow_active,
     parse_invest_order_from_utterance,
     wants_to_begin_invest_workflow,
+    parse_invest_token_amount,
 )
 from backend.ai.owner_guards import (
     has_owner_analytics_intent,
@@ -414,6 +416,26 @@ def _merge_last_user_utterance(
         value = normalize_create_property_field(next_field, text)
         if not value:
             return accumulated
+    if modal == _INVEST_MODAL:
+        parsed = parse_invest_order_from_utterance(text)
+        if parsed.get(next_field):
+            accumulated[next_field] = parsed[next_field]
+            return accumulated
+        if next_field == "token_amount":
+            amount = parse_invest_token_amount(text)
+            if amount:
+                accumulated[next_field] = amount
+                return accumulated
+            digit = re.search(r"\b(\d+)\b", text)
+            if digit and int(digit.group(1)) > 0:
+                accumulated[next_field] = digit.group(1)
+                return accumulated
+        if next_field == "property_name":
+            hint = extract_invest_property_hint_from_utterance(text)
+            if hint:
+                accumulated[next_field] = hint
+                return accumulated
+        return accumulated
     accumulated[next_field] = value
     return accumulated
 
@@ -748,6 +770,14 @@ def _resolve_investable_property_from_items(
     if not investable:
         return None, "No investable properties are available right now."
 
+    id_match = re.fullmatch(r"#?(\d+)", q)
+    if id_match:
+        target_id = int(id_match.group(1))
+        for prop in investable:
+            if int(prop.get("id") or 0) == target_id:
+                return prop, None
+        return None, f"No investable property found with id #{target_id}."
+
     ranked = sorted(
         [(_property_match_score(q, p), p) for p in investable],
         key=lambda item: (item[0], int(item[1].get("id") or 0)),
@@ -945,7 +975,18 @@ def _enrich_invest_preflight_result(
             return ToolResult(ok=True, data=data, actions=result.actions)
         return result
 
-    if data.get("submitted") or data.get("insufficient_funds"):
+    if data.get("insufficient_funds"):
+        speak = str(data.get("speak_to_user") or "").strip()
+        if speak:
+            data["speak_to_user"] = speak
+            data["speak_verbatim"] = True
+            data["invest_property_target"] = True
+            data["instruction"] = (
+                "Read speak_to_user verbatim. Do NOT list marketplace properties."
+            )
+        return ToolResult(ok=True, data=data, actions=result.actions)
+
+    if data.get("submitted"):
         data.setdefault("speak_verbatim", True)
         return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
@@ -992,12 +1033,21 @@ async def try_server_invest_property_turn(
         return None
 
     parsed = parse_invest_order_from_utterance(utterance)
+    if not parsed.get("property_name"):
+        hint = extract_invest_property_hint_from_utterance(utterance)
+        if hint:
+            parsed["property_name"] = hint
+
     fill_args: dict[str, Any] = {
         k: str(v) for k, v in parsed.items() if v not in (None, "")
     }
 
     if not fill_args and wants_to_begin_invest_workflow(utterance) and not active:
-        return await _start_invest_property({}, user, db)
+        started = await _start_invest_property({}, user, db)
+        return _enrich_invest_preflight_result(started, db, parsed={})
+
+    if not fill_args and not active:
+        return None
 
     if fill_args.get("property_name") and fill_args.get("token_amount"):
         fill_args["submit"] = True
@@ -5166,11 +5216,21 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
             "completing_submit": False,
         },
     )
+    speak = (
+        f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
+        f"What is the {next_field.replace('_', ' ')}?"
+        if filled
+        else "Which property would you like to invest in? Say the property name, then how many tokens you want to buy."
+    )
     instruction = (
         f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
-        f"Ask for {next_field} only — do NOT re-ask fields already in filled."
+        f"Ask for {next_field} only — do NOT re-ask fields already in filled. "
+        "Do NOT list every marketplace property."
         if filled
-        else "Ask: Which property would you like to invest in? (property name)"
+        else (
+            "Read speak_to_user verbatim. Ask only for the property name — "
+            "do NOT read the full marketplace catalog."
+        )
     )
     return ToolResult(
         ok=True,
@@ -5179,9 +5239,12 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
             "filled": filled,
             "missing": missing,
             "next_field": next_field,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "invest_property_target": True,
             "instruction": instruction,
         },
-        actions=[AgentAction(type="NAVIGATE", route="/investor/marketplace")],
+        actions=[],
     )
 
 
