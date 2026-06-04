@@ -102,8 +102,27 @@ def _parse_spoken_scale_multiplier(text: str, scale_word: str, multiplier: int) 
     return int(base * multiplier)
 
 
+def _input_indicates_negative_amount(text: str) -> bool:
+    """True when the user supplied a negative number (must be rejected for create-property)."""
+    t = _strip_noise(text).lower()
+    if not t:
+        return False
+    if re.search(r"\bnegative\b", t):
+        return True
+    if re.search(r"\bminus\b", t):
+        return True
+    # ASCII hyphen, unicode minus, en-dash, em-dash before digits
+    if re.search(r"(?<![\d.])[\-\u2212\u2013\u2014]\s*[\d]", t):
+        return True
+    if re.search(r"^\s*[\-\u2212\u2013\u2014]\s*[\d]", t):
+        return True
+    return False
+
+
 def _parse_spoken_integer(text: str) -> int | None:
     """Best-effort integer from phrases like 'one lakh tokens' or '10000'."""
+    if _input_indicates_negative_amount(text):
+        return None
     t = _strip_noise(text).lower()
     if not t:
         return None
@@ -161,6 +180,8 @@ def _parse_spoken_integer(text: str) -> int | None:
 
 
 def _parse_decimal_amount(text: str) -> str | None:
+    if _input_indicates_negative_amount(text):
+        return None
     t = _strip_noise(text).lower()
     if not t or t in {"skip", "none", "no", "n/a", "zero", "0"}:
         return "0"
@@ -325,6 +346,8 @@ CREATE_PROPERTY_FIELD_ORDER: tuple[str, ...] = (
 
 def _normalize_create_property_token_supply(text: str) -> str:
     """Positive whole-number token supply only (no letters or stray symbols)."""
+    if _input_indicates_negative_amount(text):
+        return ""
     n = _parse_spoken_integer(text)
     if n is not None and n > 0:
         return str(n)
@@ -337,6 +360,8 @@ def _normalize_create_property_token_supply(text: str) -> str:
 
 def _normalize_create_property_total_value(text: str) -> str:
     """Positive ETH amount only."""
+    if _input_indicates_negative_amount(text):
+        return ""
     t = _strip_noise(text).lower()
     if re.search(r"\b(million|billion|thousand|lakh|crore)\b", t):
         spoken = _parse_spoken_integer(text)
@@ -442,12 +467,14 @@ def create_property_invalid_field_message(field: str, rejected_value: str = "") 
     if field == "total_value":
         return (
             f"{shown} isn't a valid total property value. "
-            "Please enter a positive number in ETH only — for example 10000 or 2500.5."
+            "Please enter positive values only — a number greater than zero in ETH "
+            "(negative amounts are not accepted). For example 10000 or 2500.5."
         )
     if field == "token_supply":
         return (
             f"{shown} isn't a valid token count. "
-            "Please enter a positive whole number only — for example 100000."
+            "Please enter positive values only — a whole number greater than zero "
+            "(negative amounts are not accepted). For example 100000."
         )
     if field == "monthly_rent_eth":
         return (
@@ -624,12 +651,12 @@ def create_property_field_collection_speak(
         "location": "Where is it located?",
         "total_value": (
             "What's the total property value in ETH? "
-            "Any positive amount works — say digits or spoken amounts like "
+            "Enter positive values only (greater than zero) — digits or spoken amounts like "
             "ten million or one hundred thousand (for example 10000 or 12345678)."
         ),
         "token_supply": (
             "How many ownership tokens should we mint? "
-            "Any positive whole number works — digits or spoken amounts like "
+            "Enter positive values only (greater than zero) — digits or spoken amounts like "
             "five million (for example 100000 or 5000000)."
         ),
     }

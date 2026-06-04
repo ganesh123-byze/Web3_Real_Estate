@@ -14,6 +14,7 @@ from backend.ai.tools import (
 )
 from backend.ai.workflow_parsers import (
     create_property_field_collection_speak,
+    create_property_invalid_field_message,
     create_property_numeric_field_is_valid,
     create_property_token_symbol_is_valid,
     normalize_create_property_field,
@@ -41,6 +42,22 @@ def test_normalize_rejects_non_numeric_total_value_and_supply():
     assert normalize_create_property_field("token_supply", "100000") == "100000"
     assert normalize_create_property_field("monthly_rent_eth", "0.1") == "0.1"
     assert normalize_create_property_field("monthly_rent_eth", "skip") == "0"
+
+
+def test_normalize_rejects_negative_total_value_and_supply():
+    assert normalize_create_property_field("total_value", "-100") == ""
+    assert normalize_create_property_field("total_value", "negative 50") == ""
+    assert normalize_create_property_field("token_supply", "-500") == ""
+    assert normalize_create_property_field("token_supply", "- 1000") == ""
+    assert normalize_create_property_field("total_value", "\u2212100") == ""
+    assert normalize_create_property_field("token_supply", "minus 25") == ""
+
+
+def test_invalid_field_message_mentions_positive_only():
+    msg = create_property_invalid_field_message("total_value", "-50")
+    assert "positive" in msg.lower()
+    msg_supply = create_property_invalid_field_message("token_supply", "-10")
+    assert "positive" in msg_supply.lower()
 
 
 def test_token_symbol_requires_two_to_ten_chars():

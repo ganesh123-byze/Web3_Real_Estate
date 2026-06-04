@@ -75,7 +75,12 @@ from backend.ai.investor_guards import (
 )
 from backend.ai.owner_guards import (
     has_owner_analytics_intent,
+    has_owner_browse_intent,
+    has_owner_investors_intent,
+    has_owner_rent_intent,
     owner_analytics_tool_payload,
+    owner_investors_tool_payload,
+    owner_rent_tool_payload,
 )
 from backend.ai.schemas import AgentAction, ToolResult
 from backend.api._helpers import (
@@ -415,6 +420,11 @@ def _backfill_create_property_filled_from_history(
     accumulated: dict[str, str],
 ) -> dict[str, str]:
     """Recover answers from chat when the LLM skipped fill_create_property tool calls."""
+    if _latest_assistant_create_property_outcome()[0] == "success":
+        return normalize_create_property_accumulated(dict(accumulated))
+    if _create_property_deploy_pending_before_last_human():
+        return normalize_create_property_accumulated(dict(accumulated))
+
     out = dict(accumulated)
     field_order = list(_CREATE_PROPERTY_FIELDS)
     hist = _current_history() or []
@@ -1543,6 +1553,54 @@ async def try_server_owner_analytics_overview(
     return await _get_owner_analytics_overview({}, user, db)
 
 
+async def try_server_owner_investors_overview(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return investor holdings verbatim when the admin taps My investors."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or not has_owner_investors_intent(utterance):
+        return None
+
+    result = await _get_my_investors({}, user, db)
+    if not result.ok:
+        return result
+    return ToolResult(
+        ok=True,
+        data=owner_investors_tool_payload(result.data or {}),
+        actions=[],
+    )
+
+
+async def try_server_owner_rent_overview(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return rent / yield summary verbatim when the admin asks about rent collections."""
+    if canonical_role(user.role) != "property_owner":
+        return None
+
+    utterance = _latest_human_utterance()
+    if not utterance or not has_owner_rent_intent(utterance):
+        return None
+
+    analytics_result = await _get_rent_analytics({}, user, db)
+    collections_result = await _get_my_rent_collections({"limit": 10}, user, db)
+    if not analytics_result.ok:
+        return analytics_result
+    if not collections_result.ok:
+        return collections_result
+    return ToolResult(
+        ok=True,
+        data=owner_rent_tool_payload(
+            analytics_result.data or {},
+            collections_result.data or {},
+        ),
+        actions=[],
+    )
+
+
 register(ToolSpec(
     name="get_owner_analytics_overview",
     description=(
@@ -2314,9 +2372,48 @@ def _block_create_property_when_chat_limit_reached() -> ToolResult | None:
 
 
 def _assistant_announced_property_created(text: str) -> bool:
-    """Detect copilot success lines like \"Property 'X' created successfully.\" """
+    """Detect copilot success lines after deploy (several canonical phrasings)."""
     lowered = (text or "").lower()
-    return "created successfully" in lowered and "property" in lowered
+    if "property" not in lowered:
+        return False
+    if "is on your properties dashboard" in lowered:
+        return True
+    if "created" not in lowered:
+        return False
+    return (
+        "created successfully" in lowered
+        or "successfully created" in lowered
+        or ("was successfully" in lowered and "created" in lowered)
+        or ("has been created" in lowered and "success" in lowered)
+    )
+
+
+def _assistant_announced_property_deploy_pending(text: str) -> bool:
+    """Detect the interim deploy line shown after the user confirms create."""
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+    return (
+        "deploy your listing on-chain" in lowered
+        or "please hold for a moment while we deploy" in lowered
+        or (
+            "submitted successfully" in lowered
+            and "please hold" in lowered
+        )
+    )
+
+
+def _create_property_deploy_pending_before_last_human() -> bool:
+    """True when deploy is in progress — do not re-show the field confirmation summary."""
+    hist = _current_history() or []
+    for msg in reversed(hist):
+        role = _message_role(msg)
+        if role in ("human", "user"):
+            break
+        if role in ("ai", "assistant"):
+            if _assistant_announced_property_deploy_pending(_message_content(msg)):
+                return True
+    return False
 
 
 def _assistant_announced_property_create_failure(text: str) -> bool:
@@ -2992,6 +3089,9 @@ def _create_property_reject_invalid_field(
     elif invalid_field == "monthly_rent_eth":
         missing = []
     speak = create_property_invalid_field_message(invalid_field, rejected_value)
+    field_prompt = create_property_field_collection_speak(next_field, accumulated)
+    if field_prompt:
+        speak = f"{speak}\n\n{field_prompt}"
     _persist_create_property_filled(
         accumulated,
         next_field=next_field,
@@ -3387,19 +3487,16 @@ def _create_property_submit_result(
             rent_sync_warning=rent_sync_warning,
         )
         _mark_create_property_completed(property_name)
+        session = _get_workflow_session(_CREATE_PROPERTY_MODAL) or {}
         _set_workflow_session(
             _CREATE_PROPERTY_MODAL,
             {
-                "in_progress": False,
-                "filled": accumulated,
-                "next_field": None,
-                "submitted": True,
+                **session,
+                "property_id": pid,
+                "last_submit_name": property_name,
                 "submitting": False,
-                "awaiting_create_confirmation": False,
                 "submit_failed": False,
                 "last_submit_error": None,
-                "last_submit_name": property_name,
-                "property_id": pid,
             },
         )
         LOGGER.info(
@@ -3564,6 +3661,14 @@ def _create_property_workflow_active(
 ) -> bool:
     if _edit_property_workflow_active():
         return False
+    if _create_property_chat_limit_reached(session):
+        return False
+    if session.get("submitted"):
+        return False
+    if _latest_assistant_create_property_outcome()[0] == "success":
+        return False
+    if _create_property_deploy_pending_before_last_human():
+        return False
     if session.get("in_progress") or session.get("awaiting_create_confirmation"):
         return True
     if filled:
@@ -3589,6 +3694,9 @@ async def try_server_apply_create_property_field_answer(
     """Apply the latest user answer server-side so the LLM cannot invent value caps."""
     if canonical_role(user.role) != "property_owner":
         return None
+    last_human = _latest_human_utterance().strip()
+    if last_human and has_owner_browse_intent(last_human):
+        return None
     if _edit_property_workflow_active():
         return None
     if _latest_human_create_property_confirm() is not None:
@@ -3610,7 +3718,6 @@ async def try_server_apply_create_property_field_answer(
     if not _create_property_workflow_active(pre_session, filled):
         return None
 
-    last_human = _latest_human_utterance().strip()
     if not last_human or is_generic_create_property_intent(last_human):
         return None
 
@@ -3624,6 +3731,18 @@ async def try_server_apply_create_property_field_answer(
             pending = missing[0]
     if not pending or pending not in _CREATE_PROPERTY_FIELDS:
         return None
+
+    if pending in CREATE_PROPERTY_NUMERIC_FIELDS and not create_property_numeric_field_is_valid(
+        pending, last_human
+    ):
+        accumulated = normalize_create_property_accumulated(dict(pre_session.get("filled") or {}))
+        return _create_property_reject_invalid_field(
+            accumulated,
+            pending,
+            rejected_value=last_human,
+            data={"filled": accumulated},
+            actions=[],
+        )
 
     result = await _fill_create_property({pending: last_human}, user, db)
     data = result.data or {}
@@ -3646,6 +3765,9 @@ async def try_server_create_property_confirmation(
     free text instead of calling fill_create_property, this keeps Edit/Delete in chat.
     """
     if canonical_role(user.role) != "property_owner":
+        return None
+    utterance = _latest_human_utterance().strip()
+    if utterance and has_owner_browse_intent(utterance):
         return None
     if _edit_property_workflow_active():
         return None
