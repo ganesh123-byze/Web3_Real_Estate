@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.ai.investor_guards import (
     format_invest_target_property_speak,
+    has_explicit_invest_intent,
     has_marketplace_browse_intent,
     parse_invest_order_from_utterance,
 )
@@ -36,6 +37,76 @@ def test_parse_invest_one_token_in_property():
     parsed = parse_invest_order_from_utterance("Invest 1 token in Gold Plaza")
     assert parsed.get("token_amount") == "1"
     assert parsed.get("property_name") == "Gold Plaza"
+
+
+def test_parse_invest_spoken_one_token_voice():
+    parsed = parse_invest_order_from_utterance(
+        "invest one token in skyview residency"
+    )
+    assert parsed.get("token_amount") == "1"
+    assert "skyview" in (parsed.get("property_name") or "").lower()
+    assert has_explicit_invest_intent("invest one token in skyview residency") is True
+
+
+def test_preflight_insufficient_funds_verbatim_message():
+    token = set_current_thread_id("test:invest-insufficient")
+    msg_token = set_current_messages(
+        [{"type": "human", "content": "Invest 1 token in Skyview Residency"}]
+    )
+    prop = {
+        "id": 9,
+        "name": "Skyview Residency",
+        "token_address": "0xabc",
+        "tokens_available": "50",
+        "token_sale_price_wei": str(10**18),
+        "token_sale_price_eth": "1",
+        "sold_percentage": "0",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        from backend.services.investment_funding import InvestmentFundingCheck
+
+        shortfall = 9 * 10**17
+        funding = InvestmentFundingCheck(
+            ok=False,
+            required_wei=10**18,
+            balance_wei=10**17,
+            required_eth="1.0",
+            balance_eth="0.1",
+            shortfall_wei=shortfall,
+            shortfall_eth="0.9",
+            sale_price_per_token_wei=10**18,
+            token_amount=1,
+            speak_to_user=(
+                "You have insufficient funds in your account. "
+                "Buying 1 token(s) in Skyview Residency requires 1.0 ETH, "
+                "but your wallet balance is 0.1 ETH (about 0.9 ETH short). "
+                "Add ETH to your wallet or reduce the number of tokens, then try again."
+            ),
+            instruction="Do not open MetaMask.",
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ), patch(
+            "backend.ai.tools.check_investor_can_fund_investment",
+            return_value=funding,
+        ), patch(
+            "backend.ai.tools._load_invest_property_row",
+            return_value=prop,
+        ):
+            invest = asyncio.run(try_server_invest_property_turn(_investor(), MagicMock()))
+        assert invest is not None
+        assert invest.data.get("insufficient_funds") is True
+        speak = str(invest.data.get("speak_to_user") or "")
+        assert "insufficient funds" in speak.lower()
+        assert "Skyview Residency" in speak
+        assert invest.data.get("speak_verbatim") is True
+        assert "Here are the properties open for investment" not in speak
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_marketplace_browse_not_triggered_for_explicit_invest():

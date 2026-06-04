@@ -33,6 +33,12 @@ def format_eth_display(wei: int) -> str:
     return text or "0"
 
 
+def format_eth_funding_display(wei: int) -> str:
+    """Full-precision ETH string for invest / rent funding messages shown in chat."""
+    eth = from_wei(max(0, int(wei)))
+    return format(eth, "f")
+
+
 def read_native_balance_wei(wallet_address: str) -> int:
     web3 = get_web3()
     if not wallet_address or not web3.is_address(wallet_address):
