@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from backend.api._helpers import backfill_investor_payout_rows_for_distribution
 from backend.db.connection import get_connection
 from backend.config.settings import INDEXER_ADVISORY_LOCK_KEY, INDEXER_START_BLOCK, TOKEN_DECIMALS
 from backend.services.blockchain import (
@@ -627,6 +628,17 @@ def _handle_rent_events(cursor, web3, tx: dict[str, Any], receipt: dict[str, Any
             (distribution_id, inv_addr, int(property_row["id"]), ownership_pct, str(payout_wei), str(from_wei(payout_wei)), normalized_tx_hash, timestamp, claim_status, claim_tx_hash, claimed_at)
         )
         investor_payout_rows += int(cursor.rowcount or 0)
+
+    if investor_payout_rows == 0 and amount_wei > 0:
+        investor_payout_rows += backfill_investor_payout_rows_for_distribution(
+            cursor,
+            web3,
+            property_id=int(property_row["id"]),
+            distribution_id=distribution_id,
+            rent_amount_wei=amount_wei,
+            distribution_tx_hash=normalized_tx_hash,
+            distributed_at=timestamp,
+        )
 
     transaction_rows = _upsert_transaction(
         cursor,

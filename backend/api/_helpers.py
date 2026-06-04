@@ -25,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 from backend.services.blockchain import (
     accrue_investor_rewards,
     add_investors_to_rent,
+    calculate_rent_distribution,
     decode_contract_events_from_receipt,
     deploy_security_token,
     from_wei,
@@ -1066,6 +1067,113 @@ def sync_rent_amount_to_contract(cursor, property_item: dict, property_id: int) 
             raise
 
     return rent_wei
+
+
+def _claim_status_for_investor_payout(
+    cursor,
+    *,
+    property_id: int,
+    investor_wallet: str,
+    distributed_at,
+) -> tuple[str, str | None, datetime | None]:
+    """Return (claim_status, claim_tx_hash, claimed_at) for a new payout row."""
+    cursor.execute(
+        "SELECT tx_hash, timestamp FROM transactions "
+        "WHERE type = %s AND property_id = %s AND LOWER(wallet_address) = LOWER(%s) AND timestamp >= %s "
+        "ORDER BY timestamp ASC LIMIT 1",
+        ("REWARDS_CLAIMED", int(property_id), investor_wallet, distributed_at),
+    )
+    existing_claim = cursor.fetchone()
+    if existing_claim:
+        return "claimed", existing_claim["tx_hash"], existing_claim["timestamp"]
+    return "claimable", None, None
+
+
+def backfill_investor_payout_rows_for_distribution(
+    cursor,
+    web3,
+    *,
+    property_id: int,
+    distribution_id: int,
+    rent_amount_wei: int,
+    distribution_tx_hash: str,
+    distributed_at,
+) -> int:
+    """Ensure investor_rent_payouts exist when RentPaid indexed but InvestorPaid rows did not.
+
+    Uses on-chain ``calculateDistribution`` (actual registered investors + balances), then
+    falls back to DB token_ownerships. Idempotent: only inserts missing
+    (distribution_id, investor_wallet) rows.
+    """
+    if rent_amount_wei <= 0:
+        return 0
+
+    cursor.execute(
+        "SELECT COUNT(*) AS row_count FROM investor_rent_payouts WHERE distribution_id = %s",
+        (int(distribution_id),),
+    )
+    if int(cursor.fetchone()["row_count"] or 0) > 0:
+        return 0
+
+    try:
+        breakdown = calculate_rent_distribution(property_id, rent_amount_wei)
+    except Exception as exc:
+        LOGGER.warning(
+            "backfill_investor_payout_rows stage=chain_preview_failed property_id=%s distribution_id=%s err=%s",
+            property_id,
+            distribution_id,
+            exc,
+        )
+        breakdown = build_rent_distribution_preview_from_db(cursor, property_id, rent_amount_wei)
+
+    rows_written = 0
+    for row in breakdown:
+        payout_wei = int(row.get("payout_wei") or 0)
+        if payout_wei <= 0:
+            continue
+        inv_addr = web3.to_checksum_address(row["investor"])
+        ownership_pct = float(row.get("ownership_pct") or 0)
+        if ownership_pct == 0 and rent_amount_wei > 0:
+            ownership_pct = float(
+                (Decimal(payout_wei) * Decimal(100)) / Decimal(rent_amount_wei)
+            )
+        claim_status, claim_tx_hash, claimed_at = _claim_status_for_investor_payout(
+            cursor,
+            property_id=property_id,
+            investor_wallet=inv_addr,
+            distributed_at=distributed_at,
+        )
+        cursor.execute(
+            "INSERT INTO investor_rent_payouts ("
+            "distribution_id, investor_wallet, property_id, ownership_percentage, "
+            "payout_amount_wei, payout_amount_eth, tx_hash, distributed_at, "
+            "claim_status, claim_tx_hash, claimed_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (distribution_id, investor_wallet) DO NOTHING",
+            (
+                int(distribution_id),
+                inv_addr,
+                int(property_id),
+                ownership_pct,
+                str(payout_wei),
+                str(from_wei(payout_wei)),
+                distribution_tx_hash,
+                distributed_at,
+                claim_status,
+                claim_tx_hash,
+                claimed_at,
+            ),
+        )
+        rows_written += int(cursor.rowcount or 0)
+
+    if rows_written:
+        LOGGER.info(
+            "backfill_investor_payout_rows property_id=%s distribution_id=%s rows=%s",
+            property_id,
+            distribution_id,
+            rows_written,
+        )
+    return rows_written
 
 
 def build_rent_distribution_preview_from_db(

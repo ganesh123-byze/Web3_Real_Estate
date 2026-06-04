@@ -717,6 +717,14 @@ def confirm_rent_payment(
             e for e in investor_paid_events
             if int(e["args"].get("propertyId", event_property_id)) == event_property_id
         ]
+        if not matching_investor_paid:
+            rewards_accrued_events = decode_contract_events_from_receipt(
+                rent_contract, "RewardsAccrued", receipt
+            )
+            matching_investor_paid = [
+                e for e in rewards_accrued_events
+                if int(e["args"].get("propertyId", event_property_id)) == event_property_id
+            ]
         matching_rent_distributed = [
             e for e in rent_distributed_events
             if int(e["args"].get("propertyId", event_property_id)) == event_property_id
@@ -940,23 +948,23 @@ def prepare_claim_rewards(
         if not property_item:
             raise HTTPException(status_code=404, detail="Property not found")
 
-        claimable_wei = int(get_property_claimable_rewards(payload.property_id, checksum))
+        chain_claimable_wei = int(get_property_claimable_rewards(payload.property_id, checksum))
+        cursor.execute(
+            "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS pending "
+            "FROM investor_rent_payouts WHERE property_id = %s AND LOWER(investor_wallet) = LOWER(%s) "
+            "AND COALESCE(claim_status, 'claimable') = 'claimable'",
+            (payload.property_id, checksum),
+        )
+        db_pending = int(cursor.fetchone()["pending"] or 0)
+        claimable_wei = chain_claimable_wei if chain_claimable_wei > 0 else db_pending
         if claimable_wei <= 0:
-            cursor.execute(
-                "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS pending "
-                "FROM investor_rent_payouts WHERE property_id = %s AND LOWER(investor_wallet) = LOWER(%s) "
-                "AND COALESCE(claim_status, 'claimable') = 'claimable'",
-                (payload.property_id, checksum),
-            )
-            db_pending = int(cursor.fetchone()["pending"] or 0)
-            if db_pending > 0:
+            if db_pending > 0 and chain_claimable_wei <= 0:
                 raise HTTPException(
                     status_code=409,
                     detail=(
                         "Indexed payouts show claimable rent in the database, but the RentDistribution "
-                        "contract reports 0 for this wallet and property. Confirm you are using the same "
-                        "wallet as in investor_rent_payouts, then check propertyClaimableRewards on-chain; "
-                        "if rewards were already claimed, reconcile may not have updated rows yet."
+                        "contract reports 0 for this wallet and property. Ask the property owner to run "
+                        "Sync Rent Chain, then pay rent again or wait for indexer backfill."
                     ),
                 )
             raise HTTPException(status_code=400, detail="No claimable rewards for this property")
@@ -1082,9 +1090,11 @@ def reward_claimable_summary(
                     checksum,
                     exc,
                 )
-            # Do not replace accurate DB aggregates with chain=0 (RPC lag, wrong archive node,
-            # or transient eth_call failures). Chain wins when it reports a positive balance.
-            effective_wei = chain_wei if chain_wei is not None and chain_wei > 0 else db_wei
+            # Only surface claimable yield when the contract can pay it out (claimRewards reads
+            # propertyClaimableRewards). Keep DB rows for earnings history; use chain for the CTA.
+            effective_wei = chain_wei if chain_wei is not None and chain_wei > 0 else 0
+            if effective_wei <= 0 and db_wei > 0:
+                continue
             properties.append({
                 "property_id": int(row["property_id"]),
                 "property_name": row.get("property_name"),
