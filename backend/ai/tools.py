@@ -63,6 +63,15 @@ from backend.ai.copilot_property_scope import (
     transaction_excludes_archived_property,
 )
 from backend.ai.investor_quick_actions import investor_turn_interrupts_workflow
+from backend.ai.investor_wallet_affordability import (
+    build_wallet_affordability_tool_payload,
+    compute_affordable_whole_tokens,
+    extract_wallet_affordability_property_hint,
+    has_investor_wallet_affordability_intent,
+    read_property_sale_price_wei,
+    read_wallet_balance_wei,
+    wallet_affordability_property_prompt,
+)
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_invest_property_hint_from_utterance,
@@ -1219,6 +1228,8 @@ async def try_server_invest_property_turn(
         return None
     if has_investor_portfolio_intent(utterance):
         return None
+    if has_investor_wallet_affordability_intent(utterance):
+        return None
     if investor_turn_interrupts_workflow(
         utterance, quick_action_id=_latest_human_quick_action_id()
     ):
@@ -1589,6 +1600,95 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
             "refreshed_from_chain": bool(refresh_chain),
         },
     )
+
+
+async def try_server_investor_wallet_affordability(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Estimate how many whole tokens the investor can afford from wallet ETH."""
+    if canonical_role(user.role) != "investor":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance or not has_investor_wallet_affordability_intent(utterance):
+        return None
+
+    abort_invest_workflow_if_interrupted(utterance)
+
+    hint = extract_wallet_affordability_property_hint(utterance)
+    if not hint:
+        return ToolResult(
+            ok=True,
+            data={
+                "investor_wallet_affordability": True,
+                "needs_property_name": True,
+                "whole_tokens_only": True,
+                "speak_to_user": wallet_affordability_property_prompt(),
+                "speak_verbatim": True,
+                "instruction": (
+                    "Read speak_to_user verbatim and wait for the property name or #id. "
+                    "Do NOT open the invest dialog or MetaMask."
+                ),
+            },
+            actions=[],
+        )
+
+    prop, err = _resolve_property_by_name(db, hint)
+    if err or not prop:
+        return ToolResult(
+            ok=True,
+            data={
+                "investor_wallet_affordability": True,
+                "speak_to_user": err or "I could not find that property on the marketplace.",
+                "speak_verbatim": True,
+                "instruction": "Read speak_to_user verbatim. Do NOT open MetaMask.",
+            },
+            actions=[],
+        )
+
+    investable_err = _validate_property_investable(prop)
+    if investable_err:
+        return ToolResult(
+            ok=True,
+            data={
+                "investor_wallet_affordability": True,
+                "speak_to_user": investable_err,
+                "speak_verbatim": True,
+                "instruction": "Read speak_to_user verbatim. Do NOT open MetaMask.",
+            },
+            actions=[],
+        )
+
+    try:
+        balance_wei = read_wallet_balance_wei(user.wallet_address or "")
+        sale_price_wei = read_property_sale_price_wei(prop)
+    except Exception as exc:
+        return ToolResult(
+            ok=True,
+            data={
+                "investor_wallet_affordability": True,
+                "speak_to_user": (
+                    f"I could not read your wallet balance or the sale price right now ({exc}). "
+                    "Try again in a moment."
+                ),
+                "speak_verbatim": True,
+            },
+            actions=[],
+        )
+
+    available = int(str(prop.get("tokens_available") or "0") or 0)
+    affordable = compute_affordable_whole_tokens(
+        balance_wei,
+        sale_price_wei,
+        tokens_available=available,
+    )
+    payload = build_wallet_affordability_tool_payload(
+        prop,
+        affordable_tokens=affordable,
+        balance_wei=balance_wei,
+        sale_price_per_token_wei=sale_price_wei,
+    )
+    return ToolResult(ok=True, data=payload, actions=[])
 
 
 async def try_server_investor_portfolio_overview(

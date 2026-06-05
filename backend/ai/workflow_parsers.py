@@ -41,6 +41,144 @@ def _strip_noise(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
+_SPOKEN_SINGLE_DIGITS: dict[str, int] = {
+    "zero": 0,
+    "oh": 0,
+    "o": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+}
+
+# Voice decimals sometimes say "eighty" for the digit 8 (e.g. "one eighty eight" → 1.88).
+_TENS_WORD_DECIMAL_DIGIT: dict[str, str] = {
+    "sixty": "6",
+    "seventy": "7",
+    "eighty": "8",
+    "ninety": "9",
+}
+
+_CREATE_PROPERTY_ANSWER_FILLER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)^(?:the\s+)?(?:monthly\s+)?rent\s+(?:is|of|would\s+be)\s+"),
+    re.compile(r"(?i)^(?:the\s+)?(?:total\s+)?(?:property\s+)?value\s+(?:is|of)\s+"),
+    re.compile(r"(?i)^(?:the\s+)?(?:token\s+)?(?:supply|value|count)\s+(?:is|of)\s+"),
+    re.compile(r"(?i)^(?:the\s+)?token\s+symbol\s+(?:is|of)\s+"),
+    re.compile(
+        r"(?i)^(?:the\s+)?name\s+of\s+(?:the\s+)?property\s+is\s+"
+    ),
+    re.compile(r"(?i)^(?:it\s+is|it's|its)\s+"),
+)
+
+_VOICE_HEDGE_RE = re.compile(
+    r"(?i)\b(?:nearly|around|approximately|approx|about|roughly|like|sort\s+of|kind\s+of|uh|um|er|ah)\b"
+)
+
+
+def _strip_voice_hedge_words(text: str) -> str:
+    """Drop approximate/filler words from spoken numeric answers (e.g. 'nearly one thousand')."""
+    t = _VOICE_HEDGE_RE.sub("", text or "")
+    t = re.sub(r"\s*,\s*", " ", t)
+    return " ".join(t.split()).strip()
+
+
+def _strip_create_property_answer_filler(text: str) -> str:
+    """Drop spoken lead-ins like 'monthly rent is' or 'the value is'."""
+    t = _strip_noise(text)
+    for pattern in _CREATE_PROPERTY_ANSWER_FILLER_RES:
+        t = pattern.sub("", t).strip()
+    t = _strip_eth_suffix(t)
+    return re.sub(r"[.!?]+$", "", t).strip()
+
+
+def _clean_spoken_token(token: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (token or "").lower())
+
+
+def _token_to_decimal_digit(token: str) -> str | None:
+    tok = _clean_spoken_token(token)
+    if tok in _SPOKEN_SINGLE_DIGITS:
+        return str(_SPOKEN_SINGLE_DIGITS[tok])
+    return _TENS_WORD_DECIMAL_DIGIT.get(tok)
+
+
+def _parse_spoken_whole_component(text: str) -> int | None:
+    """Integer part for spoken decimals (zero is valid)."""
+    left = _strip_noise(text).lower()
+    if not left:
+        return None
+    if left in _SPOKEN_SINGLE_DIGITS:
+        return _SPOKEN_SINGLE_DIGITS[left]
+    if left.isdigit():
+        return int(left)
+    parsed = _parse_number_word_phrase(left)
+    if parsed is not None:
+        return parsed
+    match = re.search(r"\d+", left)
+    if match:
+        return int(match.group(0))
+    return None
+
+
+def _parse_spoken_decimal_amount(text: str) -> str | None:
+    """Parse voice decimals like 'zero point zero one' or 'one eighty eight' (1.88)."""
+    t = _strip_create_property_answer_filler(text).lower()
+    if not t:
+        return None
+
+    if re.search(r"\bpoint\b", t):
+        left, _, right = t.partition(" point ")
+        whole_val = _parse_spoken_whole_component(left)
+        if whole_val is None:
+            return None
+        frac_tokens = [
+            _clean_spoken_token(tok)
+            for tok in right.split()
+            if _clean_spoken_token(tok) not in {"", "and", "a", "an", "eth"}
+        ]
+        frac_digits: list[str] = []
+        for tok in frac_tokens:
+            digit = _token_to_decimal_digit(tok)
+            if digit is None:
+                frac_digits = []
+                break
+            frac_digits.append(digit)
+        if not frac_digits:
+            return None
+        try:
+            value = Decimal(f"{whole_val}.{''.join(frac_digits)}")
+        except (InvalidOperation, ValueError):
+            return None
+        if value < 0:
+            return None
+        return format(value.normalize(), "f")
+
+    tokens = [
+        _clean_spoken_token(tok)
+        for tok in t.split()
+        if _clean_spoken_token(tok) not in {"", "and", "a", "an", "eth"}
+    ]
+    if len(tokens) >= 3:
+        d1_tok, d2_tok = tokens[-2], tokens[-1]
+        digit1 = _token_to_decimal_digit(d1_tok)
+        digit2 = _token_to_decimal_digit(d2_tok)
+        if digit1 is not None and digit2 is not None:
+            whole_val = _parse_spoken_whole_component(" ".join(tokens[:-2]))
+            if whole_val is not None:
+                try:
+                    value = Decimal(f"{whole_val}.{digit1}{digit2}")
+                except (InvalidOperation, ValueError):
+                    return None
+                if value >= 0:
+                    return format(value.normalize(), "f")
+    return None
+
+
 def _parse_number_word_phrase(text: str) -> int | None:
     """Parse spoken counts like 'twenty five', 'one hundred', 'one hundred twenty five'."""
     t = _strip_noise(text).lower().replace("-", " ")
@@ -123,7 +261,7 @@ def _parse_spoken_integer(text: str) -> int | None:
     """Best-effort integer from phrases like 'one lakh tokens' or '10000'."""
     if _input_indicates_negative_amount(text):
         return None
-    t = _strip_noise(text).lower()
+    t = _strip_voice_hedge_words(_strip_create_property_answer_filler(text).lower())
     if not t:
         return None
 
@@ -180,7 +318,8 @@ def _parse_spoken_integer(text: str) -> int | None:
 
 
 def _strip_eth_suffix(text: str) -> str:
-    return re.sub(r"(?i)\beth\b", "", text or "").strip()
+    """Remove a trailing ETH currency suffix — not tickers that are only 'ETH'."""
+    return re.sub(r"(?i)\s+eth\.?$", "", (text or "").strip()).strip()
 
 
 def _parse_grouped_decimal_token(text: str) -> str | None:
@@ -208,9 +347,12 @@ def _parse_grouped_decimal_token(text: str) -> str | None:
 def _parse_decimal_amount(text: str) -> str | None:
     if _input_indicates_negative_amount(text):
         return None
-    t = _strip_noise(text).lower()
+    t = _strip_create_property_answer_filler(text).lower()
     if not t or t in {"skip", "none", "no", "n/a", "zero", "0"}:
         return "0"
+    spoken_decimal = _parse_spoken_decimal_amount(text)
+    if spoken_decimal is not None:
+        return spoken_decimal
     grouped = _parse_grouped_decimal_token(t)
     if grouped is not None:
         return grouped
@@ -342,11 +484,12 @@ def normalize_create_property_field(field: str, raw: str) -> str:
             return ""
         # Drop leading filler: "the name is SpaceX" → SpaceX
         m = re.search(
-            r"(?:name\s+is|called|property\s+is|it's|its)\s+(.+)$",
+            r"(?:name\s+of\s+(?:the\s+)?property\s+is|name\s+is|called|property\s+is|it's|its)\s+(.+)$",
             text,
             re.IGNORECASE,
         )
-        return _strip_noise(m.group(1)) if m else text
+        result = _strip_noise(m.group(1)) if m else text
+        return re.sub(r"[.!?]+$", "", result).strip()
 
     if field == "location":
         m = re.search(
@@ -378,6 +521,7 @@ def _normalize_create_property_token_supply(text: str) -> str:
     """Positive whole-number token supply only (no letters or stray symbols)."""
     if _input_indicates_negative_amount(text):
         return ""
+    text = _strip_create_property_answer_filler(text)
     compact = _strip_eth_suffix(_strip_noise(text)).replace(" ", "")
     if re.fullmatch(r"\d+\.(?!0+$)\d+", compact):
         return ""
@@ -405,6 +549,7 @@ def _normalize_create_property_total_value(text: str) -> str:
     """Positive ETH amount only."""
     if _input_indicates_negative_amount(text):
         return ""
+    text = _strip_create_property_answer_filler(text)
     t = _strip_noise(text).lower()
     if re.search(r"\b(million|billion|thousand|lakh|crore)\b", t):
         spoken = _parse_spoken_integer(text)
@@ -449,18 +594,24 @@ def create_property_monthly_rent_is_skip(value: str) -> bool:
 
 def _normalize_create_property_token_symbol(text: str) -> str:
     """Ticker: 2–10 alphanumeric characters (e.g. ETH, GP, OCEAN)."""
+    text = re.sub(r"\([^)]*\)", " ", text or "")
+    text = _strip_create_property_answer_filler(text)
     upper = text.upper()
     stop = {
         "A", "AN", "THE", "I", "TO", "FOR", "IS", "IT", "MY", "WE", "AS",
         "AT", "IN", "ON", "OR", "OF", "AND", "WANT", "GIVE", "USE", "TOKEN",
-        "SYMBOL", "TICKER", "PLEASE", "YES", "NO", "OK", "SKIP",
+        "SYMBOL", "TICKER", "PLEASE", "YES", "NO", "OK", "SKIP", "MUSIC",
     }
     m = re.search(r"\b(?:SYMBOL|TICKER)\s+(?:IS\s+)?([A-Z0-9]{2,10})\b", upper)
     if m and m.group(1) not in stop:
         return m.group(1)
-    for sym in re.findall(r"\b([A-Z0-9]{2,10})\b", upper):
-        if sym not in stop:
-            return sym
+    candidates = [
+        sym
+        for sym in re.findall(r"\b([A-Z0-9]{2,10})\b", upper)
+        if sym not in stop
+    ]
+    if candidates:
+        return candidates[-1]
     cleaned = re.sub(r"[^A-Z0-9]", "", upper)
     if CREATE_PROPERTY_TOKEN_SYMBOL_MIN_LEN <= len(cleaned) <= CREATE_PROPERTY_TOKEN_SYMBOL_MAX_LEN:
         return cleaned

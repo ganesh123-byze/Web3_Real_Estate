@@ -268,6 +268,9 @@ DATA LOOKUP GUIDE:
   get_property_details (resolve id via list_properties first)
 - "who am I / my wallet / my role" → get_my_profile
 - "my wallet balance / how much ETH do I have" → get_wallet_balance
+- "how many tokens can I afford / based on my wallet balance how many tokens
+  should I buy in property X" → server answers with whole-token affordability
+  (read speak_to_user verbatim; whole tokens only — no fractional amounts)
 - "my last transaction / my last 2 / last 5 transactions" →
   get_my_transactions
 - "recent platform activity / all recent transactions" →

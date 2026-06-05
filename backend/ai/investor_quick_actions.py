@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from backend.ai.investor_guards import _normalize_text, has_investor_portfolio_intent
+from backend.ai.investor_wallet_affordability import has_investor_wallet_affordability_intent
 
 INVESTOR_QUICK_ACTION_IDS = frozenset(
     {
@@ -46,10 +47,12 @@ def investor_quick_action_interrupts_workflow(quick_action_id: str | None) -> bo
 
 
 def is_investor_advisory_intent(text: str) -> bool:
-    """Browse / portfolio / yield / transactions — not a property name for invest."""
+    """Browse / portfolio / yield / transactions / affordability — not invest field input."""
     utterance = _normalize_text(text)
     if not utterance:
         return False
+    if has_investor_wallet_affordability_intent(utterance):
+        return True
     if _MARKETPLACE_BROWSE_INTENT.search(utterance):
         return True
     if has_investor_portfolio_intent(utterance):
