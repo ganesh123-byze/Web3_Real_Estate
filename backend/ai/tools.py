@@ -1336,21 +1336,25 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
         rows = cursor.fetchall() or []
     finally:
         cursor.close()
+    from backend.config.settings import TOKEN_DECIMALS
+    from backend.services.blockchain import from_base_units
+
     holdings = []
     for r in rows:
         base = int(r.get("token_amount_base") or 0)
-        supply = int(r.get("token_supply") or 0)
-        # Tokens are 18-decimal ERC-20 — display in whole tokens.
-        whole = base // (10 ** 18) if base else 0
-        total_supply_whole = supply // (10 ** 18) if supply else 0
-        pct = round((whole / total_supply_whole) * 100, 2) if total_supply_whole else 0
+        whole = int(from_base_units(base, TOKEN_DECIMALS)) if base else 0
+        try:
+            supply_whole = int(Decimal(str(r.get("token_supply") or 0)))
+        except (TypeError, ValueError, ArithmeticError):
+            supply_whole = 0
+        pct = round((whole / supply_whole) * 100, 4) if supply_whole else 0.0
         holdings.append({
             "property_id": r["property_id"],
             "property_name": r["property_name"],
             "location": r["location"],
             "token_symbol": r["token_symbol"],
             "token_amount": whole,
-            "total_supply": total_supply_whole,
+            "total_supply": supply_whole,
             "ownership_percentage": pct,
             "token_sale_price_eth": _token_sale_price_eth_from_row(r),
         })
@@ -1399,10 +1403,11 @@ async def try_server_investor_portfolio_overview(
             "instruction": (
                 "Read speak_to_user verbatim. This is a live portfolio snapshot "
                 "refreshed from the database and on-chain token balances — do NOT "
-                "reuse earlier invest summaries or outdated holdings from chat memory."
+                "reuse earlier invest summaries or outdated holdings from chat memory. "
+                "Do NOT navigate away from the current page."
             ),
         },
-        actions=[AgentAction(type="NAVIGATE", route="/investor/portfolio")],
+        actions=[],
     )
 
 

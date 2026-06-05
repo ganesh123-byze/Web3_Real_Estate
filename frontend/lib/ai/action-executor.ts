@@ -14,7 +14,11 @@ import {
   logCreatePropertyStreamEvent,
 } from "@/lib/properties/create-property-debug";
 import { queryKeys } from "@/lib/queries";
-import { tokenSalePriceEthForPayload } from "@/components/properties/property-form-shared";
+import {
+  buildCreatePropertyApiPayload,
+  tokenSalePriceEthForPayload,
+  validateAndBuildCreatePropertyApiPayload,
+} from "@/components/properties/property-form-shared";
 import type { Property } from "@/lib/types";
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -326,16 +330,25 @@ async function submitCreatePropertyFromChat(
     return false;
   }
 
-  const payload = {
-    name: String(values.name).trim(),
-    location: String(values.location).trim(),
-    total_value: String(values.total_value).trim(),
-    token_supply: String(values.token_supply).trim(),
-    token_symbol: String(values.token_symbol).trim(),
-    token_sale_price_eth: tokenSalePriceEthForPayload(values.total_value, values.token_supply),
-    monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth).trim() : null,
-    images: [] as string[],
-  };
+  const built = validateAndBuildCreatePropertyApiPayload({
+    name: String(values.name),
+    location: String(values.location),
+    total_value: String(values.total_value),
+    token_supply: String(values.token_supply),
+    token_symbol: String(values.token_symbol),
+    monthly_rent_eth: values.monthly_rent_eth ? String(values.monthly_rent_eth) : undefined,
+    images: [],
+  });
+  if (!built.ok) {
+    emitCompletion({
+      modal: CREATE_PROPERTY_MODAL,
+      status: "error",
+      message: built.message,
+    });
+    focusChatInput();
+    return false;
+  }
+  const payload = built.payload;
   workflowFormValues.set(CREATE_PROPERTY_MODAL, {
     ...stored,
     name: payload.name,
@@ -343,7 +356,9 @@ async function submitCreatePropertyFromChat(
     total_value: payload.total_value,
     token_supply: payload.token_supply,
     token_symbol: payload.token_symbol,
-    ...(payload.monthly_rent_eth ? { monthly_rent_eth: payload.monthly_rent_eth } : {}),
+    ...(payload.monthly_rent_eth?.trim()
+      ? { monthly_rent_eth: payload.monthly_rent_eth }
+      : {}),
   });
 
   logCreatePropertyPayload("chat", payload);

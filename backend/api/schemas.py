@@ -19,6 +19,37 @@ class PropertyCreate(BaseModel):
     monthly_rent_eth: Optional[Decimal] = None
     images: list[str] = Field(default_factory=list, max_length=MAX_PROPERTY_IMAGES)
 
+    @field_validator("token_sale_price_eth", "monthly_rent_eth", mode="before")
+    @classmethod
+    def empty_optional_decimal_is_none(cls, value: object) -> object | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            # Legacy UI sent display strings like "0.001 ETH".
+            if text.upper().endswith(" ETH"):
+                text = text[:-4].strip()
+            if not text:
+                return None
+            return text.replace(",", "")
+        return value
+
+    @field_validator("total_value", "token_supply", mode="before")
+    @classmethod
+    def required_decimal_not_blank(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            raise ValueError("must be a positive number")
+        return value
+
+    @field_validator("name", "location", "token_symbol", mode="before")
+    @classmethod
+    def strip_text_fields(cls, value: object) -> object:
+        if value is None:
+            return value
+        return str(value).strip()
+
     @field_validator("images")
     @classmethod
     def validate_images(cls, value: list[str]) -> list[str]:

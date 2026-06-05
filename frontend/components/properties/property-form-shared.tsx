@@ -1,6 +1,7 @@
 "use client";
 
 import { Label } from "@/components/ui/label";
+import type { CreatePropertyPayload } from "@/lib/mutations";
 import { cn, formatEth } from "@/lib/utils";
 
 /** Per-token sale price in ETH from total property value (ETH) ÷ token supply. */
@@ -16,14 +17,91 @@ export function formatTokenPriceEth(priceEth: number, digits = 6): string {
   return formatEth(priceEth, { digits });
 }
 
-/** Per-token sale price string for API payloads, debug logs, and SSE (empty when invalid). */
+/** Plain decimal for API bodies — must not include " ETH" or grouping commas. */
+export function formatTokenPriceEthPlain(priceEth: number, maxDecimals = 18): string {
+  if (!Number.isFinite(priceEth) || priceEth <= 0) return "";
+  const fixed = priceEth.toFixed(maxDecimals);
+  const trimmed = fixed.replace(/\.?0+$/, "");
+  return trimmed || fixed;
+}
+
+/** Per-token sale price string for API payloads (empty when invalid). */
 export function tokenSalePriceEthForPayload(
   totalValueEth: string | undefined,
   tokenSupply: string | undefined,
 ): string {
-  return formatTokenPriceEth(
+  return formatTokenPriceEthPlain(
     calculateTokenPriceEth(String(totalValueEth ?? ""), String(tokenSupply ?? "")),
   );
+}
+
+export type CreatePropertyFormValues = {
+  name: string;
+  location: string;
+  total_value: string;
+  token_supply: string;
+  token_symbol: string;
+  monthly_rent_eth?: string;
+  images?: string[];
+};
+
+export type CreatePropertyPayloadValidation =
+  | { ok: true; payload: CreatePropertyPayload }
+  | { ok: false; message: string };
+
+/** Validate and build the create-property API body (shared by dialog + chat). */
+export function validateAndBuildCreatePropertyApiPayload(
+  values: CreatePropertyFormValues,
+): CreatePropertyPayloadValidation {
+  const total = String(values.total_value ?? "").trim();
+  const supply = String(values.token_supply ?? "").trim();
+  const name = String(values.name ?? "").trim();
+  const location = String(values.location ?? "").trim();
+  const symbol = String(values.token_symbol ?? "").trim();
+  if (!name) return { ok: false, message: "Property name is required." };
+  if (!location) return { ok: false, message: "Location is required." };
+  if (!symbol) return { ok: false, message: "Token symbol is required." };
+  const totalNum = Number(total);
+  const supplyNum = Number(supply);
+  if (!Number.isFinite(totalNum) || totalNum <= 0) {
+    return { ok: false, message: "Total value must be a positive number (ETH)." };
+  }
+  if (!Number.isFinite(supplyNum) || supplyNum <= 0) {
+    return { ok: false, message: "Token supply must be a positive number." };
+  }
+  const rent = String(values.monthly_rent_eth ?? "").trim();
+  if (rent) {
+    const rentNum = Number(rent);
+    if (!Number.isFinite(rentNum) || rentNum < 0) {
+      return { ok: false, message: "Monthly rent must be a non-negative number (ETH)." };
+    }
+  }
+  return { ok: true, payload: buildCreatePropertyApiPayload(values) };
+}
+
+/** JSON body for POST /properties and /properties/stream (no empty-string decimals). */
+export function buildCreatePropertyApiPayload(
+  values: CreatePropertyFormValues,
+): CreatePropertyPayload {
+  const total = String(values.total_value ?? "").trim();
+  const supply = String(values.token_supply ?? "").trim();
+  const rent = String(values.monthly_rent_eth ?? "").trim();
+  const sale = tokenSalePriceEthForPayload(total, supply);
+  const payload: CreatePropertyPayload = {
+    name: String(values.name ?? "").trim(),
+    location: String(values.location ?? "").trim(),
+    total_value: total,
+    token_supply: supply,
+    token_symbol: String(values.token_symbol ?? "").trim(),
+    images: values.images ?? [],
+  };
+  if (sale) {
+    payload.token_sale_price_eth = sale;
+  }
+  if (rent) {
+    payload.monthly_rent_eth = rent;
+  }
+  return payload;
 }
 
 export const propertyDialogContentClass =

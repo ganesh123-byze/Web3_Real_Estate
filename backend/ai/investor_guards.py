@@ -16,6 +16,7 @@ _INVESTOR_WALLET_MODALS = frozenset({"INVEST_PROPERTY", "CLAIM_REWARDS"})
 
 INVEST_TARGET_SUMMARY_HEADING = "Investment summary"
 PORTFOLIO_YIELD_SUMMARY_HEADING = "Yield & returns summary"
+INVESTOR_PORTFOLIO_HEADING = "Your portfolio details"
 
 # Informational / browse phrasing — never open wallet UI when this matches alone.
 _INFO_OR_BROWSE = re.compile(
@@ -236,57 +237,62 @@ def has_investor_portfolio_intent(text: str) -> bool:
     return True
 
 
+def _format_portfolio_ownership_pct(pct: Any) -> str:
+    """Human-readable ownership % for portfolio holdings."""
+    if pct is None:
+        return "—"
+    try:
+        value = float(pct)
+    except (TypeError, ValueError):
+        return "—"
+    if value <= 0:
+        return "0%" if value == 0 else "—"
+    if value < 0.01:
+        return f"{value:.4f}%"
+    return f"{value:.2f}%"
+
+
 def format_investor_portfolio_speak(
     portfolio_data: dict[str, Any],
     yield_data: dict[str, Any] | None = None,
 ) -> str:
-    """Live portfolio snapshot for chat — renders as Yield & returns summary card."""
+    """Live portfolio snapshot for chat — Your portfolio details card."""
     holdings = list(portfolio_data.get("holdings") or [])
     count = int(portfolio_data.get("count") or len(holdings))
 
     lines = [
-        PORTFOLIO_YIELD_SUMMARY_HEADING,
-        "Portfolio snapshot (live)",
-        f"Properties held: {count}",
+        INVESTOR_PORTFOLIO_HEADING,
+        f"Properties invested: {count}",
     ]
 
     total_tokens = 0
-    total_invested_eth = 0.0
     for holding in holdings:
-        name = str(holding.get("property_name") or f"Property {holding.get('property_id')}")
-        pid = holding.get("property_id")
-        tokens = int(holding.get("token_amount") or 0)
-        pct = holding.get("ownership_percentage")
-        pct_text = f"{pct}%" if pct is not None else "—"
-        lines.append(f"{name} (#{pid}): {tokens} tokens ({pct_text} ownership)")
-        total_tokens += tokens
-        try:
-            price = float(holding.get("token_sale_price_eth") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        if price > 0 and tokens > 0:
-            total_invested_eth += price * tokens
+        total_tokens += int(holding.get("token_amount") or 0)
 
     if count == 0:
+        lines.append("Total tokens held: 0")
         lines.append("Holdings: You have no token holdings recorded yet.")
         lines.append(
-            "Tip: After investing, ask for your portfolio again — this snapshot "
-            "refreshes from your wallet on-chain."
+            "Tip: After you invest, ask for your portfolio again — balances refresh "
+            "from your wallet on-chain."
         )
     else:
         lines.append(f"Total tokens held: {total_tokens}")
-        if total_invested_eth > 0:
-            lines.append(f"Estimated cost basis: {_format_eth_amount(total_invested_eth)} ETH")
+        for holding in holdings:
+            name = str(holding.get("property_name") or f"Property {holding.get('property_id')}")
+            pid = holding.get("property_id")
+            tokens = int(holding.get("token_amount") or 0)
+            pct = holding.get("ownership_percentage")
+            lines.append(f"Property: {name} (#{pid})")
+            lines.append(f"Tokens held: {tokens}")
+            lines.append(f"Ownership: {_format_portfolio_ownership_pct(pct)}")
 
-    if yield_data:
+    if yield_data and count > 0:
         earned = str(yield_data.get("total_earned_eth") or "0").strip()
         claimable = str(yield_data.get("total_claimable_eth") or "0").strip()
-        claimed = str(yield_data.get("total_claimed_eth") or "0").strip()
         lines.append(f"Total rental yield earned: {earned} ETH")
         lines.append(f"Claimable rewards: {claimable} ETH")
-        lines.append(f"Already claimed: {claimed} ETH")
 
-    lines.append("Next payout: When rent is distributed to token holders")
     return "\n".join(lines)
 
 

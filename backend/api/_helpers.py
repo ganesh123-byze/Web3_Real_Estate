@@ -24,11 +24,16 @@ LOGGER = logging.getLogger(__name__)
 
 from backend.services.blockchain import (
     accrue_investor_rewards,
+    add_investor_to_rent,
     add_investors_to_rent,
+    calculate_rent_distribution,
+    get_contract,
+    get_erc20_balance,
+    is_rent_investor,
     decode_contract_events_from_receipt,
     deploy_security_token,
     from_wei,
-    get_contract,
+    get_property_claimable_rewards,
     get_rent_investors,
     get_rent_property_info,
     rent_contract_supports_accrue,
@@ -766,19 +771,10 @@ def ensure_rent_property_registered(
 
 
 def sync_investors_to_contract(cursor, property_id: int) -> list[str]:
-    """Ensure all DB token holders are registered as investors in the RentDistribution contract.
+    """Ensure DB token holders with on-chain balances are registered on RentDistribution.
 
-    Best-effort:
-    - Returns ``[]`` silently if the property isn't yet registered in RentDistribution (no
-      rent set, contract addresses missing, RPC down). The admin must run /set-rent first.
-    - Used by the explicit admin sync endpoint, by ``/investments/confirm`` (so a fresh
-      buyer is auto-registered), AND by ``/properties/{id}/set-rent`` (so investors who
-      bought BEFORE rent was first set get backfilled on-chain).
-    - Returns the list of newly-added checksummed addresses for observability.
-
-    Without this, ``payRent`` silently skips investors whose wallets aren't in the
-    contract's ``_investors[propertyId]`` list — they get 0 ETH and the indexer emits no
-    ``InvestorPaid`` event for them, so no claim row is ever written.
+    ``payRent`` only credits addresses in ``_investors`` that have ``balanceOf > 0`` at
+    payment time (pro-rata vs ``totalSupply()``, including unsold tokens on the token contract).
     """
     cursor.execute(
         "SELECT u.wallet_address FROM token_ownerships t "
@@ -795,10 +791,27 @@ def sync_investors_to_contract(cursor, property_id: int) -> list[str]:
     except Exception:
         info = {"active": False}
     if not info.get("active"):
-        return []  # property not registered yet — addInvestor would revert
+        return []
 
     web3 = get_web3()
-    addresses = [web3.to_checksum_address(r["wallet_address"]) for r in rows]
+    property_item = fetch_property(cursor, property_id)
+    token_contract = None
+    if property_item and property_item.get("token_address"):
+        try:
+            token_contract = get_contract("SecurityToken", property_item["token_address"])
+        except Exception:
+            token_contract = None
+
+    addresses: list[str] = []
+    for row in rows:
+        wallet = web3.to_checksum_address(row["wallet_address"])
+        if token_contract is not None:
+            if get_erc20_balance(token_contract, wallet) <= 0:
+                continue
+        addresses.append(wallet)
+    if not addresses:
+        return []
+
     try:
         already_raw = get_rent_investors(property_id)
         already = {web3.to_checksum_address(a) for a in already_raw}
@@ -817,6 +830,65 @@ def sync_investors_to_contract(cursor, property_id: int) -> list[str]:
                 exc,
             )
     return new_investors
+
+
+def register_investor_for_property_yield(
+    cursor,
+    property_id: int,
+    investor_wallet: str,
+) -> list[str]:
+    """After a token purchase, register the buyer on RentDistribution when rent is enabled."""
+    property_item = fetch_property(cursor, property_id)
+    if not property_item or not property_item.get("token_address"):
+        return []
+
+    rent_wei = int(property_item.get("monthly_rent_wei") or 0)
+    if rent_wei > 0:
+        try:
+            ensure_rent_property_registered(cursor, property_item, property_id)
+        except Exception as exc:
+            LOGGER.warning(
+                "register_investor_for_property_yield stage=register_property_failed "
+                "property_id=%s err=%s",
+                property_id,
+                exc,
+            )
+
+    synced = sync_investors_to_contract(cursor, property_id)
+    web3 = get_web3()
+    wallet = web3.to_checksum_address(investor_wallet)
+    try:
+        token = get_contract("SecurityToken", property_item["token_address"])
+    except Exception:
+        return synced
+    if get_erc20_balance(token, wallet) <= 0:
+        return synced
+
+    try:
+        info = get_rent_property_info(property_id)
+    except Exception:
+        return synced
+    if not info.get("active"):
+        return synced
+
+    if is_rent_investor(property_id, wallet):
+        return synced
+    try:
+        add_investor_to_rent(property_id, wallet)
+        LOGGER.info(
+            "register_investor_for_property_yield property_id=%s wallet=%s added=true",
+            property_id,
+            wallet,
+        )
+        return synced + [wallet]
+    except Exception as exc:
+        LOGGER.warning(
+            "register_investor_for_property_yield property_id=%s wallet=%s err=%s",
+            property_id,
+            wallet,
+            exc,
+        )
+        return synced
 
 
 def backfill_missed_rent_accruals(
@@ -872,7 +944,7 @@ def backfill_missed_rent_accruals(
         dist_tx = dist.get("distribution_tx_hash") or ""
         distributed_at = dist.get("distributed_at")
 
-        breakdown = build_rent_distribution_preview_from_db(cursor, property_id, rent_wei)
+        breakdown = get_rent_distribution_breakdown(cursor, property_id, rent_wei)
         for row in breakdown:
             wallet_raw = row.get("investor")
             if not wallet_raw:
@@ -1068,9 +1140,346 @@ def sync_rent_amount_to_contract(cursor, property_item: dict, property_id: int) 
     return rent_wei
 
 
+def _claim_status_for_investor_payout(
+    cursor,
+    *,
+    property_id: int,
+    investor_wallet: str,
+    distributed_at,
+) -> tuple[str, str | None, datetime | None]:
+    """Return (claim_status, claim_tx_hash, claimed_at) for a new payout row."""
+    cursor.execute(
+        "SELECT tx_hash, timestamp FROM transactions "
+        "WHERE type = %s AND property_id = %s AND LOWER(wallet_address) = LOWER(%s) AND timestamp >= %s "
+        "ORDER BY timestamp ASC LIMIT 1",
+        ("REWARDS_CLAIMED", int(property_id), investor_wallet, distributed_at),
+    )
+    existing_claim = cursor.fetchone()
+    if existing_claim:
+        return "claimed", existing_claim["tx_hash"], existing_claim["timestamp"]
+    return "claimable", None, None
+
+
+def repair_investor_yield_index_for_wallet(cursor, investor_wallet: str) -> None:
+    """Best-effort: index missed payout rows and accrue on-chain claimable for a wallet."""
+    web3 = get_web3()
+    wallet = web3.to_checksum_address(investor_wallet)
+    cursor.execute(
+        "SELECT DISTINCT t.property_id "
+        "FROM token_ownerships t "
+        "JOIN users u ON u.id = t.user_id "
+        "WHERE LOWER(u.wallet_address) = LOWER(%s) AND t.token_amount > 0",
+        (wallet,),
+    )
+    property_ids = [int(r["property_id"]) for r in cursor.fetchall()]
+    for property_id in property_ids:
+        try:
+            sync_investors_to_contract(cursor, property_id)
+            cursor.execute(
+                "SELECT id, total_rent_collected, distribution_tx_hash, distributed_at "
+                "FROM rent_distributions WHERE property_id = %s "
+                "ORDER BY distributed_at DESC LIMIT 5",
+                (property_id,),
+            )
+            for dist in cursor.fetchall():
+                rent_wei = int(dist.get("total_rent_collected") or 0)
+                if rent_wei <= 0:
+                    continue
+                backfill_investor_payout_rows_for_distribution(
+                    cursor,
+                    web3,
+                    property_id=property_id,
+                    distribution_id=int(dist["id"]),
+                    rent_amount_wei=rent_wei,
+                    distribution_tx_hash=dist.get("distribution_tx_hash") or "",
+                    distributed_at=dist.get("distributed_at"),
+                )
+            backfill_missed_rent_accruals(cursor, property_id, [wallet])
+        except Exception as exc:
+            LOGGER.warning(
+                "repair_investor_yield_index property_id=%s wallet=%s err=%s",
+                property_id,
+                wallet,
+                exc,
+            )
+
+
+def reconcile_investor_claimable_on_chain(
+    cursor,
+    property_id: int,
+    investor_wallet: str,
+) -> int:
+    """Align ``propertyClaimableRewards`` with indexed claimable payout rows (best-effort)."""
+    web3 = get_web3()
+    wallet = web3.to_checksum_address(investor_wallet)
+    cursor.execute(
+        "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS pending "
+        "FROM investor_rent_payouts WHERE property_id = %s AND LOWER(investor_wallet) = LOWER(%s) "
+        "AND COALESCE(claim_status, 'claimable') = 'claimable'",
+        (int(property_id), wallet),
+    )
+    db_pending = int(cursor.fetchone()["pending"] or 0)
+    if db_pending <= 0:
+        return 0
+    if not rent_contract_supports_accrue():
+        return 0
+    try:
+        info = get_rent_property_info(property_id)
+    except Exception:
+        return 0
+    if not info.get("active"):
+        return 0
+    try:
+        sync_investors_to_contract(cursor, property_id)
+        chain_pending = int(get_property_claimable_rewards(property_id, wallet))
+    except Exception as exc:
+        LOGGER.warning(
+            "reconcile_investor_claimable_on_chain property_id=%s wallet=%s err=%s",
+            property_id,
+            wallet,
+            exc,
+        )
+        return 0
+    shortfall = db_pending - chain_pending
+    if shortfall <= 0:
+        return 0
+    accrue_investor_rewards(property_id, wallet, shortfall)
+    LOGGER.info(
+        "reconcile_investor_claimable_on_chain property_id=%s wallet=%s accrued_wei=%s",
+        property_id,
+        wallet,
+        shortfall,
+    )
+    return shortfall
+
+
+def ensure_investor_yield_after_rent_payment(
+    cursor,
+    web3,
+    *,
+    property_id: int,
+    distribution_id: int,
+    rent_amount_wei: int,
+    distribution_tx_hash: str,
+    distributed_at,
+) -> None:
+    """After ``payRent``, register holders, index payout rows, and credit on-chain claimable yield."""
+    if rent_amount_wei <= 0 or distribution_id <= 0:
+        return
+    try:
+        sync_investors_to_contract(cursor, property_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "ensure_investor_yield_after_rent_payment stage=sync_failed property_id=%s err=%s",
+            property_id,
+            exc,
+        )
+    rows = backfill_investor_payout_rows_for_distribution(
+        cursor,
+        web3,
+        property_id=property_id,
+        distribution_id=distribution_id,
+        rent_amount_wei=rent_amount_wei,
+        distribution_tx_hash=distribution_tx_hash,
+        distributed_at=distributed_at,
+    )
+    try:
+        credited = backfill_missed_rent_accruals(cursor, property_id, None)
+    except Exception as exc:
+        LOGGER.warning(
+            "ensure_investor_yield_after_rent_payment stage=accrue_backfill_failed property_id=%s err=%s",
+            property_id,
+            exc,
+        )
+        credited = []
+    LOGGER.info(
+        "ensure_investor_yield_after_rent_payment property_id=%s distribution_id=%s "
+        "payout_rows=%s accrual_credits=%s",
+        property_id,
+        distribution_id,
+        rows,
+        len(credited),
+    )
+
+
+def finalize_investor_rent_yield_after_payment(
+    cursor,
+    web3,
+    *,
+    property_id: int,
+    distribution_id: int,
+    rent_amount_wei: int,
+    distribution_tx_hash: str,
+    distributed_at,
+    investor_paid_events: list | None = None,
+) -> int:
+    """After tenant ``payRent``: index pro-rata payout rows and credit missed investors on-chain.
+
+    ``payRent`` only pays wallets already registered on RentDistribution with token balance.
+    Prepare rent syncs investors; this step backfills DB rows and accrues anyone who was
+    still skipped so claim uses their ownership percentage of that rent payment.
+    """
+    if rent_amount_wei <= 0 or distribution_id <= 0:
+        return 0
+
+    try:
+        sync_investors_to_contract(cursor, property_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "finalize_investor_rent_yield stage=sync_failed property_id=%s err=%s",
+            property_id,
+            exc,
+        )
+
+    rows_written = backfill_investor_payout_rows_for_distribution(
+        cursor,
+        web3,
+        property_id=property_id,
+        distribution_id=distribution_id,
+        rent_amount_wei=rent_amount_wei,
+        distribution_tx_hash=distribution_tx_hash,
+        distributed_at=distributed_at,
+    )
+
+    paid_wallets: set[str] = set()
+    for ev in investor_paid_events or []:
+        try:
+            paid_wallets.add(web3.to_checksum_address(ev["args"]["investor"]))
+        except Exception:
+            continue
+
+    if not rent_contract_supports_accrue():
+        return rows_written
+
+    breakdown = get_rent_distribution_breakdown(cursor, property_id, rent_amount_wei)
+    for row in breakdown:
+        wallet = web3.to_checksum_address(row["investor"])
+        payout_wei = int(row.get("payout_wei") or 0)
+        if payout_wei <= 0 or wallet in paid_wallets:
+            continue
+        try:
+            accrue_investor_rewards(property_id, wallet, payout_wei)
+            LOGGER.info(
+                "finalize_investor_rent_yield stage=accrue_missed property_id=%s "
+                "wallet=%s payout_wei=%s",
+                property_id,
+                wallet,
+                payout_wei,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "finalize_investor_rent_yield stage=accrue_failed property_id=%s wallet=%s err=%s",
+                property_id,
+                wallet,
+                exc,
+            )
+
+    return rows_written
+
+
+def backfill_investor_payout_rows_for_distribution(
+    cursor,
+    web3,
+    *,
+    property_id: int,
+    distribution_id: int,
+    rent_amount_wei: int,
+    distribution_tx_hash: str,
+    distributed_at,
+) -> int:
+    """Ensure each token holder has an ``investor_rent_payouts`` row for this distribution.
+
+    Uses DB token_ownerships first (all holders), then on-chain ``calculateDistribution``.
+    Inserts only missing (distribution_id, investor_wallet) rows so one paid investor
+    does not block backfill for others.
+    """
+    if rent_amount_wei <= 0:
+        return 0
+
+    breakdown = get_rent_distribution_breakdown(cursor, property_id, rent_amount_wei)
+    if not breakdown:
+        return 0
+
+    rows_written = 0
+    for row in breakdown:
+        payout_wei = int(row.get("payout_wei") or 0)
+        if payout_wei <= 0:
+            continue
+        inv_addr = web3.to_checksum_address(row["investor"])
+        cursor.execute(
+            "SELECT 1 FROM investor_rent_payouts "
+            "WHERE distribution_id = %s AND LOWER(investor_wallet) = LOWER(%s) LIMIT 1",
+            (int(distribution_id), inv_addr),
+        )
+        if cursor.fetchone():
+            continue
+        ownership_pct = float(row.get("ownership_pct") or 0)
+        if ownership_pct == 0 and rent_amount_wei > 0:
+            ownership_pct = float(
+                (Decimal(payout_wei) * Decimal(100)) / Decimal(rent_amount_wei)
+            )
+        claim_status, claim_tx_hash, claimed_at = _claim_status_for_investor_payout(
+            cursor,
+            property_id=property_id,
+            investor_wallet=inv_addr,
+            distributed_at=distributed_at,
+        )
+        cursor.execute(
+            "INSERT INTO investor_rent_payouts ("
+            "distribution_id, investor_wallet, property_id, ownership_percentage, "
+            "payout_amount_wei, payout_amount_eth, tx_hash, distributed_at, "
+            "claim_status, claim_tx_hash, claimed_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (distribution_id, investor_wallet) DO NOTHING",
+            (
+                int(distribution_id),
+                inv_addr,
+                int(property_id),
+                ownership_pct,
+                str(payout_wei),
+                str(from_wei(payout_wei)),
+                distribution_tx_hash,
+                distributed_at,
+                claim_status,
+                claim_tx_hash,
+                claimed_at,
+            ),
+        )
+        rows_written += int(cursor.rowcount or 0)
+
+    if rows_written:
+        LOGGER.info(
+            "backfill_investor_payout_rows property_id=%s distribution_id=%s rows=%s",
+            property_id,
+            distribution_id,
+            rows_written,
+        )
+    return rows_written
+
+
+def get_rent_distribution_breakdown(
+    cursor, property_id: int, rent_wei: int
+) -> list[dict]:
+    """Match ``payRent`` math: on-chain ``calculateDistribution`` when possible."""
+    if rent_wei <= 0:
+        return []
+    try:
+        breakdown = calculate_rent_distribution(property_id, rent_wei)
+        if breakdown:
+            return breakdown
+    except Exception as exc:
+        LOGGER.warning(
+            "get_rent_distribution_breakdown stage=chain_failed property_id=%s err=%s",
+            property_id,
+            exc,
+        )
+    return build_rent_distribution_preview_from_db(cursor, property_id, rent_wei)
+
+
 def build_rent_distribution_preview_from_db(
     cursor, property_id: int, rent_wei: int
 ) -> list[dict]:
+    """Pro-rata rent shares using on-chain ``balanceOf`` / ``totalSupply`` when available."""
     cursor.execute(
         "SELECT u.wallet_address, t.token_amount "
         "FROM token_ownerships t "
@@ -1082,6 +1491,49 @@ def build_rent_distribution_preview_from_db(
     rows = cursor.fetchall()
     if not rows:
         return []
+
+    web3 = get_web3()
+    property_item = fetch_property(cursor, property_id)
+    token_contract = None
+    supply = 0
+    if property_item and property_item.get("token_address"):
+        try:
+            token_contract = get_contract("SecurityToken", property_item["token_address"])
+            supply = int(token_contract.functions.totalSupply().call())
+        except Exception as exc:
+            LOGGER.warning(
+                "build_rent_distribution_preview stage=token_read_failed property_id=%s err=%s",
+                property_id,
+                exc,
+            )
+
+    if token_contract is not None and supply > 0:
+        breakdown = []
+        for row in rows:
+            wallet = web3.to_checksum_address(row["wallet_address"])
+            balance = get_erc20_balance(token_contract, wallet)
+            if balance <= 0:
+                continue
+            payout_wei = (int(rent_wei) * balance) // supply
+            ownership_bps = (balance * 10000) // supply
+            if payout_wei <= 0:
+                continue
+            share_pct = (
+                float((Decimal(payout_wei) / Decimal(int(rent_wei))) * Decimal(100))
+                if rent_wei > 0
+                else 0.0
+            )
+            breakdown.append(
+                {
+                    "investor": wallet,
+                    "payout_wei": payout_wei,
+                    "payout_eth": str(from_wei(payout_wei)),
+                    "ownership_bps": ownership_bps,
+                    "ownership_pct": round(share_pct, 6),
+                }
+            )
+        if breakdown:
+            return breakdown
 
     total_minted_base = sum(int(Decimal(row.get("token_amount") or 0)) for row in rows)
     if total_minted_base <= 0:

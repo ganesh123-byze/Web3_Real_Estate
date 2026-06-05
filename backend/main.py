@@ -90,7 +90,17 @@ async def generic_exception_handler(request: Request, exc: Exception):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logging.warning("Request validation error: %s", exc)
-    return JSONResponse({"detail": "Invalid request payload."}, status_code=422)
+    errors = exc.errors()
+    detail = "Invalid request payload."
+    if errors:
+        first = errors[0]
+        loc = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+        msg = str(first.get("msg") or "")
+        if loc and msg:
+            detail = f"{loc}: {msg}"
+        elif msg:
+            detail = msg
+    return JSONResponse({"detail": detail, "errors": errors}, status_code=422)
 
 
 if FRONTEND_DIR.exists():

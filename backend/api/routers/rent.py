@@ -19,8 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException
 LOGGER = logging.getLogger(__name__)
 
 from backend.api._helpers import (
+    finalize_investor_rent_yield_after_payment,
     backfill_missed_rent_accruals,
-    build_rent_distribution_preview_from_db,
+    get_rent_distribution_breakdown,
     ensure_rent_property_registered,
     enrich_property_with_supply,
     fetch_property,
@@ -54,7 +55,6 @@ from backend.api.schemas import (
     OwnerInvestorRead,
 )
 from backend.services.blockchain import (
-    calculate_rent_distribution,
     decode_contract_events_from_receipt,
     encode_claim_rewards,
     encode_pay_rent,
@@ -717,12 +717,20 @@ def confirm_rent_payment(
             e for e in investor_paid_events
             if int(e["args"].get("propertyId", event_property_id)) == event_property_id
         ]
+        if not matching_investor_paid:
+            rewards_accrued_events = decode_contract_events_from_receipt(
+                rent_contract, "RewardsAccrued", receipt
+            )
+            matching_investor_paid = [
+                e for e in rewards_accrued_events
+                if int(e["args"].get("propertyId", event_property_id)) == event_property_id
+            ]
         matching_rent_distributed = [
             e for e in rent_distributed_events
             if int(e["args"].get("propertyId", event_property_id)) == event_property_id
         ]
 
-        _handle_rent_events(
+        rent_result = _handle_rent_events(
             cursor,
             web3,
             tx,
@@ -733,6 +741,27 @@ def confirm_rent_payment(
             matching_rent_distributed,
         )
         LOGGER.info("_handle_rent_events completed tx=%s", tx_hash_normalized)
+
+        distribution_id = int(rent_result.get("distribution_id") or 0)
+        if distribution_id > 0:
+            try:
+                finalize_investor_rent_yield_after_payment(
+                    cursor,
+                    web3,
+                    property_id=property_id,
+                    distribution_id=distribution_id,
+                    rent_amount_wei=amount_wei,
+                    distribution_tx_hash=tx_hash_normalized,
+                    distributed_at=rent_result.get("distributed_at"),
+                    investor_paid_events=matching_investor_paid,
+                )
+            except Exception as yield_exc:
+                LOGGER.warning(
+                    "confirm_rent_payment stage=yield_finalize_failed tx=%s property_id=%s err=%s",
+                    tx_hash_normalized,
+                    property_id,
+                    yield_exc,
+                )
 
         # Commit BEFORE querying so the rows are durable and visible to other sessions.
         db.commit()
@@ -896,12 +925,7 @@ def preview_rent_distribution(property_id: int, db=Depends(get_db)):
         if rent_wei == 0:
             raise HTTPException(status_code=400, detail="Rent not set")
 
-        try:
-            breakdown = calculate_rent_distribution(property_id, rent_wei)
-        except Exception:
-            breakdown = build_rent_distribution_preview_from_db(
-                cursor, property_id, rent_wei
-            )
+        breakdown = get_rent_distribution_breakdown(cursor, property_id, rent_wei)
 
         return {
             "property_id": property_id,
@@ -940,25 +964,16 @@ def prepare_claim_rewards(
         if not property_item:
             raise HTTPException(status_code=404, detail="Property not found")
 
-        claimable_wei = int(get_property_claimable_rewards(payload.property_id, checksum))
+        chain_claimable_wei = int(get_property_claimable_rewards(payload.property_id, checksum))
+        cursor.execute(
+            "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS pending "
+            "FROM investor_rent_payouts WHERE property_id = %s AND LOWER(investor_wallet) = LOWER(%s) "
+            "AND COALESCE(claim_status, 'claimable') = 'claimable'",
+            (payload.property_id, checksum),
+        )
+        db_pending = int(cursor.fetchone()["pending"] or 0)
+        claimable_wei = max(chain_claimable_wei, db_pending)
         if claimable_wei <= 0:
-            cursor.execute(
-                "SELECT COALESCE(SUM(CAST(payout_amount_wei AS DECIMAL(36,0))), 0) AS pending "
-                "FROM investor_rent_payouts WHERE property_id = %s AND LOWER(investor_wallet) = LOWER(%s) "
-                "AND COALESCE(claim_status, 'claimable') = 'claimable'",
-                (payload.property_id, checksum),
-            )
-            db_pending = int(cursor.fetchone()["pending"] or 0)
-            if db_pending > 0:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Indexed payouts show claimable rent in the database, but the RentDistribution "
-                        "contract reports 0 for this wallet and property. Confirm you are using the same "
-                        "wallet as in investor_rent_payouts, then check propertyClaimableRewards on-chain; "
-                        "if rewards were already claimed, reconcile may not have updated rows yet."
-                    ),
-                )
             raise HTTPException(status_code=400, detail="No claimable rewards for this property")
 
         return ClaimRewardsPrepareResponse(
@@ -1082,9 +1097,9 @@ def reward_claimable_summary(
                     checksum,
                     exc,
                 )
-            # Do not replace accurate DB aggregates with chain=0 (RPC lag, wrong archive node,
-            # or transient eth_call failures). Chain wins when it reports a positive balance.
-            effective_wei = chain_wei if chain_wei is not None and chain_wei > 0 else db_wei
+            effective_wei = max(int(chain_wei or 0), int(db_wei))
+            if effective_wei <= 0:
+                continue
             properties.append({
                 "property_id": int(row["property_id"]),
                 "property_name": row.get("property_name"),

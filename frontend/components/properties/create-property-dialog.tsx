@@ -40,9 +40,9 @@ import {
 } from "@/lib/properties/create-property-debug";
 import {
   PropertyFormField,
+  validateAndBuildCreatePropertyApiPayload,
   calculateTokenPriceEth,
   formatTokenPriceEth,
-  tokenSalePriceEthForPayload,
   propertyDialogBodyClass,
   propertyDialogContentClass,
   propertyDialogFooterClass,
@@ -177,13 +177,16 @@ export function CreatePropertyDialog() {
       return el?.value ?? "";
     };
     const pick = (k: Exclude<keyof FormState, "images">): string => {
-      // String() because numeric inputs deliver everything as strings
-      // anyway, and JSON.stringify on the payload tolerates both.
-      const fromCache = cache[k];
-      if (fromCache !== undefined && fromCache !== "") return String(fromCache);
-      const fromDom = readDom(k);
+      // React state + DOM beat stale workflow cache so manual edits always win.
+      const fromState = String(fallback[k] ?? "").trim();
+      if (fromState) return fromState;
+      const fromDom = readDom(k).trim();
       if (fromDom) return fromDom;
-      return String(fallback[k] ?? "");
+      const fromCache = cache[k];
+      if (fromCache !== undefined && String(fromCache).trim() !== "") {
+        return String(fromCache).trim();
+      }
+      return "";
     };
     return {
       name: pick("name"),
@@ -213,34 +216,29 @@ export function CreatePropertyDialog() {
     // See `resolveSubmitValues` for why the cache wins (it's untouched
     // by render races and is exactly what the agent intended to submit).
     const values = resolveSubmitValues(stateValues);
-    const tokenSalePriceEth = tokenSalePriceEthForPayload(
-      values.total_value,
-      values.token_supply,
-    );
+    const built = validateAndBuildCreatePropertyApiPayload(values);
+    if (!built.ok) {
+      toast.error(built.message);
+      setStepEvents([]);
+      return;
+    }
+    const apiPayload = built.payload;
     logCreatePropertyPayload("dialog", {
-      name: values.name,
-      location: values.location,
-      total_value: values.total_value,
-      token_supply: values.token_supply,
-      token_symbol: values.token_symbol,
-      token_sale_price_eth: tokenSalePriceEth,
-      monthly_rent_eth: values.monthly_rent_eth,
+      name: apiPayload.name,
+      location: apiPayload.location,
+      total_value: String(apiPayload.total_value),
+      token_supply: String(apiPayload.token_supply),
+      token_symbol: apiPayload.token_symbol,
+      token_sale_price_eth: apiPayload.token_sale_price_eth != null ? String(apiPayload.token_sale_price_eth) : "",
+      monthly_rent_eth:
+        apiPayload.monthly_rent_eth != null ? String(apiPayload.monthly_rent_eth) : null,
     });
     // Mirror the live values back into React state so the visible
     // fields, the progress card, and the form-reset paths all agree.
     setForm(values);
     try {
       await create.mutateAsync({
-        payload: {
-          name: values.name.trim(),
-          location: values.location.trim(),
-          total_value: values.total_value,
-          token_supply: values.token_supply,
-          token_symbol: values.token_symbol.trim(),
-          token_sale_price_eth: tokenSalePriceEth,
-          monthly_rent_eth: values.monthly_rent_eth ? values.monthly_rent_eth : null,
-          images: values.images,
-        },
+        payload: apiPayload,
         onProgress: (event: CreatePropertyEvent) => {
           logCreatePropertyStreamEvent(event);
           setStepEvents((prev) => (prev[prev.length - 1] === event.step ? prev : [...prev, event.step]));

@@ -510,6 +510,13 @@ def get_rent_investors(property_id: int) -> list[str]:
     return list(contract.functions.getInvestors(int(property_id)).call())
 
 
+def is_rent_investor(property_id: int, wallet_address: str) -> bool:
+    contract = get_rent_distribution_contract()
+    return bool(
+        contract.functions.isInvestor(int(property_id), wallet_address).call()
+    )
+
+
 def rent_share_pct_from_payout(payout_wei: int, rent_wei: int) -> float:
     """Human-readable share of rent for this payout (matches on-chain wei division).
 
