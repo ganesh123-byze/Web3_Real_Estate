@@ -73,7 +73,7 @@ export const INVEST_TOKEN_AMOUNT_HINT =
   "Whole numbers only — enter 1 or greater.";
 
 export const INVEST_TOKEN_AMOUNT_DECIMAL_ERROR =
-  "Decimals aren't allowed. Please use whole numbers (1 or greater).";
+  "Tokens can only be bought in whole numbers, not decimals. Please enter 1 or greater.";
 
 export const INVEST_TOKEN_AMOUNT_MIN_ERROR =
   "Enter a whole number of 1 or greater.";

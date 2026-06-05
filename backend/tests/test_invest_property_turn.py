@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.ai.investor_guards import (
     extract_invest_property_hint_from_utterance,
+    extract_last_human_utterance,
     format_invest_target_property_speak,
     has_explicit_invest_intent,
     has_investor_portfolio_intent,
@@ -51,6 +52,36 @@ def test_portfolio_phrase_is_not_invest_intent():
     utterance = "Show me my investment portfolio with current valuations."
     assert has_investor_portfolio_intent(utterance) is True
     assert has_explicit_invest_intent(utterance) is False
+
+
+def test_extract_last_human_utterance_reads_api_chat_message_role():
+    from backend.ai.schemas import ChatMessage
+
+    assert extract_last_human_utterance([ChatMessage(role="user", content="invest")]) == "invest"
+    assert extract_last_human_utterance(
+        [
+            ChatMessage(role="assistant", content="Hello"),
+            ChatMessage(role="user", content="I want to invest"),
+        ]
+    ) == "I want to invest"
+
+
+def test_bare_invest_preflight_with_chat_message_role():
+    from backend.ai.schemas import ChatMessage
+
+    token = set_current_thread_id("test:invest-chatmessage-preflight")
+    msg_token = set_current_messages([ChatMessage(role="user", content="invest")])
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        result = asyncio.run(try_server_invest_property_turn(_investor(), MagicMock()))
+        assert result is not None
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "Which property" in speak
+        assert "Blocked" not in speak
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_bare_invest_starts_guided_workflow():
@@ -223,6 +254,7 @@ def test_decimal_token_amounts_are_rejected_not_truncated():
     msg = invest_invalid_token_amount_message("0.1")
     assert "decimal" in msg.lower()
     assert "whole numbers" in msg.lower()
+    assert "not decimals" in msg.lower()
 
 
 def test_fill_invest_rejects_decimal_token_answer():
@@ -262,7 +294,7 @@ def test_fill_invest_rejects_decimal_token_answer():
             result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
         speak = str(result.data.get("speak_to_user") or "")
         assert "decimal" in speak.lower()
-        assert "whole number" in speak.lower()
+        assert "whole numbers" in speak.lower()
         assert result.data.get("next_field") == "token_amount"
         assert result.data.get("filled", {}).get("token_amount") in (None, "")
         assert not result.data.get("awaiting_invest_confirmation")

@@ -131,22 +131,31 @@ def _normalize_text(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def _human_message_role(msg: Any) -> str:
+    """Normalize role from API ChatMessage, LangGraph messages, or dict history."""
+    if isinstance(msg, dict):
+        return (msg.get("type") or msg.get("role") or "").lower()
+    role = getattr(msg, "role", None)
+    if role is not None:
+        return str(role).lower()
+    msg_type = getattr(msg, "type", None)
+    if msg_type is not None:
+        return str(msg_type).lower()
+    cls = type(msg).__name__.lower()
+    if "human" in cls:
+        return "human"
+    if "user" in cls:
+        return "user"
+    return ""
+
+
 def extract_last_human_utterance(messages: list[Any] | None) -> str:
     """Return the latest human/user line from LangGraph or API history."""
     if not messages:
         return ""
     last_human_idx: int | None = None
     for i, msg in enumerate(messages):
-        role = ""
-        if isinstance(msg, dict):
-            role = (msg.get("type") or msg.get("role") or "").lower()
-        else:
-            cls = type(msg).__name__.lower()
-            if "human" in cls:
-                role = "human"
-            elif "user" in cls:
-                role = "user"
-        if role in ("human", "user"):
+        if _human_message_role(msg) in ("human", "user"):
             last_human_idx = i
     if last_human_idx is None:
         return ""
@@ -541,8 +550,8 @@ def invest_token_amount_field_is_valid(value: str) -> bool:
 def invest_invalid_token_amount_message(rejected_value: str = "") -> str:
     shown = f'"{_normalize_text(rejected_value)}"' if _normalize_text(rejected_value) else "That amount"
     return (
-        f"{shown} isn't valid. Decimals aren't allowed — "
-        "please use whole numbers (1 or greater)."
+        f"{shown} isn't valid. Tokens can only be bought in whole numbers, not decimals — "
+        "please enter 1 or greater."
     )
 
 
