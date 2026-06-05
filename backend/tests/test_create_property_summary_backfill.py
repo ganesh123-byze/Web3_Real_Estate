@@ -46,8 +46,25 @@ def test_parse_fields_from_paraphrased_summary():
     assert assistant_showed_create_property_summary(text)
     fields = parse_create_property_fields_from_summary(text)
     assert fields["name"] == "Gold Plaza"
+    assert fields["total_value"] == "10000"
+    assert fields["token_supply"] == "100000"
     assert fields["token_symbol"] == "GLD"
     assert fields["monthly_rent_eth"] == "0.1"
+
+
+def test_parse_fields_from_summary_with_comma_grouped_numbers():
+    text = (
+        "Here are the property details I have:\n"
+        "- Name: Sky Tower\n"
+        "- Location: NYC\n"
+        "- Total value (ETH): 10,000,000\n"
+        "- Token supply: 5,000,000\n"
+        "- Token symbol: SKY\n"
+        "- Monthly rent (ETH): 0\n"
+    )
+    fields = parse_create_property_fields_from_summary(text)
+    assert fields["total_value"] == "10000000"
+    assert fields["token_supply"] == "5000000"
 
 
 def test_short_ticker_prompt_matches_token_symbol_field():

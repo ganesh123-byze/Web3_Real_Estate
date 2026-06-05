@@ -62,10 +62,12 @@ from backend.ai.copilot_property_scope import (
     property_unavailable_message,
     transaction_excludes_archived_property,
 )
+from backend.ai.investor_quick_actions import investor_turn_interrupts_workflow
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
     extract_invest_property_hint_from_utterance,
     extract_last_human_utterance,
+    format_invest_confirmation_summary,
     format_invest_target_property_speak,
     format_investor_marketplace_catalog_speak,
     format_investor_portfolio_speak,
@@ -91,9 +93,13 @@ from backend.ai.owner_guards import (
     owner_investors_tool_payload,
     owner_rent_tool_payload,
 )
+from backend.ai.tenant_quick_actions import tenant_turn_interrupts_workflow
 from backend.ai.tenant_guards import (
     extract_pay_rent_property_hint_from_utterance,
+    format_pay_rent_confirmation_summary,
+    format_tenant_rental_catalog_speak,
     has_explicit_pay_rent_intent,
+    has_tenant_rental_browse_intent,
     pay_rent_utterance_names_property,
     pay_rent_workflow_active,
     wants_to_begin_pay_rent_workflow,
@@ -289,6 +295,72 @@ def _message_content(msg: Any) -> str:
     return (content or "").strip() if isinstance(content, str) else ""
 
 
+def _message_quick_action_id(msg: Any) -> str | None:
+    if isinstance(msg, dict):
+        raw = msg.get("quick_action_id")
+    else:
+        raw = getattr(msg, "quick_action_id", None)
+    text = str(raw or "").strip()
+    return text or None
+
+
+def _latest_human_quick_action_id() -> str | None:
+    for msg in reversed(_current_history() or []):
+        if _message_role(msg) not in ("human", "user"):
+            continue
+        return _message_quick_action_id(msg)
+    return None
+
+
+def _invest_session_interruptible(session: dict[str, Any] | None) -> bool:
+    if not session:
+        return False
+    if session.get("submitted") and not session.get("completing_submit"):
+        return False
+    return bool(
+        session.get("in_progress")
+        or session.get("awaiting_invest_confirmation")
+    )
+
+
+def abort_pay_rent_workflow_if_interrupted(utterance: str) -> bool:
+    """Drop guided pay-rent draft when the user pivots to a quick action or browse intent."""
+    quick_action_id = _latest_human_quick_action_id()
+    if quick_action_id == "tenant.pay":
+        return False
+    if not tenant_turn_interrupts_workflow(
+        utterance, quick_action_id=quick_action_id
+    ):
+        return False
+    session = _get_workflow_session(_PAY_RENT_MODAL)
+    if not pay_rent_workflow_active(session):
+        return False
+    _clear_workflow_session(_PAY_RENT_MODAL)
+    LOGGER.info(
+        "[pay_rent] Cleared guided pay-rent session (quick_action=%s)",
+        quick_action_id or "advisory_intent",
+    )
+    return True
+
+
+def abort_invest_workflow_if_interrupted(utterance: str) -> bool:
+    """Drop guided invest draft when the user pivots to a quick action or browse intent."""
+    quick_action_id = _latest_human_quick_action_id()
+    if not investor_turn_interrupts_workflow(
+        utterance, quick_action_id=quick_action_id
+    ):
+        return False
+    session = _get_workflow_session(_INVEST_MODAL)
+    if not _invest_session_interruptible(session):
+        return False
+    _clear_workflow_session(_INVEST_MODAL)
+    LOGGER.info(
+        "[invest] Cleared guided invest session (quick_action=%s)",
+        quick_action_id or "advisory_intent",
+    )
+    return True
+
+
 def _create_property_session_preserves_filled(session: dict[str, Any] | None) -> bool:
     """True when server-side CREATE_PROPERTY draft must survive history recovery."""
     if not session:
@@ -414,6 +486,18 @@ def _merge_last_user_utterance(
     if not text:
         return accumulated
 
+    if modal == _INVEST_MODAL and investor_turn_interrupts_workflow(
+        text,
+        quick_action_id=_message_quick_action_id(hist[last_human_idx]),
+    ):
+        return accumulated
+
+    if modal == _PAY_RENT_MODAL and tenant_turn_interrupts_workflow(
+        text,
+        quick_action_id=_message_quick_action_id(hist[last_human_idx]),
+    ):
+        return accumulated
+
     if modal == _CREATE_PROPERTY_MODAL:
         last_ai_text = (
             _message_content(hist[last_ai_idx]) if last_ai_idx is not None else ""
@@ -449,7 +533,10 @@ def _merge_last_user_utterance(
                 return accumulated
         return accumulated
     if modal == _PAY_RENT_MODAL and next_field == "property_name":
-        hint = extract_pay_rent_property_hint_from_utterance(text)
+        hint = extract_pay_rent_property_hint_from_utterance(
+            text,
+            quick_action_id=_message_quick_action_id(hist[last_human_idx]),
+        )
         if hint:
             accumulated[next_field] = hint
             return accumulated
@@ -708,6 +795,37 @@ def _filter_investable_marketplace_properties(items: list[dict]) -> list[dict]:
         if _validate_property_investable(prop) is None:
             investable.append(prop)
     return investable
+
+
+def _tenant_rental_catalog_data(
+    all_items: list[dict],
+    *,
+    available_items: list[dict] | None = None,
+) -> dict[str, Any]:
+    available = (
+        available_items
+        if available_items is not None
+        else filter_tenant_dashboard_available(all_items)
+    )
+    speak = format_tenant_rental_catalog_speak(
+        available,
+        total_listed=len(all_items),
+    )
+    return {
+        "count": len(all_items),
+        "properties": all_items[:25],
+        "available_properties": available,
+        "available_count": len(available),
+        "tenant_rental_catalog": True,
+        "catalog": "tenant_rentals_dashboard",
+        "speak_to_user": speak,
+        "speak_verbatim": True,
+        "instruction": (
+            "Read speak_to_user verbatim — it lists each available rental property "
+            "with location and monthly rent. Do NOT reply with only navigation text "
+            "or a count. Navigation to /tenant/rentals is handled separately."
+        ),
+    }
 
 
 def _investor_marketplace_catalog_data(items: list[dict]) -> dict[str, Any]:
@@ -985,14 +1103,41 @@ async def try_server_investor_marketplace_browse(
     """Return investable property details when the user browses the marketplace."""
     if canonical_role(user.role) != "investor":
         return None
-    if invest_workflow_active(_get_workflow_session(_INVEST_MODAL)):
-        return None
 
-    utterance = _latest_human_utterance()
+    utterance = _latest_human_utterance().strip()
     if not utterance or not has_marketplace_browse_intent(utterance):
         return None
 
+    abort_invest_workflow_if_interrupted(utterance)
     return await _list_properties_tool({}, user, db)
+
+
+async def try_server_tenant_rental_browse(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Return rentable property details when the tenant browses available rentals."""
+    if canonical_role(user.role) != "tenant":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance or not has_tenant_rental_browse_intent(utterance):
+        return None
+
+    abort_pay_rent_workflow_if_interrupted(utterance)
+
+    cursor = db.cursor(dictionary=True)
+    try:
+        raw_rows = fetch_tenant_rental_properties(
+            cursor, tenant_wallet=user.wallet_address
+        )
+    finally:
+        cursor.close()
+
+    all_items = [_serialize_tenant_property(row) for row in raw_rows]
+    available = filter_tenant_dashboard_available(all_items)
+    payload = _tenant_rental_catalog_data(all_items, available_items=available)
+    actions = [AgentAction(type="NAVIGATE", route="/tenant/rentals")]
+    return ToolResult(ok=True, data=payload, actions=actions)
 
 
 def _enrich_invest_preflight_result(
@@ -1025,6 +1170,10 @@ def _enrich_invest_preflight_result(
         return ToolResult(ok=True, data=data, actions=result.actions)
 
     if data.get("submitted"):
+        data.setdefault("speak_verbatim", True)
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+    if data.get("awaiting_invest_confirmation"):
         data.setdefault("speak_verbatim", True)
         return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
@@ -1062,15 +1211,34 @@ async def try_server_invest_property_turn(
         return None
 
     utterance = _latest_human_utterance().strip()
-    if not utterance or has_marketplace_browse_intent(utterance):
+    if not utterance:
+        return None
+    if abort_invest_workflow_if_interrupted(utterance):
+        return None
+    if has_marketplace_browse_intent(utterance):
         return None
     if has_investor_portfolio_intent(utterance):
+        return None
+    if investor_turn_interrupts_workflow(
+        utterance, quick_action_id=_latest_human_quick_action_id()
+    ):
         return None
 
     session = _get_workflow_session(_INVEST_MODAL)
     active = invest_workflow_active(session)
-    if not active and not has_explicit_invest_intent(utterance):
+    awaiting_confirm = bool(session.get("awaiting_invest_confirmation"))
+    if not active and not awaiting_confirm and not has_explicit_invest_intent(utterance):
         return None
+
+    if awaiting_confirm:
+        yn = parse_yes_no_confirmation(utterance)
+        fill_args: dict[str, Any] = {}
+        if yn is True:
+            fill_args["confirm_invest"] = True
+        elif yn is False:
+            fill_args["confirm_invest"] = False
+        result = await _fill_invest_property(fill_args, user, db)
+        return _enrich_invest_preflight_result(result, db, parsed={})
 
     parsed = parse_invest_order_from_utterance(utterance)
     if not parsed.get("property_name"):
@@ -1088,13 +1256,6 @@ async def try_server_invest_property_turn(
 
     if not fill_args and not active:
         return None
-
-    if (
-        fill_args.get("property_name")
-        and fill_args.get("token_amount")
-        and invest_turn_explicit_token_amount(utterance, args_token=fill_args.get("token_amount"))
-    ):
-        fill_args["submit"] = True
 
     result = await _fill_invest_property(fill_args, user, db)
     return _enrich_invest_preflight_result(result, db, parsed=parsed)
@@ -1127,6 +1288,11 @@ def _enrich_pay_rent_preflight_result(result: ToolResult) -> ToolResult:
         data.setdefault("speak_verbatim", True)
         return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
+    if data.get("awaiting_pay_rent_confirmation"):
+        data.setdefault("speak_verbatim", True)
+        data["pay_rent_property_target"] = True
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
     if data.get("next_field") == "property_name" and not data.get("property_id"):
         ask = "Which property would you like to pay rent for? You can say the name or #id."
         data.setdefault("speak_to_user", ask)
@@ -1151,17 +1317,50 @@ async def try_server_tenant_pay_rent_turn(
     if not utterance:
         return None
 
+    quick_action_id = _latest_human_quick_action_id()
     session = _get_workflow_session(_PAY_RENT_MODAL)
     active = pay_rent_workflow_active(session)
+    awaiting_confirm = bool(session.get("awaiting_pay_rent_confirmation"))
+
+    if awaiting_confirm:
+        yn = parse_yes_no_confirmation(utterance)
+        fill_args: dict[str, Any] = {}
+        if yn is True:
+            fill_args["confirm_pay_rent"] = True
+        elif yn is False:
+            fill_args["confirm_pay_rent"] = False
+        result = await _fill_pay_rent_property(fill_args, user, db)
+        return _enrich_pay_rent_preflight_result(result)
+
+    if quick_action_id == "tenant.pay" and active:
+        _clear_workflow_session(_PAY_RENT_MODAL)
+        started = await _start_pay_rent_property({}, user, db)
+        return _enrich_pay_rent_preflight_result(started)
+
+    if abort_pay_rent_workflow_if_interrupted(utterance):
+        return None
+
+    if has_tenant_rental_browse_intent(utterance):
+        return None
+
+    if tenant_turn_interrupts_workflow(
+        utterance, quick_action_id=quick_action_id
+    ):
+        return None
+
     if not active and not has_explicit_pay_rent_intent(utterance):
         return None
 
-    hint = extract_pay_rent_property_hint_from_utterance(utterance)
+    hint = extract_pay_rent_property_hint_from_utterance(
+        utterance, quick_action_id=quick_action_id
+    )
     fill_args: dict[str, Any] = {}
     if hint:
         fill_args["property_name"] = hint
 
-    names_property = pay_rent_utterance_names_property(utterance)
+    names_property = pay_rent_utterance_names_property(
+        utterance, quick_action_id=quick_action_id
+    )
 
     if not names_property and (
         has_explicit_pay_rent_intent(utterance) or wants_to_begin_pay_rent_workflow(utterance)
@@ -1171,9 +1370,6 @@ async def try_server_tenant_pay_rent_turn(
 
     if not names_property and not active:
         return None
-
-    if names_property and fill_args.get("property_name"):
-        fill_args["submit"] = True
 
     if not active and names_property:
         await _start_pay_rent_property({}, user, db)
@@ -1201,6 +1397,33 @@ async def _list_tenant_properties_tool(args: dict, user: AuthUser, db: Any) -> T
     q = (args.get("search") or "").strip()
     if q:
         items = _filter_properties_by_fuzzy_search(items, q)
+
+    latest = _latest_human_utterance().strip()
+    if latest and has_explicit_pay_rent_intent(latest) and not has_tenant_rental_browse_intent(
+        latest
+    ):
+        return ToolResult(
+            ok=True,
+            data={
+                "pay_rent_property_target": True,
+                "speak_verbatim": True,
+                "speak_to_user": (
+                    "I'll handle that as a rent payment for the property you named — "
+                    "not a full rentals listing. Say the property name or #id to pay rent on."
+                ),
+                "instruction": (
+                    "Do NOT read out every rental property. Use fill_pay_rent_property "
+                    "with the property_name from the user's pay-rent order."
+                ),
+            },
+            actions=[],
+        )
+
+    if latest and has_tenant_rental_browse_intent(latest):
+        available = filter_tenant_dashboard_available(items)
+        payload = _tenant_rental_catalog_data(items, available_items=available)
+        actions = [AgentAction(type="NAVIGATE", route="/tenant/rentals")]
+        return ToolResult(ok=True, data=payload, actions=actions)
 
     return ToolResult(
         ok=True,
@@ -1378,6 +1601,8 @@ async def try_server_investor_portfolio_overview(
     utterance = _latest_human_utterance().strip()
     if not utterance or not has_investor_portfolio_intent(utterance):
         return None
+
+    abort_invest_workflow_if_interrupted(utterance)
 
     portfolio_result = await _get_my_portfolio(
         {"refresh_from_chain": True},
@@ -5411,6 +5636,97 @@ def _gate_invest_funding(
     )
 
 
+def _parse_confirm_invest_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
+
+
+def _invest_confirmation_instruction() -> str:
+    return (
+        "Read speak_to_user verbatim — it is the full investment summary with Yes/No. "
+        "Wait for the user's reply. On Yes call fill_invest_property with "
+        "confirm_invest=true only (do not re-send property or token fields). "
+        "On No call fill_invest_property with confirm_invest=false."
+    )
+
+
+def _invest_enter_confirmation(
+    accumulated: dict[str, str],
+    *,
+    property_id: int,
+    resolved_name: str | None,
+    resolved_prop: dict[str, Any],
+) -> ToolResult:
+    modal = _INVEST_MODAL
+    summary = format_invest_confirmation_summary(
+        resolved_prop,
+        accumulated.get("token_amount"),
+    )
+    _set_workflow_session(
+        modal,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": None,
+            "submitted": False,
+            "completing_submit": False,
+            "awaiting_invest_confirmation": True,
+            "property_id": property_id,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": accumulated,
+            "missing": [],
+            "submitted": False,
+            "next_field": None,
+            "property_id": property_id,
+            "property_name": resolved_name,
+            "awaiting_invest_confirmation": True,
+            "confirmation_summary": summary,
+            "speak_to_user": summary,
+            "speak_verbatim": True,
+            "invest_property_target": True,
+            "instruction": _invest_confirmation_instruction(),
+        },
+        actions=[],
+    )
+
+
+def _invest_replay_confirmation(
+    session: dict[str, Any],
+    db: Any,
+) -> ToolResult:
+    filled = dict(session.get("filled") or {})
+    property_id = session.get("property_id")
+    resolved_name = filled.get("property_name")
+    resolved_prop: dict[str, Any] | None = None
+    if db is not None and property_id is not None:
+        resolved_prop = _load_invest_property_row(db, int(property_id))
+    if not resolved_prop:
+        return ToolResult(
+            ok=False,
+            error="Investment session expired. Say invest to start again.",
+            data={"invest_property_target": True},
+        )
+    return _invest_enter_confirmation(
+        filled,
+        property_id=int(property_id),
+        resolved_name=str(resolved_name) if resolved_name else None,
+        resolved_prop=resolved_prop,
+    )
+
+
 async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
     """Begin guided invest: ask property name first, then token amount."""
     user_text = extract_last_human_utterance(_current_history())
@@ -5443,7 +5759,7 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
         f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
         f"What is the {next_field.replace('_', ' ')}?"
         if filled
-        else "Which property would you like to invest in? Say the property name, then how many tokens you want to buy."
+        else "Which property would you like to invest in?"
     )
     instruction = (
         f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
@@ -5452,7 +5768,7 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
         if filled
         else (
             "Read speak_to_user verbatim. Ask only for the property name — "
-            "do NOT read the full marketplace catalog."
+            "do NOT ask for token count yet and do NOT read the full marketplace catalog."
         )
     )
     return ToolResult(
@@ -5486,7 +5802,7 @@ register(ToolSpec(
 
 
 async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolResult:
-    """Collect property name + token amount, then auto-fill and submit the invest form."""
+    """Collect property name + token amount, confirm yes/no, then open MetaMask."""
     modal = _INVEST_MODAL
     tool_name = "fill_invest_property"
     prior_session = _get_workflow_session(modal)
@@ -5494,9 +5810,43 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         _clear_workflow_session(modal)
         prior_session = {}
 
-    accumulated = _recover_form_state(modal, tool_name, _INVEST_FIELDS)
-
     utterance = extract_last_human_utterance(_current_history())
+    if prior_session.get("awaiting_invest_confirmation"):
+        confirm = _parse_confirm_invest_arg(args.get("confirm_invest"))
+        if confirm is None:
+            confirm = parse_yes_no_confirmation(utterance)
+        if confirm is False:
+            _clear_workflow_session(modal)
+            return ToolResult(
+                ok=True,
+                data={
+                    "speak_to_user": (
+                        "Investment cancelled. Say invest when you are ready to try again."
+                    ),
+                    "speak_verbatim": True,
+                    "invest_property_target": True,
+                },
+                actions=[],
+            )
+        if confirm is True:
+            filled = dict(prior_session.get("filled") or {})
+            _set_workflow_session(
+                modal,
+                {**prior_session, "awaiting_invest_confirmation": False},
+            )
+            return await _fill_invest_property(
+                {
+                    "property_name": filled.get("property_name"),
+                    "token_amount": filled.get("token_amount"),
+                    "submit": True,
+                },
+                _user,
+                db,
+            )
+        if not any(args.get(field) for field in _INVEST_FIELDS) and not args.get("submit"):
+            return _invest_replay_confirmation(prior_session, db)
+
+    accumulated = _recover_form_state(modal, tool_name, _INVEST_FIELDS)
     parsed_order = parse_invest_order_from_utterance(utterance)
     if invest_utterance_is_token_count_only(utterance):
         parsed_order = {
@@ -5568,16 +5918,6 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         args_token=args.get("token_amount"),
     )
 
-    # Reliability guard: auto-submit only when the user supplied a token count this turn.
-    # Never reuse a token_amount from a previous investment when only property/#id changed.
-    if (
-        not submit
-        and not missing
-        and property_id is not None
-        and explicit_token_this_turn
-    ):
-        return await _fill_invest_property({**args, "submit": True}, _user, db)
-
     instruction: str | None = None
     if accumulated and next_field:
         instruction = (
@@ -5587,10 +5927,7 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
             "Do NOT re-ask for any field already in filled."
         )
     elif not missing:
-        instruction = (
-            "All required fields are collected. Call this tool again with submit=true "
-            "to fill the invest form and open MetaMask for the user to confirm."
-        )
+        instruction = _invest_confirmation_instruction()
 
     if submit and not missing and property_id is not None:
         try:
@@ -5685,6 +6022,14 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
             },
         )
 
+    if not missing and property_id is not None and resolved_prop is not None:
+        return _invest_enter_confirmation(
+            accumulated,
+            property_id=property_id,
+            resolved_name=resolved_name,
+            resolved_prop=resolved_prop,
+        )
+
     _set_workflow_session(
         modal,
         {
@@ -5729,9 +6074,9 @@ register(ToolSpec(
     description=(
         "Drive the guided invest workflow. Call after start_invest_property whenever "
         "the user answers a field — pass only NEW values; the server merges prior turns. "
-        "Field order: property_name first, then token_amount. Result includes filled, "
-        "missing, and next_field. When missing is empty, call again with submit=true "
-        "to auto-fill the form and open MetaMask (user taps Confirm in the wallet)."
+        "Field order: property_name first, then token_amount. When both are collected "
+        "the tool returns awaiting_invest_confirmation with a summary — wait for Yes/No. "
+        "On Yes call with confirm_invest=true only to open MetaMask."
     ),
     parameters={
         "type": "object",
@@ -5744,11 +6089,18 @@ register(ToolSpec(
                 "type": "string",
                 "description": "Whole number of tokens to buy, e.g. '10'.",
             },
+            "confirm_invest": {
+                "type": "boolean",
+                "description": (
+                    "Only when awaiting_invest_confirmation is true: true after the user "
+                    "says Yes to proceed, false when they cancel."
+                ),
+            },
             "submit": {
                 "type": "boolean",
                 "description": (
-                    "Set true on the FINAL call once property_name and token_amount are "
-                    "filled — auto-fills the invest dialog and triggers MetaMask."
+                    "Internal/server use after confirmation — opens MetaMask. Do not call "
+                    "from the LLM unless confirm_invest=true was already accepted."
                 ),
             },
         },
@@ -6062,6 +6414,102 @@ async def _execute_pay_rent_ui(property_id: int, user: AuthUser, db: Any) -> Too
     )
 
 
+def _parse_confirm_pay_rent_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
+
+
+def _pay_rent_confirmation_instruction() -> str:
+    return (
+        "Read speak_to_user verbatim — it is the full rent payment summary with Yes/No. "
+        "Wait for the user's reply. On Yes call fill_pay_rent_property with "
+        "confirm_pay_rent=true only (do not re-send the property name). "
+        "On No call fill_pay_rent_property with confirm_pay_rent=false."
+    )
+
+
+def _pay_rent_enter_confirmation(
+    accumulated: dict[str, str],
+    *,
+    property_id: int,
+    resolved_name: str | None,
+    resolved_prop: dict[str, Any],
+) -> ToolResult:
+    modal = _PAY_RENT_MODAL
+    summary = format_pay_rent_confirmation_summary(resolved_prop)
+    _set_workflow_session(
+        modal,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": None,
+            "submitted": False,
+            "completing_submit": False,
+            "awaiting_pay_rent_confirmation": True,
+            "property_id": property_id,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": accumulated,
+            "missing": [],
+            "submitted": False,
+            "next_field": None,
+            "property_id": property_id,
+            "property_name": resolved_name,
+            "awaiting_pay_rent_confirmation": True,
+            "confirmation_summary": summary,
+            "speak_to_user": summary,
+            "speak_verbatim": True,
+            "pay_rent_property_target": True,
+            "instruction": _pay_rent_confirmation_instruction(),
+        },
+        actions=[],
+    )
+
+
+def _pay_rent_replay_confirmation(
+    session: dict[str, Any],
+    db: Any,
+    *,
+    tenant_wallet: str | None,
+) -> ToolResult:
+    filled = dict(session.get("filled") or {})
+    property_id = session.get("property_id")
+    resolved_name = filled.get("property_name")
+    resolved_prop: dict[str, Any] | None = None
+    if db is not None and property_id is not None:
+        prop, err = _resolve_property_for_rent(
+            db,
+            str(resolved_name or f"#{property_id}"),
+            tenant_wallet=tenant_wallet,
+        )
+        if not err and prop:
+            resolved_prop = prop
+    if not resolved_prop:
+        return ToolResult(
+            ok=False,
+            error="Pay-rent session expired. Say pay rent to start again.",
+            data={"pay_rent_property_target": True},
+        )
+    return _pay_rent_enter_confirmation(
+        filled,
+        property_id=int(property_id),
+        resolved_name=str(resolved_name) if resolved_name else None,
+        resolved_prop=resolved_prop,
+    )
+
+
 async def _start_pay_rent_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
     """Begin guided pay rent: collect property name, then open MetaMask."""
     modal = _PAY_RENT_MODAL
@@ -6081,11 +6529,20 @@ async def _start_pay_rent_property(_args: dict, _user: AuthUser, _db: Any) -> To
             "completing_submit": False,
         },
     )
+    speak = (
+        f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
+        f"What is the {next_field.replace('_', ' ')}?"
+        if filled
+        else "Which property would you like to pay rent for? You can say the property name or #id."
+    )
     instruction = (
         f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
         f"Ask for {next_field} only — do NOT re-ask fields already in filled."
         if filled
-        else "Ask: Which property would you like to pay rent for?"
+        else (
+            "Read speak_to_user verbatim. Ask only for the property name — "
+            "do NOT open MetaMask yet."
+        )
     )
     return ToolResult(
         ok=True,
@@ -6094,6 +6551,9 @@ async def _start_pay_rent_property(_args: dict, _user: AuthUser, _db: Any) -> To
             "filled": filled,
             "missing": [f for f in _PAY_RENT_REQUIRED if f not in filled or not filled.get(f)],
             "next_field": next_field,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "pay_rent_property_target": True,
             "instruction": instruction,
         },
         actions=[],
@@ -6101,9 +6561,50 @@ async def _start_pay_rent_property(_args: dict, _user: AuthUser, _db: Any) -> To
 
 
 async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolResult:
-    """Collect property name, sync rent chain, then auto-submit the pay-rent form."""
+    """Collect property name, confirm yes/no, sync rent chain, then open MetaMask."""
     modal = _PAY_RENT_MODAL
     tool_name = "fill_pay_rent_property"
+    prior_session = _get_workflow_session(modal)
+
+    utterance = extract_last_human_utterance(_current_history())
+    if prior_session.get("awaiting_pay_rent_confirmation"):
+        confirm = _parse_confirm_pay_rent_arg(args.get("confirm_pay_rent"))
+        if confirm is None:
+            confirm = parse_yes_no_confirmation(utterance)
+        if confirm is False:
+            _clear_workflow_session(modal)
+            return ToolResult(
+                ok=True,
+                data={
+                    "speak_to_user": (
+                        "Rent payment cancelled. Say pay rent when you are ready to try again."
+                    ),
+                    "speak_verbatim": True,
+                    "pay_rent_property_target": True,
+                },
+                actions=[],
+            )
+        if confirm is True:
+            filled = dict(prior_session.get("filled") or {})
+            _set_workflow_session(
+                modal,
+                {**prior_session, "awaiting_pay_rent_confirmation": False},
+            )
+            return await _fill_pay_rent_property(
+                {
+                    "property_name": filled.get("property_name"),
+                    "submit": True,
+                },
+                user,
+                db,
+            )
+        if not args.get("property_name") and not args.get("submit"):
+            return _pay_rent_replay_confirmation(
+                prior_session,
+                db,
+                tenant_wallet=user.wallet_address if user else None,
+            )
+
     accumulated = _recover_form_state(modal, tool_name, _PAY_RENT_FIELDS)
 
     for field in _PAY_RENT_FIELDS:
@@ -6118,6 +6619,7 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
 
     property_id: int | None = None
     resolved_name: str | None = None
+    resolved_prop: dict[str, Any] | None = None
     if accumulated.get("property_name"):
         prop, err = _resolve_property_for_rent(
             db, accumulated["property_name"], tenant_wallet=user.wallet_address
@@ -6136,6 +6638,7 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
                     "submitted": False,
                 },
             )
+        resolved_prop = prop
         property_id = int(prop["id"])
         resolved_name = str(prop.get("name") or accumulated["property_name"])
         accumulated["property_id"] = str(property_id)
@@ -6145,9 +6648,6 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
     submit = bool(args.get("submit"))
     next_field = missing[0] if missing else None
 
-    if not submit and not missing and property_id is not None:
-        return await _fill_pay_rent_property({**args, "submit": True}, user, db)
-
     instruction: str | None = None
     if accumulated and next_field:
         instruction = (
@@ -6156,10 +6656,7 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
             + f". Ask the user for {next_field} next."
         )
     elif not missing:
-        instruction = (
-            "Property name collected. Call this tool again with submit=true "
-            "to open MetaMask for the user to confirm rent payment."
-        )
+        instruction = _pay_rent_confirmation_instruction()
 
     if submit and not missing and property_id is not None:
         result = await _execute_pay_rent_ui(property_id, user, db)
@@ -6221,6 +6718,14 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
             },
         )
 
+    if not missing and property_id is not None and resolved_prop is not None:
+        return _pay_rent_enter_confirmation(
+            accumulated,
+            property_id=property_id,
+            resolved_name=resolved_name,
+            resolved_prop=resolved_prop,
+        )
+
     _set_workflow_session(
         modal,
         {
@@ -6242,6 +6747,7 @@ async def _fill_pay_rent_property(args: dict, user: AuthUser, db: Any) -> ToolRe
             "property_id": property_id,
             "property_name": resolved_name,
             "instruction": instruction,
+            "pay_rent_property_target": True,
         },
         actions=[],
     )
@@ -6264,7 +6770,8 @@ register(ToolSpec(
     description=(
         "Drive the guided pay-rent workflow after start_pay_rent_property. Pass only "
         "new values each turn; the server merges prior turns. When property_name is "
-        "filled, call again with submit=true to sync rent on-chain and open MetaMask."
+        "filled the tool returns awaiting_pay_rent_confirmation with a summary — "
+        "wait for Yes/No. On Yes call with confirm_pay_rent=true to open MetaMask."
     ),
     parameters={
         "type": "object",
@@ -6273,11 +6780,18 @@ register(ToolSpec(
                 "type": "string",
                 "description": "Spoken property name, e.g. 'Oceanview Apartments'.",
             },
+            "confirm_pay_rent": {
+                "type": "boolean",
+                "description": (
+                    "Only when awaiting_pay_rent_confirmation is true: true after the "
+                    "user says Yes to proceed, false when they cancel."
+                ),
+            },
             "submit": {
                 "type": "boolean",
                 "description": (
-                    "Set true on the FINAL call once property_name is filled — "
-                    "syncs rent and triggers MetaMask."
+                    "Internal/server use after confirmation — opens MetaMask. Do not call "
+                    "from the LLM unless confirm_pay_rent=true was already accepted."
                 ),
             },
         },

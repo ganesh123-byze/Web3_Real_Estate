@@ -109,7 +109,12 @@ export type AgentStore = {
   send: (
     text: string,
     router: { push: (href: string) => void },
-    opts?: { fromVoice?: boolean; freshSession?: boolean; apiText?: string },
+    opts?: {
+      fromVoice?: boolean;
+      freshSession?: boolean;
+      apiText?: string;
+      quickActionId?: string;
+    },
   ) => Promise<void>;
 
   enterVoiceMode: (
@@ -230,6 +235,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     const fromVoice = opts?.fromVoice ?? false;
     const freshSession = opts?.freshSession ?? false;
     const apiText = opts?.apiText?.trim() || clean;
+    const quickActionId = opts?.quickActionId?.trim() || undefined;
 
     stopSpeaking();
     if (freshSession) restartClientSession();
@@ -254,6 +260,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       apiMessages[apiMessages.length - 1] = {
         ...apiMessages[apiMessages.length - 1],
         content: apiText,
+        ...(quickActionId ? { quick_action_id: quickActionId } : {}),
       };
 
       const fetchRes = await fetch(`${base}/api/ai/chat/stream`, {

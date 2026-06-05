@@ -44,6 +44,35 @@ def test_normalize_rejects_non_numeric_total_value_and_supply():
     assert normalize_create_property_field("monthly_rent_eth", "skip") == "0"
 
 
+def test_normalize_accepts_comma_grouped_total_value_and_supply():
+    assert normalize_create_property_field("total_value", "10,000,000") == "10000000"
+    assert normalize_create_property_field("total_value", "1,000,000 ETH") == "1000000"
+    assert normalize_create_property_field("token_supply", "10,000,000") == "10000000"
+    assert normalize_create_property_field("token_supply", "1,000,000") == "1000000"
+
+
+def test_normalize_token_supply_whole_decimal_suffix():
+    assert normalize_create_property_field("token_supply", "1000.0") == "1000"
+    assert normalize_create_property_field("token_supply", "1.5") == ""
+
+
+def test_confirmation_summary_displays_grouped_numbers_accurately():
+    from backend.ai.workflow_parsers import format_create_property_confirmation_summary
+
+    summary = format_create_property_confirmation_summary(
+        {
+            "name": "Mega Estate",
+            "location": "Dubai",
+            "total_value": "10000000",
+            "token_supply": "5000000",
+            "token_symbol": "MEGA",
+            "monthly_rent_eth": "0",
+        }
+    )
+    assert "Total value (ETH): 10,000,000" in summary
+    assert "Token supply: 5,000,000" in summary
+
+
 def test_normalize_rejects_negative_total_value_and_supply():
     assert normalize_create_property_field("total_value", "-100") == ""
     assert normalize_create_property_field("total_value", "negative 50") == ""

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { cn, formatEthText } from "@/lib/utils";
+import { HighlightedAssistantText } from "@/lib/ai/assistant-text";
 import { useAgentStore } from "@/lib/ai/agent-store";
 import type { AIState } from "@/lib/ai/types";
 import { unlockAudio } from "@/lib/ai/voice";
@@ -335,83 +336,11 @@ function isLongResponseValue(value: string) {
   return value.length > 56 || value.includes("?") || extractQuotedItems(value).length > 1;
 }
 
-function highlightRangesForLine(line: string, highlightWholeLine: boolean) {
-  const ranges: Array<{ start: number; end: number }> = [];
-  if (highlightWholeLine) {
-    const start = line.search(/\S/);
-    const end = line.trimEnd().length;
-    if (start >= 0 && end > start) ranges.push({ start, end });
-  }
-
-  const patterns = [
-    /\bproperty details for\s+([A-Za-z0-9][A-Za-z0-9&'’., -]{0,80}?)(?=\s+(?:were|was)\b)/gi,
-    /\bproperty\s+([A-Za-z0-9][A-Za-z0-9&'’., -]{0,80}?)(?=\s+(?:was successfully created|was created|is on|has been)\b)/gi,
-    /^(?:[-•]\s*)?(?:name|property name|property):\s*([^\n.]+)/gi,
-  ];
-
-  for (const pattern of patterns) {
-    for (const match of line.matchAll(pattern)) {
-      const value = match[1]?.trim();
-      if (!value || /^details$/i.test(value)) continue;
-      const startInMatch = match[0].indexOf(match[1]);
-      if (startInMatch < 0 || match.index === undefined) continue;
-      const start = match.index + startInMatch;
-      ranges.push({ start, end: start + match[1].length });
-    }
-  }
-
-  return ranges
-    .sort((a, b) => a.start - b.start || b.end - a.end)
-    .reduce<Array<{ start: number; end: number }>>((merged, range) => {
-      const previous = merged[merged.length - 1];
-      if (!previous || range.start > previous.end) {
-        merged.push(range);
-      } else {
-        previous.end = Math.max(previous.end, range.end);
-      }
-      return merged;
-    }, []);
-}
-
-function HighlightedAssistantText({ text }: { text: string }) {
-  const lines = text.split("\n");
-
-  return (
-    <>
-      {lines.map((line, lineIndex) => {
-        const previousLine = lines[lineIndex - 1] ?? "";
-        const highlightWholeLine = /\b\d+\s+listings?:\s*$/i.test(previousLine.trim());
-        const ranges = highlightRangesForLine(line, highlightWholeLine);
-        let cursor = 0;
-        const parts = ranges.flatMap((range, rangeIndex) => {
-          const before = line.slice(cursor, range.start);
-          const highlighted = line.slice(range.start, range.end);
-          cursor = range.end;
-          return [
-            before,
-            <strong key={`${lineIndex}-${rangeIndex}`} className="font-bold text-slate-950 dark:text-white">
-              {highlighted}
-            </strong>,
-          ];
-        });
-
-        return (
-          <span key={`${line}-${lineIndex}`}>
-            {parts}
-            {line.slice(cursor)}
-            {lineIndex < lines.length - 1 ? <br /> : null}
-          </span>
-        );
-      })}
-    </>
-  );
-}
-
 function splitSummaryCardContent(content: string): { title: string; body: string } {
   const trimmed = content.trim();
   const lines = trimmed.split("\n");
   const first = lines[0]?.trim() ?? "";
-  if (/^(yield & returns summary|investment summary)$/i.test(first)) {
+  if (/^(yield & returns summary|investment summary|rent payment summary)$/i.test(first)) {
     return { title: first, body: lines.slice(1).join("\n").trim() };
   }
   return { title: "Yield & returns summary", body: trimmed };
@@ -420,8 +349,11 @@ function splitSummaryCardContent(content: string): { title: string; body: string
 function YieldSummaryCard({ content }: { content: string }) {
   const { title, body } = splitSummaryCardContent(content);
   const metrics = parseMetricRows(body).slice(0, 5);
-  const heading =
-    /^investment summary$/i.test(title) ? "Investment summary" : "Yield & returns summary";
+  const heading = /^investment summary$/i.test(title)
+    ? "Investment summary"
+    : /^rent payment summary$/i.test(title)
+      ? "Rent payment summary"
+      : "Yield & returns summary";
 
   return (
     <section className="w-full min-w-0 overflow-hidden rounded-[16px] bg-white px-4 py-3 text-[14px] text-[#1A1A2E] dark:border dark:border-[#1e2947] dark:bg-[#070b1a] dark:text-slate-100">
@@ -429,7 +361,9 @@ function YieldSummaryCard({ content }: { content: string }) {
       <div className="space-y-1">
         {metrics.map((metric) => (
           <div key={metric.label} className="flex min-w-0 items-baseline justify-between gap-3 leading-snug">
-            <span className="min-w-0 break-words text-[#474553] dark:text-slate-400">{metric.label}:</span>
+            <span className="min-w-0 break-words text-[#474553] dark:text-slate-400">
+              <HighlightedAssistantText text={metric.label} />:
+            </span>
             <span className={cn("min-w-0 break-words text-right font-bold", getMetricTone(metric.value))}>
               <HighlightedAssistantText text={metric.value} />
             </span>
@@ -462,18 +396,24 @@ function PortfolioInsightCard({ content }: { content: string }) {
         <div className="grid min-w-0 grid-cols-2 gap-3">
           <div className="min-w-0 rounded-[10px] border border-rose-100 bg-white px-3 py-2 dark:border-[#442337] dark:bg-[#171426]">
             <div className="text-[12px] font-semibold uppercase tracking-wide text-[#8a82c8]">Total Invested</div>
-            <div className="mt-1 break-words font-bold text-[#ef7478]">{totalInvested}</div>
+            <div className="mt-1 break-words font-bold text-[#ef7478]">
+              <HighlightedAssistantText text={totalInvested} />
+            </div>
           </div>
           <div className="min-w-0 rounded-[10px] border border-rose-100 bg-white px-3 py-2 dark:border-[#442337] dark:bg-[#171426]">
             <div className="text-[12px] font-semibold uppercase tracking-wide text-[#8a82c8]">Current Value</div>
-            <div className="mt-1 break-words font-bold text-[#ef7478]">{currentValue}</div>
+            <div className="mt-1 break-words font-bold text-[#ef7478]">
+              <HighlightedAssistantText text={currentValue} />
+            </div>
           </div>
         </div>
 
         <div className="mt-3 flex min-w-0 items-center justify-between gap-3 rounded-[10px] border border-rose-100 bg-white px-3 py-2 dark:border-[#442337] dark:bg-[#171426]">
           <div className="min-w-0">
             <div className="text-[12px] font-bold uppercase tracking-wide text-[#1A1A2E] dark:text-slate-100">Overall Gain</div>
-            <div className="mt-1 break-words text-[18px] font-bold text-[#ef7478]">{overallGain}</div>
+            <div className="mt-1 break-words text-[18px] font-bold text-[#ef7478]">
+              <HighlightedAssistantText text={overallGain} />
+            </div>
           </div>
           <span className="rounded-full bg-[#ef7478] px-3 py-1 text-[12px] font-semibold text-white">+13.5%</span>
         </div>
@@ -509,6 +449,7 @@ function isRichAssistantContent(content: string) {
   return (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
+    normalizedContent.includes("rent payment summary") ||
     normalizedContent.includes("avg. rental yield") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
@@ -545,22 +486,49 @@ function normalizeInvestSummaryForCard(content: string): string {
 function AssistantMessageContent({ content }: { content: string }) {
   const displayContent = formatEthText(content);
   const normalizedContent = displayContent.toLowerCase();
+  if (normalizedContent.includes("rent payment summary")) {
+    const rentConfirmationPrompt = displayContent
+      .match(/\n\n(reply yes[\s\S]*)$/i)?.[1]
+      ?.trim();
+    const rentCardContent = rentConfirmationPrompt
+      ? displayContent.replace(/\n\nreply yes[\s\S]*$/i, "").trim()
+      : displayContent;
+
+    return (
+      <div className="space-y-3">
+        <YieldSummaryCard content={rentCardContent.replace(/^rent payment summary/im, "Rent payment summary")} />
+        {rentConfirmationPrompt ? (
+          <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
+            <HighlightedAssistantText text={rentConfirmationPrompt} />
+          </p>
+        ) : null}
+      </div>
+    );
+  }
   if (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
     normalizedContent.includes("avg. rental yield") ||
     normalizedContent.includes("investment target:")
   ) {
+    const investConfirmationPrompt = displayContent
+      .match(/\n\n(reply yes[\s\S]*)$/i)?.[1]
+      ?.trim();
+    const investCardContent = investConfirmationPrompt
+      ? displayContent.replace(/\n\nreply yes[\s\S]*$/i, "").trim()
+      : displayContent.replace(/\n\nhow many tokens would you like to buy\??\s*$/i, "").trim();
+
     return (
       <div className="space-y-3">
-        <YieldSummaryCard
-          content={normalizeInvestSummaryForCard(
-            displayContent.replace(/\n\nhow many tokens would you like to buy\??\s*$/i, "").trim(),
-          )}
-        />
+        <YieldSummaryCard content={normalizeInvestSummaryForCard(investCardContent)} />
         {/\n\nhow many tokens would you like to buy\??\s*$/i.test(displayContent) ? (
           <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
             How many tokens would you like to buy?
+          </p>
+        ) : null}
+        {investConfirmationPrompt ? (
+          <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
+            <HighlightedAssistantText text={investConfirmationPrompt} />
           </p>
         ) : null}
       </div>
@@ -601,7 +569,9 @@ function AssistantMessageContent({ content }: { content: string }) {
             {title && (
               <div className="flex min-w-0 items-center gap-2 text-[14px] font-semibold text-slate-950 dark:text-slate-100">
                 <span className="h-2 w-2 rounded-full bg-[#3c7f1f]" />
-                <span className="min-w-0 break-words">{title}</span>
+                <span className="min-w-0 break-words">
+                  <HighlightedAssistantText text={title} />
+                </span>
               </div>
             )}
 
@@ -634,13 +604,13 @@ function AssistantMessageContent({ content }: { content: string }) {
                       )}
                     >
                       <span className="block min-w-0 break-words text-[14px] leading-snug text-slate-600 dark:text-slate-400">
-                        {label.trim()}:
+                        <HighlightedAssistantText text={label.trim()} />:
                       </span>
                       {extractQuotedItems(value).length > 1 ? (
                         <ul className="mt-2 space-y-1 pl-4 text-[14px] font-semibold text-slate-950 dark:text-slate-100">
                           {extractQuotedItems(value).map((item) => (
                             <li key={item} className="list-disc break-words leading-snug">
-                              {item}
+                              <HighlightedAssistantText text={item} />
                             </li>
                           ))}
                         </ul>
@@ -824,6 +794,7 @@ export function AIBubble() {
       fromVoice: false,
       freshSession: action.id === "owner.create",
       apiText: action.id === "owner.create" ? createPropertyPrompt : undefined,
+      quickActionId: action.id,
     });
   }
 

@@ -1,4 +1,4 @@
-"""Regression tests for investor guided-invest auto-submit behavior."""
+"""Regression tests for investor guided-invest confirmation + submit behavior."""
 from __future__ import annotations
 
 import asyncio
@@ -38,12 +38,21 @@ def _patch_invest_funding_ok(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_load_invest_property_row",
-        lambda _db, pid: {"id": pid, "name": "Oceanview", "token_address": "0x1", "tokens_available": "100"},
+        lambda _db, pid: {
+            "id": pid,
+            "name": "Oceanview",
+            "token_address": "0x1",
+            "tokens_available": "100",
+            "token_sale_price_eth": "0.1",
+            "monthly_rent_eth": "0.01",
+            "sold_percentage": "1",
+            "token_supply": "500",
+        },
     )
 
 
-def test_invest_auto_submits_when_all_fields_arrive_same_turn(monkeypatch):
-    token = tools.set_current_thread_id("test:invest:auto-submit:single-turn")
+def test_invest_waits_for_confirmation_when_all_fields_arrive_same_turn(monkeypatch):
+    token = tools.set_current_thread_id("test:invest:confirm:single-turn")
     try:
         tools._clear_workflow_session("INVEST_PROPERTY")
         _patch_invest_funding_ok(monkeypatch)
@@ -63,15 +72,18 @@ def test_invest_auto_submits_when_all_fields_arrive_same_turn(monkeypatch):
             )
         )
         assert res.ok
-        assert bool(res.data.get("submitted")) is True
-        assert any(a.type == "SUBMIT_FORM" and a.modal == "INVEST_PROPERTY" for a in res.actions)
+        assert bool(res.data.get("awaiting_invest_confirmation")) is True
+        assert bool(res.data.get("submitted")) is False
+        assert "Reply Yes" in str(res.data.get("speak_to_user") or "")
+        assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
     finally:
         tools._clear_workflow_session("INVEST_PROPERTY")
         tools.reset_current_thread_id(token)
 
 
-def test_invest_auto_submits_when_last_field_arrives_later(monkeypatch):
-    token = tools.set_current_thread_id("test:invest:auto-submit:multi-turn")
+def test_invest_submits_after_confirmation_yes(monkeypatch):
+    token = tools.set_current_thread_id("test:invest:confirm:multi-turn")
+    msg_token = tools.set_current_messages([{"type": "human", "content": "Sunset Villas"}])
     try:
         tools._clear_workflow_session("INVEST_PROPERTY")
         _patch_invest_funding_ok(monkeypatch)
@@ -79,7 +91,12 @@ def test_invest_auto_submits_when_last_field_arrives_later(monkeypatch):
             tools,
             "_resolve_property_by_name",
             lambda _db, _name: (
-                {"id": 11, "name": "Sunset Villas", "token_address": "0x1", "tokens_available": "100"},
+                {
+                    "id": 11,
+                    "name": "Sunset Villas",
+                    "token_address": "0x1",
+                    "tokens_available": "100",
+                },
                 None,
             ),
         )
@@ -88,13 +105,65 @@ def test_invest_auto_submits_when_last_field_arrives_later(monkeypatch):
         )
         assert first.ok
         assert bool(first.data.get("submitted")) is False
+        assert first.data.get("next_field") == "token_amount"
 
+        tools.set_current_messages(
+            [
+                {"type": "human", "content": "Sunset Villas"},
+                {"type": "ai", "content": "How many tokens would you like to buy?"},
+                {"type": "human", "content": "12"},
+            ]
+        )
         second = asyncio.run(
             tools._fill_invest_property({"token_amount": "12"}, _dummy_user(), None)
         )
         assert second.ok
-        assert bool(second.data.get("submitted")) is True
-        assert any(a.type == "SUBMIT_FORM" and a.modal == "INVEST_PROPERTY" for a in second.actions)
+        assert bool(second.data.get("awaiting_invest_confirmation")) is True
+        assert bool(second.data.get("submitted")) is False
+        assert "Reply Yes" in str(second.data.get("speak_to_user") or "")
+
+        tools.set_current_messages(
+            [
+                {"type": "human", "content": "Sunset Villas"},
+                {"type": "ai", "content": second.data.get("speak_to_user")},
+                {"type": "human", "content": "Yes"},
+            ]
+        )
+        third = asyncio.run(
+            tools._fill_invest_property({"confirm_invest": True}, _dummy_user(), None)
+        )
+        assert third.ok
+        assert bool(third.data.get("submitted")) is True
+        assert any(a.type == "SUBMIT_FORM" and a.modal == "INVEST_PROPERTY" for a in third.actions)
+    finally:
+        tools._clear_workflow_session("INVEST_PROPERTY")
+        tools.reset_current_messages(msg_token)
+        tools.reset_current_thread_id(token)
+
+
+def test_invest_cancels_on_confirmation_no(monkeypatch):
+    token = tools.set_current_thread_id("test:invest:confirm:cancel")
+    try:
+        tools._clear_workflow_session("INVEST_PROPERTY")
+        tools._set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "awaiting_invest_confirmation": True,
+                "filled": {
+                    "property_name": "Oceanview",
+                    "property_id": "7",
+                    "token_amount": "3",
+                },
+                "property_id": 7,
+            },
+        )
+        res = asyncio.run(
+            tools._fill_invest_property({"confirm_invest": False}, _dummy_user(), None)
+        )
+        assert res.ok
+        assert "cancelled" in str(res.data.get("speak_to_user") or "").lower()
+        assert tools._get_workflow_session("INVEST_PROPERTY") == {}
     finally:
         tools._clear_workflow_session("INVEST_PROPERTY")
         tools.reset_current_thread_id(token)

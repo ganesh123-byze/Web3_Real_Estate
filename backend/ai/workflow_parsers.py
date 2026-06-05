@@ -179,16 +179,46 @@ def _parse_spoken_integer(text: str) -> int | None:
     return None
 
 
+def _strip_eth_suffix(text: str) -> str:
+    return re.sub(r"(?i)\beth\b", "", text or "").strip()
+
+
+def _parse_grouped_decimal_token(text: str) -> str | None:
+    """Parse 1,234,567 or 1,234,567.89 style amounts (voice/STT often inserts commas)."""
+    compact = _strip_eth_suffix(_strip_noise(text)).replace(" ", "")
+    if not compact:
+        return None
+    match = re.fullmatch(r"([\d]{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?", compact)
+    if not match:
+        return None
+    whole = match.group(1).replace(",", "")
+    fraction = match.group(2)
+    raw = f"{whole}.{fraction}" if fraction is not None else whole
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+    if value < 0:
+        return None
+    if fraction is not None:
+        return raw
+    return str(value)
+
+
 def _parse_decimal_amount(text: str) -> str | None:
     if _input_indicates_negative_amount(text):
         return None
     t = _strip_noise(text).lower()
     if not t or t in {"skip", "none", "no", "n/a", "zero", "0"}:
         return "0"
-    m = re.search(r"([\d]+(?:[.,]\d+)?)", t)
+    grouped = _parse_grouped_decimal_token(t)
+    if grouped is not None:
+        return grouped
+    compact = _strip_eth_suffix(t).replace(" ", "").replace(",", "")
+    m = re.search(r"^(\d+(?:\.\d+)?)", compact)
     if not m:
         return None
-    raw = m.group(1).replace(",", "")
+    raw = m.group(1)
     if "." in raw:
         return raw
     try:
@@ -348,12 +378,25 @@ def _normalize_create_property_token_supply(text: str) -> str:
     """Positive whole-number token supply only (no letters or stray symbols)."""
     if _input_indicates_negative_amount(text):
         return ""
+    compact = _strip_eth_suffix(_strip_noise(text)).replace(" ", "")
+    if re.fullmatch(r"\d+\.(?!0+$)\d+", compact):
+        return ""
+    match = re.fullmatch(r"([\d]{1,3}(?:,\d{3})+|\d+)(?:\.0+)?", compact)
+    if match:
+        try:
+            value = int(match.group(1).replace(",", ""))
+        except (TypeError, ValueError):
+            value = 0
+        return str(value) if value > 0 else ""
     n = _parse_spoken_integer(text)
     if n is not None and n > 0:
         return str(n)
-    compact = re.sub(r"[\s,]", "", text)
-    if re.fullmatch(r"\d+", compact or ""):
-        value = int(compact)
+    digits_only = re.sub(r"[^\d]", "", compact)
+    if digits_only:
+        try:
+            value = int(digits_only)
+        except (TypeError, ValueError):
+            return ""
         return str(value) if value > 0 else ""
     return ""
 
@@ -574,13 +617,13 @@ def parse_create_property_fields_from_summary(assistant_text: str) -> dict[str, 
             "total_value",
             re.compile(
                 r"(?im)(?:^|\n)\s*[-*]?\s*(?:total value|total property value)"
-                r"(?:\s*\(eth\))?\s*:\s*([\d.,]+)"
+                r"(?:\s*\(eth\))?\s*:\s*([\d.,]+(?:,\d{3})*)"
             ),
         ),
         (
             "token_supply",
             re.compile(
-                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token supply|ownership tokens?)\s*:\s*([\d.,]+)"
+                r"(?im)(?:^|\n)\s*[-*]?\s*(?:token supply|ownership tokens?)\s*:\s*([\d.,]+(?:,\d{3})*)"
             ),
         ),
         (
@@ -712,15 +755,45 @@ def create_property_confirmation_footer() -> str:
     )
 
 
+def _format_create_property_summary_value(field: str, raw: str) -> str:
+    """Readable summary numbers — commas for large ints, stored values stay unformatted."""
+    cleaned = str(raw).strip().replace(",", "")
+    if not cleaned:
+        return ""
+    try:
+        if field == "token_supply":
+            return f"{int(Decimal(cleaned)):,}"
+        if field == "total_value":
+            amount = Decimal(cleaned)
+            if amount == amount.to_integral_value():
+                return f"{int(amount):,}"
+            whole, _, fraction = str(amount).partition(".")
+            return f"{int(whole):,}.{fraction}" if fraction else f"{int(whole):,}"
+        if field == "monthly_rent_eth":
+            amount = Decimal(cleaned)
+            if amount == amount.to_integral_value():
+                return str(int(amount))
+            return format(amount.normalize(), "f").rstrip("0").rstrip(".")
+    except (InvalidOperation, ValueError, TypeError):
+        return str(raw).strip()
+    return str(raw).strip()
+
+
 def format_create_property_confirmation_summary(filled: dict[str, str]) -> str:
     """Human-readable summary shown before the admin confirms create-property submit."""
     lines: list[str] = []
     for key, label in _CREATE_PROPERTY_CONFIRMATION_ORDER:
         raw = filled.get(key)
         if key == "monthly_rent_eth":
-            display = str(raw).strip() if raw not in (None, "") else "0"
+            display = (
+                _format_create_property_summary_value(key, str(raw))
+                if raw not in (None, "")
+                else "0"
+            )
         elif raw in (None, ""):
             continue
+        elif key in CREATE_PROPERTY_NUMERIC_FIELDS:
+            display = _format_create_property_summary_value(key, str(raw))
         else:
             display = str(raw).strip()
         lines.append(f"- {label}: {display}")

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Mic, MicOff, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatEthText } from "@/lib/utils";
+import { HighlightedAssistantText } from "@/lib/ai/assistant-text";
 import { useAgentStore } from "@/lib/ai/agent-store";
 
 export function VoiceModeOverlay() {
@@ -113,7 +114,7 @@ export function VoiceModeOverlay() {
                 animate={{ opacity: 1, y: 0 }}
                 className="self-start max-w-[90%] rounded-2xl rounded-bl-md border border-border/60 bg-card/80 px-4 py-2 text-sm text-foreground shadow-lg backdrop-blur"
               >
-                {recent.lastAssistant}
+                <HighlightedAssistantText text={formatEthText(recent.lastAssistant)} />
               </motion.div>
             )}
           </div>
