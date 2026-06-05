@@ -30,9 +30,10 @@ from backend.ai.agent import stream_agent
 from backend.ai.checkpointer import get_saver
 from backend.ai.chunk_buffer import SmartChunkBuffer
 from backend.ai.config import get_settings
+from backend.ai.investor_voice_parsers import normalize_invest_voice_utterance
 from backend.ai.schemas import ChatMessage
 from backend.db.connection import get_connection
-from backend.services.auth import AuthError, AuthUser, resolve_authenticated_user
+from backend.services.auth import AuthError, AuthUser, canonical_role, resolve_authenticated_user
 
 LOGGER = logging.getLogger(__name__)
 
@@ -485,6 +486,8 @@ async def voice_duplex_stream(websocket: WebSocket, token: str | None = Query(de
             kind = msg.get("type")
             if kind == "intent":
                 text = (msg.get("text") or "").strip()
+                if text and canonical_role(user.role) == "investor":
+                    text = normalize_invest_voice_utterance(text)
                 if text:
                     await _enqueue_intent(text)
             elif kind == "interrupt":

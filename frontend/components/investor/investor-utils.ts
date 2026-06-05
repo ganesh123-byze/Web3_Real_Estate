@@ -75,6 +75,9 @@ export const INVEST_TOKEN_AMOUNT_HINT =
 export const INVEST_TOKEN_AMOUNT_DECIMAL_ERROR =
   "Tokens can only be bought in whole numbers, not decimals. Please enter 1 or greater.";
 
+export const INVEST_TOKEN_AMOUNT_NEGATIVE_ERROR =
+  "Negative token amounts aren't allowed. Please enter a whole number of 1 or greater.";
+
 export const INVEST_TOKEN_AMOUNT_MIN_ERROR =
   "Enter a whole number of 1 or greater.";
 
@@ -90,7 +93,14 @@ export function validateInvestTokenAmountInput(raw: string): InvestTokenAmountVa
   if (!text) {
     return { valid: false, error: INVEST_TOKEN_AMOUNT_MIN_ERROR, wholeAmount: 0 };
   }
-  if (/[.,eE+-]/.test(text) || !/^\d+$/.test(text)) {
+  if (/^-/.test(text) || /^(?:minus|negative)\s/i.test(text)) {
+    return {
+      valid: false,
+      error: INVEST_TOKEN_AMOUNT_NEGATIVE_ERROR,
+      wholeAmount: 0,
+    };
+  }
+  if (/[.,eE+]/.test(text) || !/^\d+$/.test(text)) {
     return {
       valid: false,
       error: INVEST_TOKEN_AMOUNT_DECIMAL_ERROR,

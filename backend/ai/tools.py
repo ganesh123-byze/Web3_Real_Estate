@@ -84,9 +84,11 @@ from backend.ai.investor_guards import (
     has_investor_portfolio_intent,
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
+    invest_classify_invalid_token_amount_turn,
     invest_invalid_token_amount_message,
     invest_tool_blocked_message,
     invest_turn_attempts_decimal_token_amount,
+    invest_turn_attempts_invalid_token_amount,
     invest_utterance_names_property,
     invest_workflow_active,
     invest_turn_explicit_token_amount,
@@ -532,7 +534,7 @@ def _merge_last_user_utterance(
             accumulated[next_field] = parsed[next_field]
             return accumulated
         if next_field == "token_amount":
-            if invest_turn_attempts_decimal_token_amount(
+            if invest_turn_attempts_invalid_token_amount(
                 text, next_field=next_field
             ):
                 return accumulated
@@ -1603,18 +1605,17 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
         rows = cursor.fetchall() or []
     finally:
         cursor.close()
-    from backend.config.settings import TOKEN_DECIMALS
-    from backend.services.blockchain import from_base_units
+    from backend.services.token_ownership_metrics import (
+        ownership_percentage_of_supply,
+        whole_supply_from_property,
+        whole_tokens_from_base,
+    )
 
     holdings = []
     for r in rows:
-        base = int(r.get("token_amount_base") or 0)
-        whole = int(from_base_units(base, TOKEN_DECIMALS)) if base else 0
-        try:
-            supply_whole = int(Decimal(str(r.get("token_supply") or 0)))
-        except (TypeError, ValueError, ArithmeticError):
-            supply_whole = 0
-        pct = round((whole / supply_whole) * 100, 4) if supply_whole else 0.0
+        whole = whole_tokens_from_base(int(r.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(r.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole, digits=4)
         holdings.append({
             "property_id": r["property_id"],
             "property_name": r["property_name"],
@@ -2020,14 +2021,18 @@ async def _get_my_investors(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     finally:
         cursor.close()
 
+    from backend.services.token_ownership_metrics import (
+        ownership_percentage_of_supply,
+        whole_supply_from_property,
+        whole_tokens_from_base,
+    )
+
     by_property: dict[int, dict] = {}
     for r in rows:
         pid = int(r["property_id"])
-        base = int(r.get("token_amount_base") or 0)
-        supply = int(r.get("token_supply") or 0)
-        whole = base // (10 ** 18) if base else 0
-        total_whole = supply // (10 ** 18) if supply else 0
-        pct = round((whole / total_whole) * 100, 2) if total_whole else 0
+        whole = whole_tokens_from_base(int(r.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(r.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole)
         bucket = by_property.setdefault(pid, {
             "property_id": pid,
             "property_name": r["property_name"],
@@ -5792,18 +5797,19 @@ def _invest_confirmation_instruction() -> str:
     )
 
 
-def _invest_reject_decimal_token_result(
+def _invest_reject_invalid_token_amount_result(
     utterance: str,
     accumulated: dict[str, str],
     *,
     property_id: int | None = None,
+    reason: str = "decimal",
 ) -> ToolResult:
-    """Reject fractional token counts with a clear whole-number prompt."""
+    """Reject invalid token counts (decimal, negative, or zero) with a clear prompt."""
     modal = _INVEST_MODAL
     accumulated = dict(accumulated)
     accumulated.pop("token_amount", None)
     missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
-    message = invest_invalid_token_amount_message(utterance)
+    message = invest_invalid_token_amount_message(utterance, reason=reason)
     _set_workflow_session(
         modal,
         {
@@ -5986,16 +5992,18 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         prior_session = {}
 
     utterance = extract_last_human_utterance(_current_history())
-    if invest_turn_attempts_decimal_token_amount(
+    invalid_token_reason = invest_classify_invalid_token_amount_turn(
         utterance,
         next_field=prior_session.get("next_field"),
         args_token=args.get("token_amount"),
-    ):
+    )
+    if invalid_token_reason:
         prior_filled = dict(prior_session.get("filled") or {})
-        return _invest_reject_decimal_token_result(
+        return _invest_reject_invalid_token_amount_result(
             utterance,
             prior_filled,
             property_id=prior_session.get("property_id"),
+            reason=invalid_token_reason,
         )
 
     if prior_session.get("awaiting_invest_confirmation"):
@@ -6058,10 +6066,20 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     if accumulated.get("token_amount") and not invest_token_amount_field_is_valid(
         str(accumulated["token_amount"])
     ):
-        return _invest_reject_decimal_token_result(
-            utterance or str(accumulated.get("token_amount") or ""),
+        token_value = utterance or str(accumulated.get("token_amount") or "")
+        invalid_reason = (
+            invest_classify_invalid_token_amount_turn(
+                token_value,
+                next_field="token_amount",
+                args_token=str(accumulated.get("token_amount") or ""),
+            )
+            or "zero"
+        )
+        return _invest_reject_invalid_token_amount_result(
+            token_value,
             accumulated,
             property_id=prior_session.get("property_id"),
+            reason=invalid_reason,
         )
 
     if should_clear_stale_invest_token_amount(

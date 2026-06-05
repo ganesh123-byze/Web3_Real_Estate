@@ -128,7 +128,9 @@ _INVEST_RESEARCH = re.compile(
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join((text or "").split())
+    from backend.ai.investor_voice_parsers import normalize_invest_voice_utterance
+
+    return normalize_invest_voice_utterance(text)
 
 
 def _human_message_role(msg: Any) -> str:
@@ -517,8 +519,17 @@ _INVEST_DECIMAL_NUMBER_RE = re.compile(r"(?<!\d)\d*\.\d+")
 
 def invest_utterance_has_decimal_token_amount(text: str) -> bool:
     """True when the user supplied a fractional token count (on-chain purchases are whole tokens)."""
+    from backend.ai.investor_voice_parsers import (
+        invest_spoken_decimal_in_token_context,
+        invest_spoken_decimal_token_amount,
+    )
+
     utterance = _normalize_text(text)
-    if not utterance or not _INVEST_DECIMAL_NUMBER_RE.search(utterance):
+    if not utterance:
+        return False
+    if invest_spoken_decimal_in_token_context(utterance):
+        return True
+    if not _INVEST_DECIMAL_NUMBER_RE.search(utterance):
         return False
     if re.search(r"(?i)\btokens?\b", utterance):
         return True
@@ -530,10 +541,50 @@ def invest_utterance_has_decimal_token_amount(text: str) -> bool:
 
 
 def invest_token_amount_value_is_decimal(value: str) -> bool:
+    from backend.ai.investor_voice_parsers import invest_spoken_decimal_token_amount
+
     text = str(value or "").strip()
     if not text:
         return False
+    if invest_spoken_decimal_token_amount(text):
+        return True
     return bool(_INVEST_DECIMAL_NUMBER_RE.search(text))
+
+
+def invest_token_amount_value_is_negative(value: str) -> bool:
+    from backend.ai.investor_voice_parsers import invest_spoken_negative_token_amount
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if invest_spoken_negative_token_amount(text):
+        return True
+    if re.fullmatch(r"-\d+", text):
+        return True
+    if re.search(r"(?i)\b(?:minus|negative)\b", text) and re.search(r"\d", text):
+        return True
+    return False
+
+
+def invest_utterance_has_negative_token_amount(text: str) -> bool:
+    """True when the user supplied a negative token count."""
+    from backend.ai.investor_voice_parsers import invest_spoken_negative_token_amount
+
+    utterance = _normalize_text(text)
+    if not utterance:
+        return False
+    if invest_spoken_negative_token_amount(utterance):
+        return True
+    if invest_token_amount_value_is_negative(utterance):
+        return True
+    if re.search(r"(?i)-\d+\s*tokens?\b", utterance):
+        return True
+    if re.search(
+        r"(?i)\b(?:minus|negative)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*tokens?\b",
+        utterance,
+    ):
+        return True
+    return False
 
 
 def invest_token_amount_field_is_valid(value: str) -> bool:
@@ -541,18 +592,87 @@ def invest_token_amount_field_is_valid(value: str) -> bool:
     text = str(value or "").strip()
     if not text or invest_token_amount_value_is_decimal(text):
         return False
+    if invest_token_amount_value_is_negative(text):
+        return False
     try:
         return int(text) >= 1
     except (TypeError, ValueError):
         return False
 
 
-def invest_invalid_token_amount_message(rejected_value: str = "") -> str:
+def invest_invalid_token_amount_message(
+    rejected_value: str = "",
+    *,
+    reason: str = "decimal",
+) -> str:
     shown = f'"{_normalize_text(rejected_value)}"' if _normalize_text(rejected_value) else "That amount"
+    if reason == "negative":
+        return (
+            f"{shown} isn't valid. Negative token amounts aren't allowed — "
+            "please enter a whole number of 1 or greater."
+        )
+    if reason == "zero":
+        return (
+            f"{shown} isn't valid. Please enter a whole number of tokens — "
+            "1 or greater."
+        )
     return (
         f"{shown} isn't valid. Tokens can only be bought in whole numbers, not decimals — "
         "please enter 1 or greater."
     )
+
+
+def invest_classify_invalid_token_amount_turn(
+    text: str,
+    *,
+    next_field: str | None = None,
+    args_token: str | None = None,
+) -> str | None:
+    """Return 'decimal', 'negative', 'zero', or None when the token answer is acceptable."""
+    if args_token not in (None, ""):
+        raw = str(args_token).strip()
+        if invest_token_amount_value_is_negative(raw):
+            return "negative"
+        if invest_token_amount_value_is_decimal(raw):
+            return "decimal"
+        if raw.isdigit() and int(raw) < 1:
+            return "zero"
+
+    utterance = _normalize_text(text)
+    if not utterance:
+        return None
+
+    if invest_utterance_has_negative_token_amount(utterance):
+        if next_field == "token_amount":
+            return "negative"
+        if re.search(r"(?i)\btokens?\b", utterance):
+            return "negative"
+        if re.search(r"(?i)\b(?:buy|invest|purchase)\b", utterance):
+            return "negative"
+        if invest_token_amount_value_is_negative(utterance):
+            return "negative"
+
+    if invest_utterance_has_decimal_token_amount(utterance):
+        if next_field == "token_amount":
+            return "decimal"
+        if re.search(r"(?i)\btokens?\b", utterance):
+            return "decimal"
+        if re.search(r"(?i)\b(?:buy|invest|purchase)\b", utterance):
+            return "decimal"
+        if re.fullmatch(r"(?i)\d*\.\d+", utterance):
+            return "decimal"
+
+    if next_field == "token_amount":
+        from backend.ai.investor_voice_parsers import invest_spoken_decimal_token_amount
+
+        if invest_spoken_decimal_token_amount(utterance):
+            return "decimal"
+        if re.fullmatch(r"0+", utterance):
+            return "zero"
+        if utterance.isdigit() and int(utterance) < 1:
+            return "zero"
+
+    return None
 
 
 def invest_turn_attempts_decimal_token_amount(
@@ -562,26 +682,32 @@ def invest_turn_attempts_decimal_token_amount(
     args_token: str | None = None,
 ) -> bool:
     """True when this turn should be rejected as a fractional token purchase."""
-    if args_token not in (None, "") and invest_token_amount_value_is_decimal(str(args_token)):
-        return True
-    utterance = _normalize_text(text)
-    if not utterance or not invest_utterance_has_decimal_token_amount(utterance):
-        return False
-    if next_field == "token_amount":
-        return True
-    if re.search(r"(?i)\btokens?\b", utterance):
-        return True
-    if re.search(r"(?i)\b(?:buy|invest|purchase)\b", utterance):
-        return True
-    if re.fullmatch(r"(?i)\d*\.\d+", utterance):
-        return True
-    return False
+    return (
+        invest_classify_invalid_token_amount_turn(
+            text, next_field=next_field, args_token=args_token
+        )
+        == "decimal"
+    )
+
+
+def invest_turn_attempts_invalid_token_amount(
+    text: str,
+    *,
+    next_field: str | None = None,
+    args_token: str | None = None,
+) -> bool:
+    """True when this turn should be rejected as an invalid token purchase."""
+    return invest_classify_invalid_token_amount_turn(
+        text, next_field=next_field, args_token=args_token
+    ) is not None
 
 
 def parse_invest_token_amount(text: str) -> str | None:
     """Parse a whole token count from voice/chat (digits or spoken words)."""
     utterance = _normalize_text(text)
     if not utterance:
+        return None
+    if invest_utterance_has_negative_token_amount(utterance):
         return None
     if invest_utterance_has_decimal_token_amount(utterance):
         return None
@@ -630,6 +756,8 @@ def invest_utterance_is_token_count_only(text: str) -> bool:
         return False
     if invest_utterance_has_decimal_token_amount(utterance):
         return True
+    if invest_utterance_has_negative_token_amount(utterance):
+        return True
     if parse_invest_token_amount(utterance):
         return True
     if re.fullmatch(r"\d+", utterance):
@@ -660,6 +788,12 @@ def extract_invest_property_hint_from_utterance(text: str) -> str:
         return ""
 
     if invest_utterance_is_token_count_only(utterance):
+        return ""
+
+    if invest_utterance_has_negative_token_amount(utterance):
+        return ""
+
+    if invest_token_amount_value_is_negative(utterance):
         return ""
 
     if parse_invest_token_amount(utterance) and not re.search(
@@ -769,6 +903,9 @@ def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
     if invest_utterance_has_decimal_token_amount(utterance):
         prop = _extract_invest_property_from_decimal_order(utterance)
         return {"property_name": prop} if prop else {}
+
+    if invest_utterance_has_negative_token_amount(utterance):
+        return {}
 
     out: dict[str, str] = {}
     for pattern in _INVEST_ORDER_PATTERNS:

@@ -31,6 +31,11 @@ from backend.api._helpers import (
     sync_investors_to_contract,
     sync_rent_amount_to_contract,
 )
+from backend.services.token_ownership_metrics import (
+    ownership_percentage_of_supply,
+    whole_supply_from_property,
+    whole_tokens_from_base,
+)
 from backend.api.deps import (
     get_current_user,
     get_db,
@@ -313,11 +318,9 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
     for row in rows:
         wallet = str(row["wallet_address"])
         key = wallet.lower()
-        base = int(row.get("token_amount_base") or 0)
-        supply = int(row.get("token_supply") or 0)
-        whole = base // (10 ** 18) if base else 0
-        supply_whole = supply // (10 ** 18) if supply else 0
-        pct = round((whole / supply_whole) * 100, 2) if supply_whole else 0.0
+        whole = whole_tokens_from_base(int(row.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(row.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole)
         bucket = by_wallet.setdefault(
             key,
             {

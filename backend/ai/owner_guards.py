@@ -201,6 +201,18 @@ def _short_wallet(wallet: str) -> str:
     return f"{w[:6]}…{w[-4:]}"
 
 
+def _format_owner_investor_ownership_pct(pct: Any) -> str:
+    try:
+        value = float(pct)
+    except (TypeError, ValueError):
+        return "0%"
+    if value <= 0:
+        return "0%"
+    if value < 0.01:
+        return f"{value:.4f}%"
+    return f"{value:.2f}%"
+
+
 def format_owner_investors_speak(data: dict[str, Any]) -> str:
     """Verbatim investors summary for My investors quick action / chat."""
     total = int(data.get("total_investors") or 0)
@@ -223,8 +235,8 @@ def format_owner_investors_speak(data: dict[str, Any]) -> str:
         for inv in investors[:5]:
             wallet = _short_wallet(str(inv.get("wallet_address") or ""))
             tokens = inv.get("token_amount")
-            pct = inv.get("ownership_percentage")
-            lines.append(f"   • {wallet}: {tokens} tokens ({pct}% of supply)")
+            pct = _format_owner_investor_ownership_pct(inv.get("ownership_percentage"))
+            lines.append(f"   • {wallet}: {tokens} tokens ({pct} of supply)")
         if len(investors) > 5:
             lines.append(f"   • …and {len(investors) - 5} more")
         lines.append("")

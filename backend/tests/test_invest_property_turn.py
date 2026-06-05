@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from backend.ai.investor_guards import (
     extract_invest_property_hint_from_utterance,
     extract_last_human_utterance,
+    invest_utterance_has_negative_token_amount,
     format_invest_target_property_speak,
     has_explicit_invest_intent,
     has_investor_portfolio_intent,
@@ -234,6 +235,64 @@ def test_parse_invest_one_token_in_property():
     parsed = parse_invest_order_from_utterance("Invest 1 token in Gold Plaza")
     assert parsed.get("token_amount") == "1"
     assert parsed.get("property_name") == "Gold Plaza"
+
+
+def test_negative_token_amounts_are_rejected_not_property_names():
+    assert invest_utterance_has_negative_token_amount("-1") is True
+    assert invest_utterance_has_negative_token_amount("-5 tokens") is True
+    assert parse_invest_order_from_utterance("-1") == {}
+    assert parse_invest_token_amount("-5 tokens") is None
+    assert extract_invest_property_hint_from_utterance("-1") == ""
+    assert not invest_utterance_names_property("-1")
+    msg = invest_invalid_token_amount_message("-1", reason="negative")
+    assert "negative" in msg.lower()
+    assert "1 or greater" in msg.lower()
+
+
+def test_fill_invest_rejects_negative_token_answer():
+    token = set_current_thread_id("test:invest-negative-token")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "How many tokens would you like to buy?"},
+            {"type": "human", "content": "-1"},
+        ]
+    )
+    prop = {
+        "id": 9,
+        "name": "sky view towers",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "0.2",
+        "sold_percentage": "0",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        _set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "filled": {
+                    "property_name": "sky view towers",
+                    "property_id": "9",
+                },
+                "next_field": "token_amount",
+                "property_id": 9,
+            },
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ):
+            result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "negative" in speak.lower()
+        assert "No investable property found" not in speak
+        assert result.data.get("next_field") == "token_amount"
+        assert result.data.get("filled", {}).get("token_amount") in (None, "")
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_decimal_token_amounts_are_rejected_not_truncated():
@@ -634,6 +693,140 @@ def test_preflight_invest_order_not_marketplace_catalog():
         assert "Gold Plaza" in speak
         assert "Here are the properties open for investment" not in speak
         assert invest.data.get("invest_property_target") is True
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_voice_bare_invest_strips_trailing_punctuation():
+    assert is_generic_invest_phrase("Invest.") is True
+    assert wants_to_begin_invest_workflow("I want to invest.") is True
+    assert not invest_utterance_names_property("Invest.")
+
+
+def test_voice_bare_invest_preflight_on_voice_thread():
+    from backend.ai.schemas import ChatMessage
+
+    token = set_current_thread_id("voice:0x0000000000000000000000000000000000000002")
+    msg_token = set_current_messages([ChatMessage(role="user", content="Invest.")])
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        result = asyncio.run(try_server_invest_property_turn(_investor(), MagicMock()))
+        assert result is not None
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "Which property" in speak
+        assert "Blocked" not in speak
+        assert result.data.get("next_field") == "property_name"
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_voice_spoken_decimal_token_amounts_are_rejected():
+    assert invest_utterance_has_decimal_token_amount("zero point one token") is True
+    assert invest_utterance_has_decimal_token_amount(
+        "invest one point five tokens in Gold Plaza"
+    ) is True
+    assert invest_turn_attempts_decimal_token_amount(
+        "zero point one",
+        next_field="token_amount",
+    ) is True
+    assert parse_invest_token_amount("one point five tokens") is None
+
+
+def test_voice_spoken_negative_token_amounts_are_rejected():
+    assert invest_utterance_has_negative_token_amount("minus one token") is True
+    assert invest_utterance_has_negative_token_amount("negative five") is True
+    assert parse_invest_order_from_utterance("minus one") == {}
+    assert extract_invest_property_hint_from_utterance("negative one") == ""
+
+
+def test_fill_invest_rejects_voice_spoken_decimal_token_answer():
+    token = set_current_thread_id("voice:invest-spoken-decimal")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "How many tokens would you like to buy?"},
+            {"type": "human", "content": "zero point one"},
+        ]
+    )
+    prop = {
+        "id": 9,
+        "name": "sky view towers",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "0.2",
+        "sold_percentage": "0",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        _set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "filled": {
+                    "property_name": "sky view towers",
+                    "property_id": "9",
+                },
+                "next_field": "token_amount",
+                "property_id": 9,
+            },
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ):
+            result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "decimal" in speak.lower()
+        assert result.data.get("speak_verbatim") is True
+        assert result.data.get("next_field") == "token_amount"
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
+def test_fill_invest_rejects_voice_spoken_negative_token_answer():
+    token = set_current_thread_id("voice:invest-spoken-negative")
+    msg_token = set_current_messages(
+        [
+            {"type": "ai", "content": "How many tokens would you like to buy?"},
+            {"type": "human", "content": "minus one"},
+        ]
+    )
+    prop = {
+        "id": 9,
+        "name": "sky view towers",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "0.2",
+        "sold_percentage": "0",
+    }
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        _set_workflow_session(
+            "INVEST_PROPERTY",
+            {
+                "in_progress": True,
+                "filled": {
+                    "property_name": "sky view towers",
+                    "property_id": "9",
+                },
+                "next_field": "token_amount",
+                "property_id": 9,
+            },
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ):
+            result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "negative" in speak.lower()
+        assert "No investable property found" not in speak
+        assert result.data.get("speak_verbatim") is True
     finally:
         _clear_workflow_session("INVEST_PROPERTY")
         reset_current_messages(msg_token)
