@@ -58,6 +58,21 @@ def test_normalize_accepts_spoken_monthly_rent_voice_phrases():
 
 def test_normalize_accepts_spoken_total_value_with_filler():
     assert normalize_create_property_field("total_value", "The value is one thousand.") == "1000"
+    assert normalize_create_property_field("total_value", "It's nearly one thousand.") == "1000"
+
+
+def test_normalize_accepts_voice_hedge_words_for_supply_and_rent():
+    assert normalize_create_property_field("token_supply", "It's around, uh, ten thousand.") == "10000"
+    assert normalize_create_property_field("monthly_rent_eth", "Twenty five eighty eight.") == "25.88"
+
+
+def test_normalize_accepts_voice_token_symbol_and_name_phrases():
+    assert normalize_create_property_field("token_symbol", "Token symbol is ETH.") == "ETH"
+    assert normalize_create_property_field("token_symbol", "(music) edh") == "EDH"
+    assert (
+        normalize_create_property_field("name", "Name of the property is Brightcorn.")
+        == "Brightcorn"
+    )
 
 
 def test_normalize_accepts_comma_grouped_total_value_and_supply():
