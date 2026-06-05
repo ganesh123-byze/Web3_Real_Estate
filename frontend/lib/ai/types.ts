@@ -13,6 +13,7 @@ export type AIMessage = {
   content: string;
   tool_call_id?: string | null;
   name?: string | null;
+  quick_action_id?: string | null;
 };
 
 export type AIChatRequest = {

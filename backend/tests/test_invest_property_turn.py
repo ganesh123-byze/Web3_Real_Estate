@@ -12,6 +12,7 @@ from backend.ai.investor_guards import (
     invest_utterance_is_token_count_only,
     parse_invest_order_from_utterance,
     should_clear_stale_invest_token_amount,
+    wants_to_begin_invest_workflow,
 )
 from backend.ai.tools import (
     _clear_workflow_session,
@@ -42,6 +43,11 @@ def test_portfolio_phrase_is_not_invest_intent():
     utterance = "Show me my investment portfolio with current valuations."
     assert has_investor_portfolio_intent(utterance) is True
     assert has_explicit_invest_intent(utterance) is False
+
+
+def test_bare_invest_starts_guided_workflow():
+    assert wants_to_begin_invest_workflow("invest") is True
+    assert has_explicit_invest_intent("invest") is True
 
 
 def test_parse_invest_one_token_in_property():
@@ -118,8 +124,10 @@ def test_token_only_reply_keeps_property_and_submits():
             with patch("backend.ai.tools._load_invest_property_row", return_value=prop):
                 result = asyncio.run(_fill_invest_property({}, _investor(), MagicMock()))
         assert result.data.get("property_id") == 7
-        assert result.data.get("submitted") is True
-        assert result.data.get("token_amount") == 1
+        assert result.data.get("awaiting_invest_confirmation") is True
+        assert result.data.get("submitted") is False
+        assert result.data.get("filled", {}).get("token_amount") == "1"
+        assert "Reply Yes" in str(result.data.get("speak_to_user") or "")
         assert "How many tokens" not in str(result.data.get("speak_to_user") or "")
     finally:
         _clear_workflow_session("INVEST_PROPERTY")
@@ -235,11 +243,31 @@ def test_preflight_insufficient_funds_verbatim_message():
         ):
             invest = asyncio.run(try_server_invest_property_turn(_investor(), MagicMock()))
         assert invest is not None
-        assert invest.data.get("insufficient_funds") is True
-        speak = str(invest.data.get("speak_to_user") or "")
+        assert invest.data.get("awaiting_invest_confirmation") is True
+        set_current_messages(
+            [
+                {"type": "human", "content": "Invest 1 token in Skyview Residency"},
+                {"type": "ai", "content": invest.data.get("speak_to_user")},
+                {"type": "human", "content": "Yes"},
+            ]
+        )
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ), patch(
+            "backend.ai.tools.check_investor_can_fund_investment",
+            return_value=funding,
+        ), patch(
+            "backend.ai.tools._load_invest_property_row",
+            return_value=prop,
+        ):
+            confirmed = asyncio.run(try_server_invest_property_turn(_investor(), MagicMock()))
+        assert confirmed is not None
+        assert confirmed.data.get("insufficient_funds") is True
+        speak = str(confirmed.data.get("speak_to_user") or "")
         assert "insufficient funds" in speak.lower()
         assert "Skyview Residency" in speak
-        assert invest.data.get("speak_verbatim") is True
+        assert confirmed.data.get("speak_verbatim") is True
         assert "Here are the properties open for investment" not in speak
     finally:
         _clear_workflow_session("INVEST_PROPERTY")

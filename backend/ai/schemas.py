@@ -15,6 +15,8 @@ class ChatMessage(BaseModel):
     # Optional tool-call metadata so the frontend can persist & replay a thread.
     tool_call_id: str | None = None
     name: str | None = None
+    # Investor/owner/tenant quick-action card id when the user tapped a shortcut.
+    quick_action_id: str | None = None
 
 
 class AgentAction(BaseModel):

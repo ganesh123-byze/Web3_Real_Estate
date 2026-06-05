@@ -145,6 +145,8 @@ def wants_to_begin_invest_workflow(text: str) -> bool:
     t = _normalize_text(text)
     if not t or _INVEST_RESEARCH.search(t):
         return False
+    if t.lower() == "invest":
+        return True
     if _BEGIN_INVEST_WORKFLOW.search(t):
         return True
     return False
@@ -183,7 +185,9 @@ def invest_workflow_active(session: dict | None) -> bool:
         return False
     if session.get("submitted"):
         return False
-    return bool(session.get("in_progress"))
+    return bool(
+        session.get("in_progress") or session.get("awaiting_invest_confirmation")
+    )
 
 
 def investor_invest_wallet_permitted(
@@ -191,6 +195,10 @@ def investor_invest_wallet_permitted(
     invest_session: dict | None = None,
 ) -> bool:
     """Whether invest modal / MetaMask submit actions may be emitted this turn."""
+    if invest_session and invest_session.get("completing_submit"):
+        return True
+    if invest_session and invest_session.get("awaiting_invest_confirmation"):
+        return False
     if invest_workflow_active(invest_session):
         return True
     return has_explicit_invest_intent(user_text)
@@ -480,6 +488,11 @@ def extract_invest_property_hint_from_utterance(text: str) -> str:
     if not utterance:
         return ""
 
+    from backend.ai.investor_quick_actions import is_investor_advisory_intent
+
+    if is_investor_advisory_intent(utterance):
+        return ""
+
     if has_investor_portfolio_intent(utterance):
         return ""
 
@@ -670,6 +683,18 @@ def _derive_invest_yield_metrics(prop: dict[str, Any]) -> list[str]:
     rows.append(f"Tokens available: {available}")
     rows.append("Next payout: When rent is collected on-chain")
     return rows
+
+
+def format_invest_confirmation_summary(
+    prop: dict[str, Any],
+    token_amount: int | str | None,
+) -> str:
+    """Full invest order summary with yes/no confirmation footer."""
+    summary = format_invest_target_property_speak(prop, token_amount=token_amount)
+    return (
+        f"{summary}\n\n"
+        "Reply Yes to proceed with this investment in MetaMask, or No to cancel."
+    )
 
 
 def format_invest_target_property_speak(

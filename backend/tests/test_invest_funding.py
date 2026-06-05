@@ -148,8 +148,18 @@ def test_fill_invest_proceeds_when_wallet_funded(monkeypatch):
             )
         )
         assert res.ok
-        assert res.data.get("submitted") is True
-        assert any(a.type == "SUBMIT_FORM" for a in res.actions)
+        assert res.data.get("awaiting_invest_confirmation") is True
+
+        confirmed = asyncio.run(
+            tools._fill_invest_property(
+                {"confirm_invest": True},
+                _investor(),
+                MagicMock(),
+            )
+        )
+        assert confirmed.ok
+        assert confirmed.data.get("submitted") is True
+        assert any(a.type == "SUBMIT_FORM" for a in confirmed.actions)
     finally:
         tools._clear_workflow_session("INVEST_PROPERTY")
         tools.reset_current_thread_id(token)
