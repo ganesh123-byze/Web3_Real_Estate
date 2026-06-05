@@ -451,7 +451,8 @@ function isRichAssistantContent(content: string) {
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
     normalizedContent.includes("rent payment summary") ||
-    normalizedContent.includes("avg. rental yield") ||
+    normalizedContent.includes("tokens available") ||
+    normalizedContent.includes("price per token") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
     normalizedContent.includes("total invested")
@@ -466,7 +467,7 @@ function normalizeInvestSummaryForCard(content: string): string {
       .replace(/\nhow many tokens would you like to buy\??\s*$/i, "")
       .trim();
     const firstLine = normalized.match(/^investment target:\s*(.+)$/im)?.[1]?.trim() ?? "";
-    const propertyLine = firstLine ? `Property: ${firstLine}` : "";
+    const propertyLine = firstLine ? `Property name: ${firstLine}` : "";
     const detailLine = body.split("\n").find((line) => line.includes("—")) ?? body.split("\n")[0] ?? "";
     const parts = detailLine
       .split("—")
@@ -474,10 +475,15 @@ function normalizeInvestSummaryForCard(content: string): string {
       .filter(Boolean);
     const rows = [propertyLine];
     for (const part of parts) {
-      if (/sold/i.test(part)) rows.push(`Capital appreciation: +${part.replace(/sold/i, "").trim()} sold`);
-      else if (/tokens available/i.test(part)) rows.push(`Tokens available: ${part.replace(/tokens available/i, "").trim()}`);
-      else if (/eth per token/i.test(part)) rows.push(`Token price: ${part.replace(/per token/i, "").trim()}`);
-      else if (/monthly rent/i.test(part)) rows.push(`Monthly rental income: ${part.replace(/monthly rent/i, "").trim()}`);
+      if (/tokens available/i.test(part)) {
+        rows.push(`Tokens available: ${part.replace(/tokens available/i, "").trim()}`);
+      } else if (/eth per token|per token/i.test(part)) {
+        rows.push(`Price per token: ${part.replace(/per token/i, "").trim()}`);
+      } else if (/monthly rent/i.test(part)) {
+        rows.push(`Monthly rent: ${part.replace(/monthly rent/i, "").trim()}`);
+      } else if (!/sold/i.test(part)) {
+        rows.push(`Location: ${part}`);
+      }
     }
     return ["Investment summary", ...rows.filter(Boolean)].join("\n");
   }
@@ -509,7 +515,8 @@ function AssistantMessageContent({ content }: { content: string }) {
   if (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
-    normalizedContent.includes("avg. rental yield") ||
+    normalizedContent.includes("tokens available") ||
+    normalizedContent.includes("price per token") ||
     normalizedContent.includes("investment target:")
   ) {
     const investConfirmationPrompt = displayContent

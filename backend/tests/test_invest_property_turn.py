@@ -638,8 +638,12 @@ def test_format_invest_target_is_single_property_not_catalog():
         token_amount=1,
     )
     assert "Investment summary" in text
-    assert "Property: Gold Plaza (#5)" in text
-    assert "Avg. rental yield:" in text
+    assert "Property name: Gold Plaza (#5)" in text
+    assert "Location: Hyderabad" in text
+    assert "Tokens available: 900" in text
+    assert "Price per token: 0.5 ETH" in text
+    assert "Monthly rent: 1 ETH" in text
+    assert "Avg. rental yield:" not in text
     assert "Order size: 1 token" in text
     assert "Here are the properties open for investment" not in text
 

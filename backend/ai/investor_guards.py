@@ -12,7 +12,6 @@ from typing import Any
 
 from backend.ai.chat_stat_format import (
     format_chat_stat_eth_amount,
-    format_chat_stat_percentage,
     format_chat_stat_percentage_label,
 )
 from backend.ai.schemas import AgentAction
@@ -956,59 +955,33 @@ def _format_eth_amount(raw: Any) -> str:
     return format_chat_stat_eth_amount(raw)
 
 
-def _derive_invest_yield_metrics(prop: dict[str, Any]) -> list[str]:
-    """Label: value rows for the investor Yield & returns summary card in chat."""
+def _derive_invest_property_summary_rows(prop: dict[str, Any]) -> list[str]:
+    """Label: value rows for the investor Investment summary card in chat/voice."""
     name = str(prop.get("name") or f"Property {prop.get('id')}")
     pid = prop.get("id")
-    rows: list[str] = [f"Property: {name} (#{pid})"]
-
+    location = str(prop.get("location") or "").strip()
+    available = _format_token_count(prop.get("tokens_available"))
+    token_price = _format_eth_amount(prop.get("token_sale_price_eth"))
     try:
         monthly_rent = float(prop.get("monthly_rent_eth") or 0)
     except (TypeError, ValueError):
         monthly_rent = 0.0
-    try:
-        token_price = float(prop.get("token_sale_price_eth") or 0)
-    except (TypeError, ValueError):
-        token_price = 0.0
-    try:
-        supply = float(prop.get("token_supply") or 0)
-    except (TypeError, ValueError):
-        supply = 0.0
-    try:
-        sold_pct = float(str(prop.get("sold_percentage") or "0").replace("%", ""))
-    except (TypeError, ValueError):
-        sold_pct = 0.0
 
-    nav_eth = token_price * supply if token_price > 0 and supply > 0 else 0.0
-    annual_rent = monthly_rent * 12 if monthly_rent > 0 else 0.0
-
-    if nav_eth > 0 and annual_rent > 0:
-        roi = (annual_rent / nav_eth) * 100
-        rows.append(
-            f"Avg. rental yield: {format_chat_stat_percentage_label(roi)} p.a."
-        )
-        rows.append(
-            f"Projected 5-yr return: +{format_chat_stat_percentage(min(roi * 5, 250))}%"
-        )
-    else:
-        rows.append("Avg. rental yield: —")
-        rows.append("Projected 5-yr return: —")
-
-    rows.append(
-        f"Capital appreciation: +{format_chat_stat_percentage_label(sold_pct)} sold"
-    )
-    rows.append(
-        f"Monthly rental income: {_format_eth_amount(monthly_rent)} ETH"
-        if monthly_rent > 0
-        else "Monthly rental income: —"
-    )
-
-    if token_price > 0:
-        rows.append(f"Token price: {_format_eth_amount(token_price)} ETH")
-    available = _format_token_count(prop.get("tokens_available"))
-    rows.append(f"Tokens available: {available}")
-    rows.append("Next payout: When rent is collected on-chain")
-    return rows
+    return [
+        f"Property name: {name} (#{pid})",
+        f"Location: {location or '—'}",
+        f"Tokens available: {available}",
+        (
+            f"Price per token: {token_price} ETH"
+            if token_price and token_price not in ("0", "0.0")
+            else "Price per token: —"
+        ),
+        (
+            f"Monthly rent: {_format_eth_amount(monthly_rent)} ETH"
+            if monthly_rent > 0
+            else "Monthly rent: —"
+        ),
+    ]
 
 
 def format_invest_confirmation_summary(
@@ -1029,7 +1002,7 @@ def format_invest_target_property_speak(
     token_amount: int | str | None = None,
 ) -> str:
     """Single-property summary for an invest order — investment summary card format."""
-    lines = [INVEST_TARGET_SUMMARY_HEADING, *_derive_invest_yield_metrics(prop)]
+    lines = [INVEST_TARGET_SUMMARY_HEADING, *_derive_invest_property_summary_rows(prop)]
 
     if token_amount is not None:
         try:
