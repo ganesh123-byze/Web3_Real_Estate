@@ -22,7 +22,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { cn, formatEthText } from "@/lib/utils";
+import { formatChatStatText } from "@/lib/chat-stat-format";
+import { cn } from "@/lib/utils";
 import { HighlightedAssistantText } from "@/lib/ai/assistant-text";
 import { useAgentStore } from "@/lib/ai/agent-store";
 import type { AIState } from "@/lib/ai/types";
@@ -484,7 +485,7 @@ function normalizeInvestSummaryForCard(content: string): string {
 }
 
 function AssistantMessageContent({ content }: { content: string }) {
-  const displayContent = formatEthText(content);
+  const displayContent = formatChatStatText(content);
   const normalizedContent = displayContent.toLowerCase();
   if (normalizedContent.includes("rent payment summary")) {
     const rentConfirmationPrompt = displayContent

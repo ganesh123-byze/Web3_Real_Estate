@@ -10,6 +10,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.ai.chat_stat_format import (
+    format_chat_stat_eth_amount,
+    format_chat_stat_percentage,
+    format_chat_stat_percentage_label,
+)
 from backend.ai.schemas import AgentAction
 
 _INVESTOR_WALLET_MODALS = frozenset({"INVEST_PROPERTY", "CLAIM_REWARDS"})
@@ -340,9 +345,7 @@ def _format_portfolio_ownership_pct(pct: Any) -> str:
         return "—"
     if value <= 0:
         return "0%" if value == 0 else "—"
-    if value < 0.01:
-        return f"{value:.4f}%"
-    return f"{value:.2f}%"
+    return format_chat_stat_percentage_label(value)
 
 
 def format_investor_portfolio_speak(
@@ -950,16 +953,7 @@ def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
 
 
 def _format_eth_amount(raw: Any) -> str:
-    text = str(raw or "0").strip()
-    if not text:
-        return "0"
-    try:
-        value = float(text)
-    except (TypeError, ValueError):
-        return text
-    if value == int(value):
-        return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
+    return format_chat_stat_eth_amount(raw)
 
 
 def _derive_invest_yield_metrics(prop: dict[str, Any]) -> list[str]:
@@ -990,13 +984,19 @@ def _derive_invest_yield_metrics(prop: dict[str, Any]) -> list[str]:
 
     if nav_eth > 0 and annual_rent > 0:
         roi = (annual_rent / nav_eth) * 100
-        rows.append(f"Avg. rental yield: {roi:.1f}% p.a.")
-        rows.append(f"Projected 5-yr return: +{min(roi * 5, 250):.0f}%")
+        rows.append(
+            f"Avg. rental yield: {format_chat_stat_percentage_label(roi)} p.a."
+        )
+        rows.append(
+            f"Projected 5-yr return: +{format_chat_stat_percentage(min(roi * 5, 250))}%"
+        )
     else:
         rows.append("Avg. rental yield: —")
         rows.append("Projected 5-yr return: —")
 
-    rows.append(f"Capital appreciation: +{sold_pct:.1f}% sold")
+    rows.append(
+        f"Capital appreciation: +{format_chat_stat_percentage_label(sold_pct)} sold"
+    )
     rows.append(
         f"Monthly rental income: {_format_eth_amount(monthly_rent)} ETH"
         if monthly_rent > 0
@@ -1084,9 +1084,9 @@ def format_investor_marketplace_catalog_speak(
         pid = prop.get("id")
         location = str(prop.get("location") or "").strip()
         symbol = str(prop.get("token_symbol") or "").strip()
-        sold = str(prop.get("sold_percentage") or "0").strip()
+        sold = format_chat_stat_percentage_label(prop.get("sold_percentage") or "0")
         available = _format_token_count(prop.get("tokens_available"))
-        price = str(prop.get("token_sale_price_eth") or "").strip()
+        price = format_chat_stat_eth_amount(prop.get("token_sale_price_eth") or "")
         rent = prop.get("monthly_rent_eth")
         parts = [f"{index}. {name} (#{pid})"]
         detail_bits: list[str] = []
@@ -1094,12 +1094,14 @@ def format_investor_marketplace_catalog_speak(
             detail_bits.append(location)
         if symbol:
             detail_bits.append(symbol)
-        detail_bits.append(f"{sold}% sold")
+        detail_bits.append(f"{sold} sold")
         detail_bits.append(f"{available} tokens available")
         if price and price not in ("0", "0.0"):
             detail_bits.append(f"{price} ETH/token")
         if rent not in (None, "", "0", "0.0"):
-            detail_bits.append(f"monthly rent {rent} ETH")
+            detail_bits.append(
+                f"monthly rent {format_chat_stat_eth_amount(rent)} ETH"
+            )
         lines.append(f"   {parts[0]} - {', '.join(detail_bits)}")
     lines.extend(
         [

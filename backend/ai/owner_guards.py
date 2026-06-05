@@ -4,6 +4,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.ai.chat_stat_format import (
+    format_chat_stat_eth_amount,
+    format_chat_stat_percentage_label,
+)
 from backend.ai.investor_guards import extract_last_human_utterance, _normalize_text
 
 
@@ -42,16 +46,7 @@ def has_owner_analytics_intent(text: str) -> bool:
 
 
 def _format_eth_amount(raw: Any) -> str:
-    text = str(raw or "0").strip()
-    if not text:
-        return "0"
-    try:
-        value = float(text)
-    except (TypeError, ValueError):
-        return text
-    if value == int(value):
-        return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
+    return format_chat_stat_eth_amount(raw)
 
 
 def format_owner_analytics_overview_speak(data: dict[str, Any]) -> str:
@@ -208,9 +203,7 @@ def _format_owner_investor_ownership_pct(pct: Any) -> str:
         return "0%"
     if value <= 0:
         return "0%"
-    if value < 0.01:
-        return f"{value:.4f}%"
-    return f"{value:.2f}%"
+    return format_chat_stat_percentage_label(value)
 
 
 def format_owner_investors_speak(data: dict[str, Any]) -> str:

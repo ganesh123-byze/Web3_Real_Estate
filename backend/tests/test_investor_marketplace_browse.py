@@ -35,6 +35,26 @@ def test_has_marketplace_browse_intent_not_explicit_buy():
     assert has_marketplace_browse_intent("Invest 10 tokens into Gold Plaza") is False
 
 
+def test_format_marketplace_catalog_caps_long_percentage_decimals():
+    investable = [
+        {
+            "id": 8,
+            "name": "Marina Bay Heights",
+            "location": "Singapore",
+            "token_symbol": "MBH",
+            "sold_percentage": "8.33333333333333333333333333333333",
+            "tokens_available": "55",
+            "token_sale_price_eth": "0.13333333333333334",
+            "monthly_rent_eth": "0.3",
+        }
+    ]
+    text = format_investor_marketplace_catalog_speak(investable, total_listed=4)
+    assert "8.33333333333333333333333333333333" not in text
+    assert "8.333% sold" in text
+    assert "0.13333333333333334" not in text
+    assert "0.133 ETH/token" in text
+
+
 def test_format_marketplace_catalog_lists_property_details():
     investable = [
         {
