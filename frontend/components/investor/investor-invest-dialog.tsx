@@ -18,14 +18,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn, formatEth, formatNumber, shortAddress } from "@/lib/utils";
+import {
+  formatInvestDialogText,
+  formatInvestEthAmount,
+  formatInvestEthFromWei,
+} from "@/components/investor/investor-display-format";
+import { cn, formatNumber, shortAddress } from "@/lib/utils";
 import type { InvestmentPrepareResponse, Property } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import {
-  checkManualInvestFunding,
-  formatEthFundingDisplay,
-  parseWalletNativeBalanceWei,
-} from "@/components/investor/investor-funding-utils";
+import { parseWalletNativeBalanceWei } from "@/components/investor/investor-funding-utils";
+import { checkManualInvestOrder } from "@/components/investor/investor-invest-order-utils";
 import {
   INVEST_TOKEN_AMOUNT_HINT,
   INVEST_TOKEN_AMOUNT_MIN_ERROR,
@@ -64,17 +66,16 @@ export function InvestorInvestDialog({
   const amountValidation = validateInvestTokenAmountInput(amount);
   const tokenAmount = amountValidation.valid ? amountValidation.wholeAmount : 0;
   const costWei = investmentCostWei(property, tokenAmount);
-  const costEth = Number(costWei) / 1e18;
   const walletBalanceWei = parseWalletNativeBalanceWei(walletBalances.data);
-  const fundingCheck = useMemo(
+  const orderCheck = useMemo(
     () =>
-      checkManualInvestFunding({
+      checkManualInvestOrder({
+        property,
+        tokenAmount,
         costWei,
         balanceWei: walletBalanceWei,
-        tokenAmount,
-        propertyName: property.name,
       }),
-    [costWei, walletBalanceWei, tokenAmount, property.name],
+    [property, costWei, walletBalanceWei, tokenAmount],
   );
   const sessionIdentity = currentSessionIdentity();
   const walletLabel =
@@ -95,17 +96,19 @@ export function InvestorInvestDialog({
     }
     const submitAmount = submitValidation.wholeAmount;
     const submitCostWei = investmentCostWei(property, submitAmount);
-    const submitFunding = checkManualInvestFunding({
+    const submitOrder = checkManualInvestOrder({
+      property,
+      tokenAmount: submitAmount,
       costWei: submitCostWei,
       balanceWei: parseWalletNativeBalanceWei(walletBalances.data),
-      tokenAmount: submitAmount,
-      propertyName: property.name,
     });
-    if (!submitFunding.ok) {
+    if (!submitOrder.ok) {
       const message =
-        submitFunding.error ??
-        "Your wallet balance is still loading. Please wait a moment and try again.";
-      toast.error(message);
+        submitOrder.error ??
+        (submitOrder.reason === "balance_pending"
+          ? "Your wallet balance is still loading. Please wait a moment and try again."
+          : "This investment cannot be submitted right now. Please review the amount and try again.");
+      toast.error(formatInvestDialogText(message));
       return;
     }
     if (!wallet || !property.token_address) return;
@@ -225,7 +228,9 @@ export function InvestorInvestDialog({
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
             <InvestFact
               label="Estimated cost"
-              value={amountValidation.valid ? formatEth(costEth) : "—"}
+              value={
+                amountValidation.valid ? `${formatInvestEthFromWei(costWei)} ETH` : "—"
+              }
             />
             <InvestFact
               label="Wallet"
@@ -233,22 +238,27 @@ export function InvestorInvestDialog({
                 walletBalances.isLoading
                   ? walletLabel
                   : walletBalanceWei !== null
-                    ? `${walletLabel} · ${formatEthFundingDisplay(walletBalanceWei)} ETH`
+                    ? `${walletLabel} · ${formatInvestEthFromWei(walletBalanceWei)} ETH`
                     : walletLabel
               }
             />
-            <InvestFact label="Token price" value={formatEth(property.token_sale_price_eth ?? 0)} />
+            <InvestFact
+              label="Token price"
+              value={`${formatInvestEthAmount(property.token_sale_price_eth ?? 0)} ETH`}
+            />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
           </div>
-          {amountValidation.valid && !fundingCheck.ok && fundingCheck.error ? (
+          {amountValidation.valid && !orderCheck.ok && orderCheck.error ? (
             <p
               role="alert"
               className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-[11px] leading-snug text-destructive"
             >
-              {fundingCheck.error}
+              {formatInvestDialogText(orderCheck.error)}
             </p>
           ) : null}
-          {amountValidation.valid && fundingCheck.balancePending && !fundingCheck.error ? (
+          {amountValidation.valid &&
+          orderCheck.reason === "balance_pending" &&
+          !orderCheck.error ? (
             <p className="text-[11px] leading-snug text-muted-foreground">
               Checking wallet balance…
             </p>
@@ -278,7 +288,7 @@ export function InvestorInvestDialog({
                 busy ||
                 !amountValidation.valid ||
                 !wallet ||
-                !fundingCheck.ok ||
+                !orderCheck.ok ||
                 walletBalances.isLoading
               }
             >

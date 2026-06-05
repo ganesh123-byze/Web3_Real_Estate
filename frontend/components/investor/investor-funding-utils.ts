@@ -1,3 +1,4 @@
+import { formatInvestEthFromWei } from "@/components/investor/investor-display-format";
 import type { WalletBalances } from "@/lib/types";
 
 export type ManualInvestFundingCheck = {
@@ -9,11 +10,9 @@ export type ManualInvestFundingCheck = {
   balancePending?: boolean;
 };
 
-/** Full-precision ETH display for funding messages (matches backend funding copy). */
+/** ETH display for manual invest messages and wallet summary (max 3 decimals). */
 export function formatEthFundingDisplay(wei: bigint): string {
-  const value = Number(wei) / 1e18;
-  if (!Number.isFinite(value) || value <= 0) return "0";
-  return value.toFixed(18).replace(/\.?0+$/, "") || "0";
+  return formatInvestEthFromWei(wei);
 }
 
 export function parseWalletNativeBalanceWei(
