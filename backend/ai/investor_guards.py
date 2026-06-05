@@ -81,6 +81,23 @@ _CLAIM_TRANSACTIONAL = re.compile(
     re.IGNORECASE,
 )
 
+# Bare invest openers — not a property name (mirror tenant pay-rent generic phrases).
+_GENERIC_INVEST_PHRASE = re.compile(
+    r"(?i)^(?:"
+    r"invest(?:ment|ing)?|"
+    r"i\s+want\s+to\s+invest(?:\s+in(?:\s+a)?\s+property)?|"
+    r"help\s+me\s+invest(?:\s+in(?:\s+a)?\s+property)?|"
+    r"let(?:'s|\s+us)\s+invest|"
+    r"start\s+(?:an?\s+)?invest(?:ment|ing)?|"
+    r"make\s+(?:an?\s+)?investment|"
+    r"i(?:'d|\s+would)\s+like\s+to\s+invest|"
+    r"ready\s+to\s+invest|"
+    r"i\s+want\s+to\s+buy(?:\s+tokens?)?|"
+    r"i(?:'d|\s+would)\s+like\s+to\s+buy(?:\s+tokens?)?|"
+    r"open\s+(?:the\s+)?invest(?:ment)?\s+dialog"
+    r")$"
+)
+
 # User wants to start a guided invest flow (property name first, then amount).
 _BEGIN_INVEST_WORKFLOW = re.compile(
     r"\b("
@@ -140,16 +157,69 @@ def extract_last_human_utterance(messages: list[Any] | None) -> str:
     return _normalize_text(content if isinstance(content, str) else "")
 
 
+def is_generic_invest_phrase(text: str) -> bool:
+    """Utterances that start invest but do not name a property."""
+    utterance = re.sub(r"[.!?]+$", "", _normalize_text(text)).strip()
+    if not utterance:
+        return False
+    if _GENERIC_INVEST_PHRASE.match(utterance):
+        return True
+    if utterance.lower() == "invest":
+        return True
+    return bool(_BEGIN_INVEST_WORKFLOW.search(utterance))
+
+
 def wants_to_begin_invest_workflow(text: str) -> bool:
     """True when the user asks to invest but has not necessarily named a property yet."""
     t = _normalize_text(text)
     if not t or _INVEST_RESEARCH.search(t):
         return False
+    if is_generic_invest_phrase(t):
+        return True
     if t.lower() == "invest":
         return True
     if _BEGIN_INVEST_WORKFLOW.search(t):
         return True
     return False
+
+
+def invest_utterance_names_property(
+    text: str,
+    *,
+    quick_action_id: str | None = None,
+) -> bool:
+    """True when the user named a concrete property (id or title), not only 'invest'."""
+    utterance = _normalize_text(text)
+    if not utterance:
+        return False
+
+    from backend.ai.investor_quick_actions import (
+        is_investor_advisory_intent,
+        investor_quick_action_interrupts_workflow,
+    )
+
+    if investor_quick_action_interrupts_workflow(quick_action_id):
+        return False
+    if is_investor_advisory_intent(utterance):
+        return False
+    if is_generic_invest_phrase(utterance):
+        return False
+
+    if re.search(r"(?i)(?:property\s*)?#(\d+)\b", utterance):
+        return True
+
+    for pattern in _INVEST_ORDER_PATTERNS:
+        match = pattern.search(utterance)
+        if match and _clean_invest_property_name(match.groupdict().get("property") or ""):
+            return True
+
+    if invest_utterance_has_decimal_token_amount(utterance):
+        prop = _extract_invest_property_from_decimal_order(utterance)
+        if prop:
+            return True
+
+    hint = extract_invest_property_hint_from_utterance(utterance)
+    return bool(hint and not is_generic_invest_phrase(hint))
 
 
 def has_explicit_invest_intent(text: str) -> bool:
@@ -405,20 +475,27 @@ def _format_token_count(raw: Any) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+_INVEST_WHOLE_AMOUNT = (
+    r"(?P<amount>(?<!\d)\d+(?!\.\d)|one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)"
+)
+
 _INVEST_ORDER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?i)(?:please\s+)?(?:buy|invest|purchase)\s+"
-        r"(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|single)\s*"
-        r"(?:tokens?)?\s*(?:in|into|of)\s+"
+        + _INVEST_WHOLE_AMOUNT
+        + r"\s*(?:tokens?)?\s*(?:in|into|of)\s+"
         r"(?P<property>.+?)(?:\s+property)?\s*\.?$"
     ),
     re.compile(
         r"(?i)(?:buy|invest|purchase)\s+(?:in|into|of)\s+(?P<property>.+?)\s+"
-        r"(?:for\s+)?(?P<amount>\d+|one|two|three|four|five|a|an|single)\s*tokens?"
+        r"(?:for\s+)?"
+        + _INVEST_WHOLE_AMOUNT
+        + r"\s*tokens?"
     ),
     re.compile(
-        r"(?i)^(?P<amount>\d+|one|two|three|four|five|a|an|single)\s*tokens?\s*"
-        r"(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
+        r"(?i)^"
+        + _INVEST_WHOLE_AMOUNT
+        + r"\s*tokens?\s*(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
     ),
     re.compile(
         r"(?i)(?:buy|invest|purchase)\s+(?:in|into|of)\s+(?P<property>.+?)(?:\s+property)?\s*\.?$"
@@ -426,12 +503,80 @@ _INVEST_ORDER_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+_INVEST_DECIMAL_NUMBER_RE = re.compile(r"(?<!\d)\d*\.\d+")
+
+
+def invest_utterance_has_decimal_token_amount(text: str) -> bool:
+    """True when the user supplied a fractional token count (on-chain purchases are whole tokens)."""
+    utterance = _normalize_text(text)
+    if not utterance or not _INVEST_DECIMAL_NUMBER_RE.search(utterance):
+        return False
+    if re.search(r"(?i)\btokens?\b", utterance):
+        return True
+    if re.search(r"(?i)\b(?:buy|invest|purchase)\b", utterance):
+        return True
+    if re.fullmatch(r"(?i)\d*\.\d+", utterance):
+        return True
+    return False
+
+
+def invest_token_amount_value_is_decimal(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_INVEST_DECIMAL_NUMBER_RE.search(text))
+
+
+def invest_token_amount_field_is_valid(value: str) -> bool:
+    """True for positive whole-number token counts only."""
+    text = str(value or "").strip()
+    if not text or invest_token_amount_value_is_decimal(text):
+        return False
+    try:
+        return int(text) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def invest_invalid_token_amount_message(rejected_value: str = "") -> str:
+    shown = f'"{_normalize_text(rejected_value)}"' if _normalize_text(rejected_value) else "That amount"
+    return (
+        f"{shown} isn't valid. Decimals aren't allowed — "
+        "please use whole numbers (1 or greater)."
+    )
+
+
+def invest_turn_attempts_decimal_token_amount(
+    text: str,
+    *,
+    next_field: str | None = None,
+    args_token: str | None = None,
+) -> bool:
+    """True when this turn should be rejected as a fractional token purchase."""
+    if args_token not in (None, "") and invest_token_amount_value_is_decimal(str(args_token)):
+        return True
+    utterance = _normalize_text(text)
+    if not utterance or not invest_utterance_has_decimal_token_amount(utterance):
+        return False
+    if next_field == "token_amount":
+        return True
+    if re.search(r"(?i)\btokens?\b", utterance):
+        return True
+    if re.search(r"(?i)\b(?:buy|invest|purchase)\b", utterance):
+        return True
+    if re.fullmatch(r"(?i)\d*\.\d+", utterance):
+        return True
+    return False
+
+
 def parse_invest_token_amount(text: str) -> str | None:
     """Parse a whole token count from voice/chat (digits or spoken words)."""
     utterance = _normalize_text(text)
     if not utterance:
         return None
-    digit = re.search(r"(?i)\b(\d+)\s*tokens?\b", utterance)
+    if invest_utterance_has_decimal_token_amount(utterance):
+        return None
+    digit = re.search(r"(?i)(?<!\d\.)(?<!\d)\b(\d+)\b(?!\.\d)\s*tokens?\b", utterance)
     if digit:
         value = int(digit.group(1))
         return str(value) if value > 0 else None
@@ -474,6 +619,8 @@ def invest_utterance_is_token_count_only(text: str) -> bool:
     utterance = _normalize_text(text)
     if not utterance:
         return False
+    if invest_utterance_has_decimal_token_amount(utterance):
+        return True
     if parse_invest_token_amount(utterance):
         return True
     if re.fullmatch(r"\d+", utterance):
@@ -493,6 +640,9 @@ def extract_invest_property_hint_from_utterance(text: str) -> str:
         return ""
 
     from backend.ai.investor_quick_actions import is_investor_advisory_intent
+
+    if is_generic_invest_phrase(utterance):
+        return ""
 
     if is_investor_advisory_intent(utterance):
         return ""
@@ -529,7 +679,10 @@ def extract_invest_property_hint_from_utterance(text: str) -> str:
         stripped,
     )
     stripped = re.sub(r"(?i)^(?:in|into|of)\s+", "", stripped).strip()
-    return _clean_invest_property_name(stripped)
+    result = _clean_invest_property_name(stripped)
+    if not result or is_generic_invest_phrase(result):
+        return ""
+    return result
 
 
 def _clean_invest_property_name(raw: str) -> str:
@@ -579,11 +732,34 @@ def should_clear_stale_invest_token_amount(
     return invest_turn_specifies_property(text, args_property=args_property)
 
 
+def _extract_invest_property_from_decimal_order(utterance: str) -> str:
+    """Property name from orders like 'invest 0.1 token in Gold Plaza' (amount invalid)."""
+    patterns = (
+        r"(?i)(?:buy|invest|purchase)\s+\d*\.\d+\s*tokens?\s*(?:in|into|of)\s+"
+        r"(?P<property>.+?)(?:\s+property)?\s*\.?$",
+        r"(?i)(?:buy|invest|purchase)\s+(?:in|into|of)\s+(?P<property>.+?)\s+"
+        r"(?:for\s+)?\d*\.\d+\s*tokens?",
+        r"(?i)^\d*\.\d+\s*tokens?\s*(?:in|into|of)\s+"
+        r"(?P<property>.+?)(?:\s+property)?\s*\.?$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, utterance)
+        if not match:
+            continue
+        prop = _clean_invest_property_name(match.group("property") or "")
+        if prop and not is_generic_invest_phrase(prop):
+            return prop
+    return ""
+
+
 def parse_invest_order_from_utterance(text: str) -> dict[str, str]:
     """Extract property_name and/or token_amount from a buy/invest voice or chat line."""
     utterance = _normalize_text(text)
     if not utterance:
         return {}
+    if invest_utterance_has_decimal_token_amount(utterance):
+        prop = _extract_invest_property_from_decimal_order(utterance)
+        return {"property_name": prop} if prop else {}
 
     out: dict[str, str] = {}
     for pattern in _INVEST_ORDER_PATTERNS:

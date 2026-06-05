@@ -21,7 +21,12 @@ import { Label } from "@/components/ui/label";
 import { cn, formatEth, formatNumber, shortAddress } from "@/lib/utils";
 import type { InvestmentPrepareResponse, Property } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import { investmentCostWei } from "@/components/investor/investor-utils";
+import {
+  INVEST_TOKEN_AMOUNT_HINT,
+  INVEST_TOKEN_AMOUNT_MIN_ERROR,
+  investmentCostWei,
+  validateInvestTokenAmountInput,
+} from "@/components/investor/investor-utils";
 import { sendInvestmentTx } from "@/components/investor/contract-actions";
 import {
   clearPendingWorkflowActions,
@@ -50,7 +55,8 @@ export function InvestorInvestDialog({
   const [amount, setAmount] = useState("1");
   const [step, setStep] = useState<"idle" | "prepare" | "wallet" | "confirm">("idle");
   const [busy, setBusy] = useState(false);
-  const tokenAmount = Math.max(0, Math.trunc(Number(amount || 0)));
+  const amountValidation = validateInvestTokenAmountInput(amount);
+  const tokenAmount = amountValidation.valid ? amountValidation.wholeAmount : 0;
   const costWei = investmentCostWei(property, tokenAmount);
   const costEth = Number(costWei) / 1e18;
   const sessionIdentity = currentSessionIdentity();
@@ -63,8 +69,15 @@ export function InvestorInvestDialog({
     event.preventDefault();
     if (busy) return;
     const workflowValues = getWorkflowFormValues("INVEST_PROPERTY");
-    const submitAmount = Math.max(0, Math.trunc(Number(workflowValues.token_amount ?? amount ?? 0)));
-    if (!wallet || !property.token_address || submitAmount <= 0) return;
+    const submitValidation = validateInvestTokenAmountInput(
+      String(workflowValues.token_amount ?? amount ?? ""),
+    );
+    if (!submitValidation.valid) {
+      toast.error(submitValidation.error ?? INVEST_TOKEN_AMOUNT_MIN_ERROR);
+      return;
+    }
+    const submitAmount = submitValidation.wholeAmount;
+    if (!wallet || !property.token_address) return;
     setBusy(true);
     try {
       setStep("prepare");
@@ -156,16 +169,33 @@ export function InvestorInvestDialog({
             <Label>Token amount</Label>
             <Input
               data-workflow-field="INVEST_PROPERTY.token_amount"
-              type="number"
-              min="1"
-              step="1"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              aria-invalid={!amountValidation.valid}
+              className={cn(!amountValidation.valid && amount.trim() !== "" && "border-destructive/60")}
               required
             />
+            {!amountValidation.valid && amount.trim() !== "" ? (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-1.5 text-[11px] leading-snug text-destructive"
+              >
+                {amountValidation.error}
+              </p>
+            ) : (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                {INVEST_TOKEN_AMOUNT_HINT}
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
-            <InvestFact label="Estimated cost" value={formatEth(costEth)} />
+            <InvestFact
+              label="Estimated cost"
+              value={amountValidation.valid ? formatEth(costEth) : "—"}
+            />
             <InvestFact label="Wallet" value={walletLabel} />
             <InvestFact label="Token price" value={formatEth(property.token_sale_price_eth ?? 0)} />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
@@ -189,7 +219,10 @@ export function InvestorInvestDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || tokenAmount <= 0 || !wallet}>
+            <Button
+              type="submit"
+              disabled={busy || !amountValidation.valid || !wallet}
+            >
               {busy ? "Processing…" : "Invest via MetaMask"}
             </Button>
           </DialogFooter>

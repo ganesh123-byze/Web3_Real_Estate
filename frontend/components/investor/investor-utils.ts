@@ -68,3 +68,38 @@ export function investmentCostWei(property: Property, tokenAmount: number): bigi
 export function parseZeroEth() {
   return parseEther("0");
 }
+
+export const INVEST_TOKEN_AMOUNT_HINT =
+  "Whole numbers only — enter 1 or greater.";
+
+export const INVEST_TOKEN_AMOUNT_DECIMAL_ERROR =
+  "Decimals aren't allowed. Please use whole numbers (1 or greater).";
+
+export const INVEST_TOKEN_AMOUNT_MIN_ERROR =
+  "Enter a whole number of 1 or greater.";
+
+export type InvestTokenAmountValidation = {
+  valid: boolean;
+  error?: string;
+  wholeAmount: number;
+};
+
+/** Whole tokens only — on-chain purchases do not support fractional counts. */
+export function validateInvestTokenAmountInput(raw: string): InvestTokenAmountValidation {
+  const text = raw.trim();
+  if (!text) {
+    return { valid: false, error: INVEST_TOKEN_AMOUNT_MIN_ERROR, wholeAmount: 0 };
+  }
+  if (/[.,eE+-]/.test(text) || !/^\d+$/.test(text)) {
+    return {
+      valid: false,
+      error: INVEST_TOKEN_AMOUNT_DECIMAL_ERROR,
+      wholeAmount: 0,
+    };
+  }
+  const wholeAmount = Number(text);
+  if (!Number.isSafeInteger(wholeAmount) || wholeAmount < 1) {
+    return { valid: false, error: INVEST_TOKEN_AMOUNT_MIN_ERROR, wholeAmount: 0 };
+  }
+  return { valid: true, wholeAmount };
+}
