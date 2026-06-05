@@ -90,7 +90,7 @@ def test_resolve_rentable_property_hash_only(monkeypatch):
     assert int(prop["id"]) == 7
 
 
-def test_try_server_pay_rent_turn_submits_for_hash_id(monkeypatch):
+def test_try_server_pay_rent_turn_waits_for_confirmation_on_hash_id(monkeypatch):
     token = tools.set_current_thread_id("test:tenant-pay-rent-4")
     msg_token = tools.set_current_messages(
         [{"type": "human", "content": "pay the rent #4"}]
@@ -98,6 +98,31 @@ def test_try_server_pay_rent_turn_submits_for_hash_id(monkeypatch):
     try:
         tools._clear_workflow_session("PAY_RENT")
         monkeypatch.setattr(tools, "_validate_property_rentable", lambda _p: None)
+
+        def _fake_resolve(_db, name, tenant_wallet=None):
+            return tools._resolve_rentable_property_from_items(_rentable_items(), name)
+
+        monkeypatch.setattr(tools, "_resolve_property_for_rent", _fake_resolve)
+        with patch.object(tools, "canonical_role", return_value="tenant"):
+            result = asyncio.run(tools.try_server_tenant_pay_rent_turn(_tenant(), None))
+        assert result is not None
+        assert result.ok
+        assert int((result.data or {}).get("property_id") or 0) == 4
+        assert result.data.get("awaiting_pay_rent_confirmation") is True
+        assert "Reply Yes" in str(result.data.get("speak_to_user") or "")
+        assert not any(a.type == "SUBMIT_FORM" for a in (result.actions or []))
+    finally:
+        tools._clear_workflow_session("PAY_RENT")
+        tools.reset_current_thread_id(token)
+        tools.reset_current_messages(msg_token)
+
+
+def test_try_server_pay_rent_turn_submits_after_confirmation_yes(monkeypatch):
+    token = tools.set_current_thread_id("test:tenant-pay-rent-yes")
+    try:
+        tools._clear_workflow_session("PAY_RENT")
+        monkeypatch.setattr(tools, "_validate_property_rentable", lambda _p: None)
+
         def _fake_resolve(_db, name, tenant_wallet=None):
             return tools._resolve_rentable_property_from_items(_rentable_items(), name)
 
@@ -111,13 +136,27 @@ def test_try_server_pay_rent_turn_submits_for_hash_id(monkeypatch):
             )
 
         monkeypatch.setattr(tools, "_execute_pay_rent_ui", _fake_execute)
+
+        tools.set_current_messages([{"type": "human", "content": "pay the rent #4"}])
         with patch.object(tools, "canonical_role", return_value="tenant"):
-            result = asyncio.run(tools.try_server_tenant_pay_rent_turn(_tenant(), None))
-        assert result is not None
-        assert result.ok
-        assert int((result.data or {}).get("property_id") or 0) == 4
-        assert any(a.type == "SUBMIT_FORM" for a in (result.actions or []))
+            first = asyncio.run(tools.try_server_tenant_pay_rent_turn(_tenant(), None))
+        assert first is not None
+        assert first.data.get("awaiting_pay_rent_confirmation") is True
+
+        tools.set_current_messages(
+            [
+                {"type": "human", "content": "pay the rent #4"},
+                {"type": "ai", "content": first.data.get("speak_to_user")},
+                {"type": "human", "content": "Yes"},
+            ]
+        )
+        with patch.object(tools, "canonical_role", return_value="tenant"):
+            second = asyncio.run(tools.try_server_tenant_pay_rent_turn(_tenant(), None))
+        assert second is not None
+        assert second.ok
+        assert int((second.data or {}).get("property_id") or 0) == 4
+        assert second.data.get("submitted") is True
+        assert any(a.type == "SUBMIT_FORM" for a in (second.actions or []))
     finally:
         tools._clear_workflow_session("PAY_RENT")
         tools.reset_current_thread_id(token)
-        tools.reset_current_messages(msg_token)

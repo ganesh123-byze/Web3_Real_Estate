@@ -340,7 +340,7 @@ function splitSummaryCardContent(content: string): { title: string; body: string
   const trimmed = content.trim();
   const lines = trimmed.split("\n");
   const first = lines[0]?.trim() ?? "";
-  if (/^(yield & returns summary|investment summary)$/i.test(first)) {
+  if (/^(yield & returns summary|investment summary|rent payment summary)$/i.test(first)) {
     return { title: first, body: lines.slice(1).join("\n").trim() };
   }
   return { title: "Yield & returns summary", body: trimmed };
@@ -349,8 +349,11 @@ function splitSummaryCardContent(content: string): { title: string; body: string
 function YieldSummaryCard({ content }: { content: string }) {
   const { title, body } = splitSummaryCardContent(content);
   const metrics = parseMetricRows(body).slice(0, 5);
-  const heading =
-    /^investment summary$/i.test(title) ? "Investment summary" : "Yield & returns summary";
+  const heading = /^investment summary$/i.test(title)
+    ? "Investment summary"
+    : /^rent payment summary$/i.test(title)
+      ? "Rent payment summary"
+      : "Yield & returns summary";
 
   return (
     <section className="w-full min-w-0 overflow-hidden rounded-[16px] bg-white px-4 py-3 text-[14px] text-[#1A1A2E] dark:border dark:border-[#1e2947] dark:bg-[#070b1a] dark:text-slate-100">
@@ -446,6 +449,7 @@ function isRichAssistantContent(content: string) {
   return (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
+    normalizedContent.includes("rent payment summary") ||
     normalizedContent.includes("avg. rental yield") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
@@ -482,6 +486,25 @@ function normalizeInvestSummaryForCard(content: string): string {
 function AssistantMessageContent({ content }: { content: string }) {
   const displayContent = formatEthText(content);
   const normalizedContent = displayContent.toLowerCase();
+  if (normalizedContent.includes("rent payment summary")) {
+    const rentConfirmationPrompt = displayContent
+      .match(/\n\n(reply yes[\s\S]*)$/i)?.[1]
+      ?.trim();
+    const rentCardContent = rentConfirmationPrompt
+      ? displayContent.replace(/\n\nreply yes[\s\S]*$/i, "").trim()
+      : displayContent;
+
+    return (
+      <div className="space-y-3">
+        <YieldSummaryCard content={rentCardContent.replace(/^rent payment summary/im, "Rent payment summary")} />
+        {rentConfirmationPrompt ? (
+          <p className="text-[14px] font-medium text-slate-900 dark:text-slate-100">
+            <HighlightedAssistantText text={rentConfirmationPrompt} />
+          </p>
+        ) : null}
+      </div>
+    );
+  }
   if (
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||

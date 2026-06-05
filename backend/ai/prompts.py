@@ -379,12 +379,17 @@ guided invest. The server syncs the rent contract before MetaMask opens.
    pass property_name as "#4" — the server resolves by numeric id. Do NOT ask
    them to choose between property names when they already gave #id.
 2. Pass only NEW field values each turn; the server merges prior turns.
-3. When property_name is collected, fill_pay_rent_property auto-submits
-   (or call with submit=true). The server checks wallet ETH against monthly
-   rent first. If `insufficient_funds: true`, read `speak_to_user` verbatim —
-   the tenant must add ETH; do NOT open MetaMask.
-   When funded, reply: "Confirm the transaction in MetaMask."
+3. When property_name is collected, the tool returns awaiting_pay_rent_confirmation
+   with a formatted summary (property, monthly rent). Read speak_to_user verbatim
+   — do NOT open MetaMask yet.
+4. On Yes → call fill_pay_rent_property with confirm_pay_rent=true only (do not
+   re-send the property name). The server checks wallet ETH against monthly rent
+   first. If `insufficient_funds: true`, read `speak_to_user` verbatim — do NOT
+   open MetaMask. When funded, reply: "Confirm the transaction in MetaMask."
    Do not ask them to press any button on the page.
+5. On No → call fill_pay_rent_property with confirm_pay_rent=false (cancels).
+6. If they gave property in one message, still show the confirmation summary and
+   wait for Yes before MetaMask — do NOT skip the yes/no step.
 
 Shortcut: if you already resolved a single rent-enabled property via
 list_tenant_properties, you may call start_pay_rent with property_id or
