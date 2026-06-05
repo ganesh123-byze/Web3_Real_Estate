@@ -55,6 +55,7 @@ from backend.ai.tools import (
     try_server_investor_marketplace_browse,
     try_server_invest_property_turn,
     try_server_investor_portfolio_overview,
+    try_server_investor_wallet_affordability,
     try_server_tenant_pay_rent_turn,
     try_server_tenant_rental_browse,
     try_server_owner_analytics_overview,
@@ -456,6 +457,8 @@ async def run_agent(
         if preflight is None and role == "investor":
             preflight = await try_server_investor_portfolio_overview(user, db)
         if preflight is None and role == "investor":
+            preflight = await try_server_investor_wallet_affordability(user, db)
+        if preflight is None and role == "investor":
             preflight = await try_server_invest_property_turn(user, db)
         if preflight is None and role == "tenant":
             preflight = await try_server_tenant_rental_browse(user, db)
@@ -633,6 +636,8 @@ async def stream_agent(
             preflight = await try_server_investor_marketplace_browse(user, db)
         if preflight is None and role == "investor":
             preflight = await try_server_investor_portfolio_overview(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_investor_wallet_affordability(user, db)
         if preflight is None and role == "investor":
             preflight = await try_server_invest_property_turn(user, db)
         if preflight is None and role == "tenant":

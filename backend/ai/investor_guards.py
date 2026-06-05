@@ -157,6 +157,10 @@ def has_explicit_invest_intent(text: str) -> bool:
     t = _normalize_text(text)
     if not t:
         return False
+    from backend.ai.investor_wallet_affordability import has_investor_wallet_affordability_intent
+
+    if has_investor_wallet_affordability_intent(t):
+        return False
     if has_investor_portfolio_intent(t):
         return False
     if _INVEST_RESEARCH.search(t):

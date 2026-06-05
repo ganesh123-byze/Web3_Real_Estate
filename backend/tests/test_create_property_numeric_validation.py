@@ -44,6 +44,22 @@ def test_normalize_rejects_non_numeric_total_value_and_supply():
     assert normalize_create_property_field("monthly_rent_eth", "skip") == "0"
 
 
+def test_normalize_accepts_spoken_monthly_rent_voice_phrases():
+    assert (
+        normalize_create_property_field(
+            "monthly_rent_eth", "Monthly rent is zero point zero one ETH."
+        )
+        == "0.01"
+    )
+    assert normalize_create_property_field("monthly_rent_eth", "It is one eighty eight.") == "1.88"
+    assert normalize_create_property_field("monthly_rent_eth", "one point eight eight") == "1.88"
+    assert normalize_create_property_field("monthly_rent_eth", "zero point one") == "0.1"
+
+
+def test_normalize_accepts_spoken_total_value_with_filler():
+    assert normalize_create_property_field("total_value", "The value is one thousand.") == "1000"
+
+
 def test_normalize_accepts_comma_grouped_total_value_and_supply():
     assert normalize_create_property_field("total_value", "10,000,000") == "10000000"
     assert normalize_create_property_field("total_value", "1,000,000 ETH") == "1000000"
