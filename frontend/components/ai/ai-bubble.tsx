@@ -33,6 +33,11 @@ import {
   getRoleFromPath,
   type QuickAction,
 } from "@/lib/ai/quick-actions";
+import {
+  isMarketplaceCatalogContent,
+  parseMarketplaceCatalogContent,
+} from "@/lib/ai/investor-marketplace-catalog";
+import { InvestorMarketplaceCatalogCard } from "@/components/ai/investor-marketplace-catalog-card";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   Store,
@@ -448,6 +453,7 @@ function PortfolioInsightCard({ content }: { content: string }) {
 function isRichAssistantContent(content: string) {
   const normalizedContent = content.toLowerCase();
   return (
+    isMarketplaceCatalogContent(content) ||
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
     normalizedContent.includes("rent payment summary") ||
@@ -493,6 +499,10 @@ function normalizeInvestSummaryForCard(content: string): string {
 function AssistantMessageContent({ content }: { content: string }) {
   const displayContent = formatChatStatText(content);
   const normalizedContent = displayContent.toLowerCase();
+  const marketplaceCatalog = parseMarketplaceCatalogContent(displayContent);
+  if (marketplaceCatalog) {
+    return <InvestorMarketplaceCatalogCard catalog={marketplaceCatalog} />;
+  }
   if (normalizedContent.includes("rent payment summary")) {
     const rentConfirmationPrompt = displayContent
       .match(/\n\n(reply yes[\s\S]*)$/i)?.[1]
@@ -513,10 +523,13 @@ function AssistantMessageContent({ content }: { content: string }) {
     );
   }
   if (
-    normalizedContent.includes("yield & returns summary") ||
+    (normalizedContent.includes("yield & returns summary") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
     normalizedContent.includes("investment summary") ||
-    normalizedContent.includes("tokens available") ||
-    normalizedContent.includes("price per token") ||
+    (normalizedContent.includes("tokens available") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
+    (normalizedContent.includes("price per token") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
     normalizedContent.includes("investment target:")
   ) {
     const investConfirmationPrompt = displayContent

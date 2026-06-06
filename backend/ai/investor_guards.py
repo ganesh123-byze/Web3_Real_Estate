@@ -391,33 +391,6 @@ def format_investor_portfolio_speak(
     return "\n".join(lines)
 
 
-def has_marketplace_browse_intent(text: str) -> bool:
-    """True when the user wants to browse/list marketplace listings (not buy yet)."""
-    t = _normalize_text(text).lower()
-    if not t:
-        return False
-    if has_explicit_invest_intent(text):
-        return False
-    if re.search(
-        r"\b(?:take\s+me\s+to|go\s+to|open)\s+(?:the\s+)?marketplace\b",
-        t,
-    ):
-        return True
-    if re.search(r"\bbrowse\s+(?:the\s+)?marketplace\b", t):
-        return True
-    if re.search(r"\bmarketplace\b", t) and re.search(
-        r"\b(?:show|available|properties|opportunities|invest)\b", t
-    ):
-        return True
-    if re.search(r"\b(?:show|list|what).*\b(?:available|for\s+sale|opportunities)\b", t):
-        return True
-    if re.search(r"\bproperties?\s+(?:to\s+)?invest\s+in\b", t):
-        return True
-    if re.search(r"\bbrowse\b", t) and re.search(r"\bpropert", t):
-        return True
-    return False
-
-
 def wallet_ui_allowed(modal: str, user_text: str, *, invest_session: dict | None = None) -> bool:
     if modal == "INVEST_PROPERTY":
         return investor_invest_wallet_permitted(user_text, invest_session)
@@ -1030,57 +1003,8 @@ def format_invest_target_property_speak(
     return "\n".join(lines)
 
 
-def format_investor_marketplace_catalog_speak(
-    investable: list[dict[str, Any]],
-    *,
-    total_listed: int,
-) -> str:
-    """Verbatim marketplace summary for investor browse turns."""
-    if not investable:
-        if total_listed <= 0:
-            return (
-                "There are no properties on the marketplace yet. "
-                "Check back after new listings are deployed."
-            )
-        return (
-            f"There are {total_listed} listing(s) on the marketplace, but none have "
-            "tokens available to buy right now. Ask again later or say which property "
-            "you want details on."
-        )
-
-    lines = [
-        "Here are the properties open for investment right now:",
-        "",
-    ]
-    for index, prop in enumerate(investable, start=1):
-        name = str(prop.get("name") or f"Property {prop.get('id')}")
-        pid = prop.get("id")
-        location = str(prop.get("location") or "").strip()
-        symbol = str(prop.get("token_symbol") or "").strip()
-        sold = format_chat_stat_percentage_label(prop.get("sold_percentage") or "0")
-        available = _format_token_count(prop.get("tokens_available"))
-        price = format_chat_stat_eth_amount(prop.get("token_sale_price_eth") or "")
-        rent = prop.get("monthly_rent_eth")
-        parts = [f"{index}. {name} (#{pid})"]
-        detail_bits: list[str] = []
-        if location:
-            detail_bits.append(location)
-        if symbol:
-            detail_bits.append(symbol)
-        detail_bits.append(f"{sold} sold")
-        detail_bits.append(f"{available} tokens available")
-        if price and price not in ("0", "0.0"):
-            detail_bits.append(f"{price} ETH/token")
-        if rent not in (None, "", "0", "0.0"):
-            detail_bits.append(
-                f"monthly rent {format_chat_stat_eth_amount(rent)} ETH"
-            )
-        lines.append(f"   {parts[0]} - {', '.join(detail_bits)}")
-    lines.extend(
-        [
-            "",
-            "I've opened the marketplace page. Say which property you'd like to invest in, "
-            "or ask for more details on any listing above.",
-        ]
-    )
-    return "\n".join(lines)
+from backend.ai.investor_marketplace import (  # noqa: E402
+    INVESTOR_MARKETPLACE_CATALOG_HEADING,
+    format_investor_marketplace_catalog_speak,
+    has_marketplace_browse_intent,
+)

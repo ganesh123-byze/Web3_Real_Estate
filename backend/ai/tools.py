@@ -1128,10 +1128,15 @@ async def try_server_investor_marketplace_browse(
         return None
 
     utterance = _latest_human_utterance().strip()
-    if not utterance or not has_marketplace_browse_intent(utterance):
+    quick_action_id = _latest_human_quick_action_id()
+    from backend.ai.investor_marketplace import marketplace_browse_turn_matches
+
+    if not marketplace_browse_turn_matches(
+        utterance, quick_action_id=quick_action_id
+    ):
         return None
 
-    abort_invest_workflow_if_interrupted(utterance)
+    abort_invest_workflow_if_interrupted(utterance or "")
     return await _list_properties_tool({}, user, db)
 
 
