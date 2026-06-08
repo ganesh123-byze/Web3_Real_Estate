@@ -279,6 +279,69 @@ def invest_workflow_active(session: dict | None) -> bool:
     )
 
 
+def _assistant_message_role(msg: Any) -> str:
+    if isinstance(msg, dict):
+        return (msg.get("type") or msg.get("role") or "").lower()
+    role = getattr(msg, "role", None)
+    if role is not None:
+        return str(role).lower()
+    msg_type = getattr(msg, "type", None)
+    if msg_type is not None:
+        return str(msg_type).lower()
+    cls = type(msg).__name__.lower()
+    if "human" in cls or "user" in cls:
+        return "human"
+    if "ai" in cls or "assistant" in cls:
+        return "assistant"
+    return ""
+
+
+def _assistant_message_content(msg: Any) -> str:
+    if isinstance(msg, dict):
+        content = msg.get("content")
+    else:
+        content = getattr(msg, "content", None)
+    return (content or "").strip() if isinstance(content, str) else ""
+
+
+def extract_latest_assistant_utterance(messages: list[Any] | None) -> str:
+    """Return the most recent assistant line from API or LangGraph history."""
+    if not messages:
+        return ""
+    for msg in reversed(messages):
+        if _assistant_message_role(msg) in ("ai", "assistant"):
+            return _assistant_message_content(msg)
+    return ""
+
+
+def assistant_prompted_for_invest_property_selection(
+    messages: list[Any] | None,
+) -> bool:
+    """True when the copilot last asked the investor to pick a property target."""
+    from backend.ai.investor_invest_flow import INVEST_PROPERTY_SELECTION_MARKERS
+
+    text = extract_latest_assistant_utterance(messages).lower()
+    if not text:
+        return False
+    return any(marker in text for marker in INVEST_PROPERTY_SELECTION_MARKERS)
+
+
+def is_invest_property_follow_up_turn(
+    utterance: str,
+    messages: list[Any] | None,
+    *,
+    quick_action_id: str | None = None,
+) -> bool:
+    """True when the user names a property after a marketplace or invest property prompt."""
+    if not _normalize_text(utterance):
+        return False
+    if not assistant_prompted_for_invest_property_selection(messages):
+        return False
+    return invest_utterance_names_property(
+        utterance, quick_action_id=quick_action_id
+    )
+
+
 def investor_invest_wallet_permitted(
     user_text: str,
     invest_session: dict | None = None,
