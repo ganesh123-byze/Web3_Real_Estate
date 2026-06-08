@@ -6,6 +6,7 @@ def _prop(
     pid: int,
     name: str,
     *,
+    location: str = "Any",
     token_address: str = "0xabc",
     tokens_available: str = "100",
     token_symbol: str = "TOK",
@@ -13,7 +14,7 @@ def _prop(
     return {
         "id": pid,
         "name": name,
-        "location": "Any",
+        "location": location,
         "token_symbol": token_symbol,
         "token_address": token_address,
         "tokens_available": tokens_available,
@@ -38,6 +39,16 @@ def test_resolution_asks_clarification_on_ambiguous_query():
     prop, err = _resolve_investable_property_from_items(items, "oceanview")
     assert prop is None
     assert err and "Several investable properties match" in err
+
+
+def test_resolution_picks_exact_name_over_location_substring_collision():
+    items = [
+        _prop(1, "Brightcone"),
+        _prop(2, "Golden Heist Villa", location="Brightcone Hills"),
+    ]
+    prop, err = _resolve_investable_property_from_items(items, "brightcone")
+    assert err is None
+    assert prop and int(prop["id"]) == 1
 
 
 def test_resolution_ignores_non_investable_properties():

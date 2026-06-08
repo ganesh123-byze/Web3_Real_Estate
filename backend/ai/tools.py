@@ -58,7 +58,10 @@ from backend.ai.copilot_property_scope import (
     copilot_property_list_meta,
     count_dashboard_listable_active,
     fetch_active_property,
+    fetch_copilot_property,
     filter_dashboard_listable_properties,
+    list_copilot_properties,
+    property_is_copilot_visible,
     property_unavailable_message,
     transaction_excludes_archived_property,
 )
@@ -805,11 +808,7 @@ def _tenant_property_items(cursor, tenant_wallet: str | None) -> list[dict]:
 
 
 def _list_properties(cursor) -> list[dict]:
-    cursor.execute(
-        f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
-    )
-    rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
-    return [_serialize_property(r) for r in rows]
+    return [_serialize_property(r) for r in list_copilot_properties(cursor)]
 
 
 def _filter_investable_marketplace_properties(items: list[dict]) -> list[dict]:
@@ -879,27 +878,9 @@ def _normalize_match_text(value: Any) -> str:
 
 
 def _property_match_score(query: str, prop: dict) -> float:
-    q = _normalize_match_text(query)
-    if not q:
-        return 0
-    candidates = [
-        prop.get("name"),
-        prop.get("location"),
-        prop.get("token_symbol"),
-        f"{prop.get('name') or ''} {prop.get('location') or ''}",
-    ]
-    best = 0.0
-    for candidate in candidates:
-        c = _normalize_match_text(candidate)
-        if not c:
-            continue
-        if q == c:
-            best = max(best, 1.0)
-        elif q in c or c in q:
-            best = max(best, 0.94)
-        else:
-            best = max(best, SequenceMatcher(None, q, c).ratio())
-    return best
+    from backend.ai.property_name_resolution import property_broad_match_score
+
+    return property_broad_match_score(query, prop)
 
 
 def _filter_properties_by_fuzzy_search(items: list[dict], query: str) -> list[dict]:
@@ -916,55 +897,13 @@ def _resolve_investable_property_from_items(
     items: list[dict], query: str
 ) -> tuple[dict | None, str | None]:
     """Resolve a spoken property query to a single investable listing."""
-    q = (query or "").strip()
-    if not q:
-        return None, "Property name is required."
+    from backend.ai.property_name_resolution import resolve_investable_property_from_items
 
-    investable: list[dict] = []
-    for prop in items:
-        if _validate_property_investable(prop) is None:
-            investable.append(prop)
-
-    if not investable:
-        return None, "No investable properties are available right now."
-
-    id_match = re.fullmatch(r"#?(\d+)", q)
-    if id_match:
-        target_id = int(id_match.group(1))
-        for prop in investable:
-            if int(prop.get("id") or 0) == target_id:
-                return prop, None
-        return None, f"No investable property found with id #{target_id}."
-
-    ranked = sorted(
-        [(_property_match_score(q, p), p) for p in investable],
-        key=lambda item: (item[0], int(item[1].get("id") or 0)),
-        reverse=True,
+    return resolve_investable_property_from_items(
+        items,
+        query,
+        is_investable=_validate_property_investable,
     )
-    if not ranked:
-        return None, "No investable properties are available right now."
-
-    # Strong threshold prevents weak fuzzy matches from picking unrelated properties.
-    strong = [(score, prop) for score, prop in ranked if score >= 0.72]
-    if not strong:
-        best_score, _best_prop = ranked[0]
-        if best_score < 0.58:
-            examples = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-            return None, (
-                f"No investable property found matching {q!r}. "
-                f"Try one of: {examples}."
-            )
-        # Medium-confidence fallback: ask clarification instead of risky auto-pick.
-        options = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-        return None, (
-            f"Please confirm which property you want: {options}."
-        )
-
-    if len(strong) > 1 and (strong[0][0] - strong[1][0]) < 0.08:
-        names = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in strong[:3])
-        return None, f"Several investable properties match {q!r}: {names}. Which one do you mean?"
-
-    return strong[0][1], None
 
 
 def _validate_property_rentable(prop: dict) -> str | None:
@@ -998,50 +937,14 @@ def _resolve_rentable_property_from_items(
     items: list[dict], query: str
 ) -> tuple[dict | None, str | None]:
     """Resolve a spoken property query to a single rent-enabled listing."""
-    q = (query or "").strip()
-    if not q:
-        return None, "Property name is required."
+    from backend.ai.property_name_resolution import resolve_rentable_property_from_items
 
-    rentable: list[dict] = []
-    for prop in items:
-        if prop.get("rent_enabled") and _validate_property_rentable(prop) is None:
-            rentable.append(prop)
-
-    if not rentable:
-        return None, (
-            "No rent-enabled properties are available right now. "
-            "Ask the owner to set monthly rent on a property first."
-        )
-
-    target_id = _property_id_from_query(q)
-    if target_id is not None:
-        for prop in rentable:
-            if int(prop.get("id") or 0) == target_id:
-                return prop, None
-        return None, f"No rent-enabled property found with id #{target_id}."
-
-    ranked = sorted(
-        [(_property_match_score(q, p), p) for p in rentable],
-        key=lambda item: (item[0], int(item[1].get("id") or 0)),
-        reverse=True,
+    return resolve_rentable_property_from_items(
+        items,
+        query,
+        is_rentable=_validate_property_rentable,
+        property_id_from_query=_property_id_from_query,
     )
-    strong = [(score, prop) for score, prop in ranked if score >= 0.72]
-    if not strong:
-        best_score, _best_prop = ranked[0]
-        if best_score < 0.58:
-            examples = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-            return None, (
-                f"No rent-enabled property found matching {q!r}. "
-                f"Try one of: {examples}."
-            )
-        options = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-        return None, f"Please confirm which property you mean: {options}."
-
-    if len(strong) > 1 and (strong[0][0] - strong[1][0]) < 0.08:
-        names = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in strong[:3])
-        return None, f"Several rent-enabled properties match {q!r}: {names}. Which one do you mean?"
-
-    return strong[0][1], None
 
 
 # ---------------------------------------------------------------------------
@@ -1074,12 +977,7 @@ async def _list_properties_tool(args: dict, user: AuthUser, db: Any) -> ToolResu
     cursor = db.cursor(dictionary=True)
     try:
         if canonical_role(user.role) == "property_owner":
-            cursor.execute(
-                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
-                (user.wallet_address,),
-            )
-            rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+            rows = list_copilot_properties(cursor, owner_wallet=user.wallet_address)
             items = [_serialize_property(r) for r in rows]
         else:
             items = _list_properties(cursor)
@@ -1937,12 +1835,7 @@ register(ToolSpec(
 async def _get_my_owned_properties(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-            f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
-            (user.wallet_address,),
-        )
-        rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+        rows = list_copilot_properties(cursor, owner_wallet=user.wallet_address)
         items = [_serialize_property(r) for r in rows]
     finally:
         cursor.close()
@@ -2079,12 +1972,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     wallet = normalize_address(user.wallet_address or "")
     owner_wallet = user.wallet_address or ""
 
-    cursor.execute(
-        f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-        f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
-        (owner_wallet,),
-    )
-    owned_rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+    owned_rows = list_copilot_properties(cursor, owner_wallet=owner_wallet)
     owned = [_serialize_property(r) for r in owned_rows]
     listed_with_sales = [p for p in owned if float(p.get("sold_percentage") or 0) > 0]
 
@@ -2405,11 +2293,7 @@ async def _get_wallet_balance(_args: dict, user: AuthUser, _db: Any) -> ToolResu
     db = _db
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT id, name, token_address, token_symbol "
-            f"FROM properties WHERE token_address IS NOT NULL AND {ACTIVE_PROPERTY_SQL}"
-        )
-        for row in cursor.fetchall() or []:
+        for row in list_copilot_properties(cursor):
             addr = row.get("token_address")
             if not addr:
                 continue
@@ -2936,13 +2820,8 @@ async def _get_platform_stats(_args: dict, user: AuthUser, db: Any) -> ToolResul
     owner_wallet = user.wallet_address or ""
     try:
         if owner_scoped:
-            cursor.execute(
-                f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-                f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
-                (owner_wallet,),
-            )
             properties_active = len(
-                filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+                list_copilot_properties(cursor, owner_wallet=owner_wallet)
             )
             cursor.execute(
                 f"""
@@ -5294,31 +5173,20 @@ def _resolve_owned_property_from_items(
     items: list[dict], query: str
 ) -> tuple[dict | None, str | None]:
     """Fuzzy-match a spoken property name to a single owned listing."""
+    from backend.ai.property_name_resolution import resolve_property_query_from_items
+
     q = (query or "").strip()
     if not q:
         return None, "Property name is required."
     if not items:
         return None, "You have no dashboard-visible properties to edit."
 
-    ranked = sorted(
-        [(_property_match_score(q, p), p) for p in items],
-        key=lambda item: (item[0], int(item[1].get("id") or 0)),
-        reverse=True,
+    return resolve_property_query_from_items(
+        items,
+        q,
+        label="properties",
+        not_found_prefix="No property found matching",
     )
-    strong = [(score, prop) for score, prop in ranked if score >= 0.72]
-    if not strong:
-        best_score, _best = ranked[0]
-        if best_score < 0.58:
-            examples = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-            return None, (
-                f"No property found matching {q!r}. Try one of: {examples}."
-            )
-        options = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in ranked[:3])
-        return None, f"Please confirm which property you mean: {options}."
-    if len(strong) > 1 and (strong[0][0] - strong[1][0]) < 0.08:
-        names = ", ".join((p.get("name") or f"#{p.get('id')}") for _, p in strong[:3])
-        return None, f"Several properties match {q!r}: {names}. Which one do you mean?"
-    return strong[0][1], None
 
 
 def _resolve_owned_property_for_user(
@@ -5326,12 +5194,7 @@ def _resolve_owned_property_for_user(
 ) -> tuple[dict | None, str | None]:
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
-            f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
-            (user.wallet_address,),
-        )
-        rows = filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+        rows = list_copilot_properties(cursor, owner_wallet=user.wallet_address)
         items = [_serialize_property(r) for r in rows]
     finally:
         cursor.close()
@@ -5712,13 +5575,10 @@ def _invest_actions_on_submit(property_id: int, token_amount: str) -> list[Agent
 
 
 def _load_invest_property_row(db: Any, property_id: int) -> dict | None:
-    """Fresh property row with supply and sale price for invest funding checks."""
+    """Fresh dashboard-visible property row for invest funding checks."""
     cursor = db.cursor(dictionary=True)
     try:
-        row = lock_property(cursor, property_id)
-        if not row:
-            return None
-        return enrich_property_with_supply(cursor, row)
+        return fetch_copilot_property(cursor, property_id)
     finally:
         cursor.close()
 

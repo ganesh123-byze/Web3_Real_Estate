@@ -14,6 +14,8 @@ from backend.ai.copilot_property_scope import (
     count_dashboard_listable_active,
     fetch_active_property,
     filter_dashboard_listable_properties,
+    list_copilot_properties,
+    property_is_copilot_visible,
     property_unavailable_message,
     transaction_excludes_archived_property,
 )
@@ -92,6 +94,38 @@ def test_filter_dashboard_listable_excludes_incomplete_and_archived(monkeypatch)
     assert [r["name"] for r in visible] == ["Visible"]
 
 
+def test_property_is_copilot_visible_rejects_archived(monkeypatch):
+    monkeypatch.setattr(
+        "backend.ai.copilot_property_scope.property_is_dashboard_listable",
+        lambda _item: True,
+    )
+    assert property_is_copilot_visible(_row(pid=1, name="Live", is_active=True)) is True
+    assert property_is_copilot_visible(_row(pid=2, name="Archived", is_active=False)) is False
+
+
+def test_list_copilot_properties_excludes_archived(monkeypatch):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        _row(pid=1, name="Visible"),
+        _row(pid=2, name="Archived", is_active=False),
+    ]
+
+    monkeypatch.setattr(
+        "backend.ai.copilot_property_scope.enrich_property_with_supply",
+        lambda _cursor, item: dict(item),
+    )
+    monkeypatch.setattr(
+        "backend.ai.copilot_property_scope.property_is_dashboard_listable",
+        lambda item: bool(item.get("is_active", True))
+        and bool(str(item.get("token_address") or "").strip()),
+    )
+
+    rows = list_copilot_properties(cursor)
+    assert [r["name"] for r in rows] == ["Visible"]
+    sql = cursor.execute.call_args[0][0]
+    assert ACTIVE_PROPERTY_SQL in sql
+
+
 def test_fetch_active_property_returns_none_for_non_listable(monkeypatch):
     cursor = MagicMock()
     cursor.fetchone.return_value = _row(pid=9, name="Draft", token_address="")
@@ -123,15 +157,24 @@ def test_fetch_active_property_returns_enriched_when_listable(monkeypatch):
     assert row["enriched"] is True
 
 
-def test_list_properties_sql_filters_active():
+def test_list_properties_delegates_to_copilot_scope(monkeypatch):
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.ai.tools.list_copilot_properties",
+        lambda _cursor, owner_wallet=None: [],
+    )
+    assert _list_properties(cursor) == []
+
+
+def test_list_copilot_properties_sql_filters_active():
     cursor = MagicMock()
     cursor.fetchall.return_value = []
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            "backend.ai.tools.filter_dashboard_listable_properties",
+            "backend.ai.copilot_property_scope.filter_dashboard_listable_properties",
             lambda _c, rows: rows,
         )
-        assert _list_properties(cursor) == []
+        assert list_copilot_properties(cursor) == []
     sql = cursor.execute.call_args[0][0]
     assert ACTIVE_PROPERTY_SQL in sql
 
