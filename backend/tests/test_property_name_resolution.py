@@ -25,3 +25,24 @@ def test_resolve_prefers_exact_property_name():
     )
     assert err is None
     assert prop and int(prop["id"]) == 1
+
+
+def test_resolve_exact_title_beats_token_symbol_collision():
+    """Another listing's token symbol must not block an exact title match."""
+    items = [
+        {"id": 1, "name": "Brightcone", "token_symbol": "BC"},
+        {
+            "id": 2,
+            "name": "Golden Heist Villa",
+            "location": "Brightcone Hills",
+            "token_symbol": "Brightcone",
+        },
+    ]
+    prop, err = resolve_property_query_from_items(
+        items,
+        "Brightcone",
+        label="investable properties",
+        not_found_prefix="No investable property found matching",
+    )
+    assert err is None
+    assert prop and int(prop["id"]) == 1

@@ -210,6 +210,60 @@ def test_full_invest_flow_through_metamask_submit():
         reset_current_thread_id(token)
 
 
+def test_brightcone_resolves_after_symbol_collision_not_repeat_ambiguity():
+    token = set_current_thread_id("test:flow:brightcone-exact")
+    prop = {
+        "id": 1,
+        "name": "Brightcone",
+        "location": "Mumbai",
+        "token_symbol": "BC",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "1",
+        "monthly_rent_eth": "0.5",
+        "sold_percentage": "0",
+        "token_supply": "500",
+    }
+    other = {
+        "id": 2,
+        "name": "Golden Heist Villa",
+        "location": "Brightcone Hills",
+        "token_symbol": "Brightcone",
+        "token_address": "0xdef",
+        "tokens_available": "100",
+        "token_sale_price_eth": "1",
+        "monthly_rent_eth": "0.5",
+        "sold_percentage": "0",
+        "token_supply": "500",
+    }
+    msg_token = set_current_messages(
+        [
+            {"type": "human", "content": "I want to invest"},
+            {"type": "ai", "content": INVEST_PROPERTY_ASK},
+            {"type": "human", "content": "Brightcone"},
+        ]
+    )
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        with patch(
+            "backend.ai.tools._list_investable_properties",
+            return_value=[prop, other],
+        ), patch("backend.ai.tools._load_invest_property_row", return_value=prop):
+            result = asyncio.run(
+                try_server_invest_property_turn(_investor(), MagicMock())
+            )
+        assert result is not None
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "Several investable properties match" not in speak
+        assert INVEST_TOKEN_ASK in speak
+        assert "Brightcone" in speak
+        assert result.data.get("next_field") == "token_amount"
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
+
+
 def test_marketplace_catalog_then_hash_id_resolves_property():
     token = set_current_thread_id("test:flow:marketplace-hash-id")
     catalog = format_investor_marketplace_catalog_speak(
