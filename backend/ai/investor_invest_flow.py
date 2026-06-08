@@ -30,6 +30,19 @@ INVEST_PROPERTY_ASK = (
 )
 INVEST_TOKEN_ASK = "How many tokens would you like to buy?"
 
+def is_property_disambiguation_error(message: str | None) -> bool:
+    """True when property resolution needs the user to pick among named listings."""
+    text = (message or "").strip().lower()
+    return (
+        "which one do you mean" in text
+        or "confirm which property you mean" in text
+    )
+
+
+def disambiguation_candidate_ids(candidates: list[dict[str, Any]]) -> list[int]:
+    return [int(prop["id"]) for prop in candidates if prop.get("id") is not None]
+
+
 INVEST_PROPERTY_SELECTION_MARKERS = (
     "which property would you like to invest in",
     "you can say the property name or #id",

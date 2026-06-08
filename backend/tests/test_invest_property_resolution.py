@@ -51,6 +51,21 @@ def test_resolution_picks_exact_name_over_location_substring_collision():
     assert prop and int(prop["id"]) == 1
 
 
+def test_resolution_exact_brightcone_beats_symbol_collision():
+    items = [
+        _prop(1, "Brightcone", token_symbol="BC"),
+        _prop(
+            2,
+            "Golden Heist Villa",
+            location="Brightcone Hills",
+            token_symbol="Brightcone",
+        ),
+    ]
+    prop, err = _resolve_investable_property_from_items(items, "Brightcone")
+    assert err is None
+    assert prop and int(prop["id"]) == 1
+
+
 def test_resolution_ignores_non_investable_properties():
     items = [
         _prop(1, "Green Park", token_address="", tokens_available="0"),

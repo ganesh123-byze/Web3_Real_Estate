@@ -5518,14 +5518,27 @@ def _validate_property_investable(prop: dict) -> str | None:
     return None
 
 
-def _resolve_property_by_name(db: Any, name: str) -> tuple[dict | None, str | None]:
-    """Fuzzy-match a spoken property name to a single investable listing."""
-    query = (name or "").strip()
+def _list_investable_properties(db: Any) -> list[dict]:
     cursor = db.cursor(dictionary=True)
     try:
         items = _list_properties(cursor)
     finally:
         cursor.close()
+    return [prop for prop in items if _validate_property_investable(prop) is None]
+
+
+def _resolve_property_by_name(
+    db: Any,
+    name: str,
+    *,
+    candidate_ids: list[int] | None = None,
+) -> tuple[dict | None, str | None]:
+    """Fuzzy-match a spoken property name to a single investable listing."""
+    query = (name or "").strip()
+    items = _list_investable_properties(db)
+    if candidate_ids:
+        allowed = {int(pid) for pid in candidate_ids}
+        items = [prop for prop in items if int(prop.get("id") or 0) in allowed]
     return _resolve_investable_property_from_items(items, query)
 
 
@@ -5963,9 +5976,40 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     resolved_name: str | None = None
     resolved_prop: dict | None = None
     if accumulated.get("property_name"):
-        prop, err = _resolve_property_by_name(db, accumulated["property_name"])
+        from backend.ai.investor_invest_flow import (
+            disambiguation_candidate_ids,
+            is_property_disambiguation_error,
+        )
+        from backend.ai.property_name_resolution import (
+            list_disambiguation_candidate_properties,
+        )
+
+        property_query = str(accumulated["property_name"])
+        prior_candidates = prior_session.get("disambiguation_candidate_ids")
+        prop, err = _resolve_property_by_name(
+            db,
+            property_query,
+            candidate_ids=prior_candidates,
+        )
         if err:
             missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
+            session_payload: dict[str, Any] = {
+                "in_progress": True,
+                "filled": accumulated,
+                "next_field": "property_name",
+                "submitted": False,
+                "completing_submit": False,
+            }
+            if is_property_disambiguation_error(err):
+                candidates = list_disambiguation_candidate_properties(
+                    _list_investable_properties(db),
+                    property_query,
+                )
+                if candidates:
+                    session_payload["disambiguation_candidate_ids"] = (
+                        disambiguation_candidate_ids(candidates)
+                    )
+            _set_workflow_session(modal, session_payload)
             return ToolResult(
                 ok=False,
                 error=err,

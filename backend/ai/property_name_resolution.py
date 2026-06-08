@@ -77,6 +77,42 @@ def _format_property_options(items: list[tuple[float, dict]], limit: int = 3) ->
     return ", ".join((prop.get("name") or f"#{prop.get('id')}") for _, prop in items[:limit])
 
 
+def find_unique_exact_property_name_match(
+    items: list[dict],
+    query: str,
+) -> dict | None:
+    """Return the sole listing whose title equals the spoken query (normalized)."""
+    query_norm = normalize_match_text(query)
+    if not query_norm:
+        return None
+    matches = [
+        prop
+        for prop in items
+        if normalize_match_text(prop.get("name")) == query_norm
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def pick_exact_name_from_ranked_ties(
+    strong: list[tuple[float, dict]],
+    query: str,
+) -> dict | None:
+    """When several listings tie, prefer an exact title match over symbol/location hits."""
+    query_norm = normalize_match_text(query)
+    if not query_norm:
+        return None
+    name_matches = [
+        prop
+        for _score, prop in strong
+        if normalize_match_text(prop.get("name")) == query_norm
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    return None
+
+
 def pick_unique_property_from_ranked(
     ranked: list[tuple[float, dict]],
     query: str,
@@ -97,10 +133,52 @@ def pick_unique_property_from_ranked(
         return None, f"Please confirm which property you mean: {options}."
 
     if len(strong) > 1 and (strong[0][0] - strong[1][0]) < AMBIGUITY_SCORE_GAP:
+        exact_name = pick_exact_name_from_ranked_ties(strong, query)
+        if exact_name is not None:
+            return exact_name, None
         names = _format_property_options(strong)
         return None, f"Several {label} match {query!r}: {names}. Which one do you mean?"
 
     return strong[0][1], None
+
+
+def list_disambiguation_candidate_properties(
+    items: list[dict],
+    query: str,
+) -> list[dict]:
+    """Listings the user may mean when resolution is ambiguous for ``query``."""
+    q = (query or "").strip()
+    if not q or not items:
+        return []
+
+    exact_name = find_unique_exact_property_name_match(items, q)
+    if exact_name is not None:
+        return [exact_name]
+
+    identity_ranked = rank_properties_by_score(q, items, property_identity_match_score)
+    strong = [(score, prop) for score, prop in identity_ranked if score >= STRONG_MATCH_THRESHOLD]
+    if len(strong) > 1 and (strong[0][0] - strong[1][0]) < AMBIGUITY_SCORE_GAP:
+        exact_name = pick_exact_name_from_ranked_ties(strong, q)
+        if exact_name is not None:
+            return [exact_name]
+        return [prop for _score, prop in strong[:3]]
+
+    top_identity_score = identity_ranked[0][0] if identity_ranked else 0.0
+    if top_identity_score < STRONG_MATCH_THRESHOLD:
+        broad_ranked = rank_properties_by_score(q, items, property_broad_match_score)
+        broad_strong = [
+            (score, prop) for score, prop in broad_ranked if score >= STRONG_MATCH_THRESHOLD
+        ]
+        if (
+            len(broad_strong) > 1
+            and (broad_strong[0][0] - broad_strong[1][0]) < AMBIGUITY_SCORE_GAP
+        ):
+            exact_name = pick_exact_name_from_ranked_ties(broad_strong, q)
+            if exact_name is not None:
+                return [exact_name]
+            return [prop for _score, prop in broad_strong[:3]]
+
+    return []
 
 
 def resolve_property_query_from_items(
@@ -117,6 +195,10 @@ def resolve_property_query_from_items(
         return None, "Property name is required."
     if not items:
         return None, f"No {label} are available right now."
+
+    exact_name = find_unique_exact_property_name_match(items, q)
+    if exact_name is not None:
+        return exact_name, None
 
     identity_ranked = rank_properties_by_score(q, items, property_identity_match_score)
     identity_result = pick_unique_property_from_ranked(
