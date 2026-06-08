@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from backend.ai.investor_guards import (
+    assistant_prompted_for_invest_property_selection,
     extract_invest_property_hint_from_utterance,
     extract_last_human_utterance,
     invest_utterance_has_negative_token_amount,
@@ -12,6 +13,7 @@ from backend.ai.investor_guards import (
     has_explicit_invest_intent,
     has_investor_portfolio_intent,
     has_marketplace_browse_intent,
+    is_invest_property_follow_up_turn,
     invest_invalid_token_amount_message,
     invest_token_amount_field_is_valid,
     invest_turn_attempts_decimal_token_amount,
@@ -24,6 +26,7 @@ from backend.ai.investor_guards import (
     should_clear_stale_invest_token_amount,
     wants_to_begin_invest_workflow,
 )
+from backend.ai.investor_marketplace import format_investor_marketplace_catalog_speak
 from backend.ai.tools import (
     _clear_workflow_session,
     _fill_invest_property,
@@ -621,6 +624,119 @@ def test_preflight_insufficient_funds_verbatim_message():
 def test_marketplace_browse_not_triggered_for_explicit_invest():
     utterance = "Invest 10 tokens into Oceanview Apartments"
     assert has_marketplace_browse_intent(utterance) is False
+
+
+def test_assistant_prompted_for_invest_property_selection_after_marketplace():
+    catalog = format_investor_marketplace_catalog_speak(
+        [
+            {
+                "id": 7,
+                "name": "Gold Plaza",
+                "location": "Hyderabad",
+                "tokens_available": "100",
+                "token_sale_price_eth": "1",
+                "monthly_rent_eth": "0.5",
+                "sold_percentage": "0",
+                "token_supply": "500",
+            }
+        ],
+        total_listed=1,
+    )
+    assert assistant_prompted_for_invest_property_selection(
+        [{"role": "assistant", "content": catalog}]
+    )
+    assert assistant_prompted_for_invest_property_selection(
+        [{"role": "assistant", "content": "Which property would you like to invest in?"}]
+    )
+    assert not assistant_prompted_for_invest_property_selection(
+        [{"role": "assistant", "content": "Your portfolio is empty."}]
+    )
+
+
+def test_property_name_only_after_marketplace_is_invest_follow_up():
+    catalog = format_investor_marketplace_catalog_speak(
+        [
+            {
+                "id": 7,
+                "name": "Gold Plaza",
+                "location": "Hyderabad",
+                "tokens_available": "100",
+                "token_sale_price_eth": "1",
+                "monthly_rent_eth": "0.5",
+                "sold_percentage": "0",
+                "token_supply": "500",
+            }
+        ],
+        total_listed=1,
+    )
+    history = [
+        {"type": "human", "content": "Browse marketplace"},
+        {"type": "ai", "content": catalog},
+        {"type": "human", "content": "Gold Plaza"},
+    ]
+    assert has_explicit_invest_intent("Gold Plaza") is False
+    assert is_invest_property_follow_up_turn("Gold Plaza", history) is True
+    assert is_invest_property_follow_up_turn("#7", history) is True
+    assert is_invest_property_follow_up_turn("Show my portfolio", history) is False
+
+
+def test_marketplace_then_property_name_starts_invest_workflow():
+    token = set_current_thread_id("test:invest-marketplace-follow-up")
+    catalog = format_investor_marketplace_catalog_speak(
+        [
+            {
+                "id": 5,
+                "name": "Gold Plaza",
+                "location": "Hyderabad",
+                "token_symbol": "GP",
+                "tokens_available": "100",
+                "token_sale_price_eth": "1",
+                "monthly_rent_eth": "0.5",
+                "sold_percentage": "0",
+                "token_supply": "500",
+            }
+        ],
+        total_listed=1,
+    )
+    prop = {
+        "id": 5,
+        "name": "Gold Plaza",
+        "location": "Hyderabad",
+        "token_symbol": "GP",
+        "token_address": "0xabc",
+        "tokens_available": "100",
+        "token_sale_price_eth": "1",
+        "monthly_rent_eth": "0.5",
+        "sold_percentage": "0",
+        "token_supply": "500",
+    }
+    msg_token = set_current_messages(
+        [
+            {"type": "human", "content": "Browse marketplace"},
+            {"type": "ai", "content": catalog},
+            {"type": "human", "content": "Gold Plaza"},
+        ]
+    )
+    try:
+        _clear_workflow_session("INVEST_PROPERTY")
+        with patch(
+            "backend.ai.tools._resolve_property_by_name",
+            return_value=(prop, None),
+        ), patch("backend.ai.tools._load_invest_property_row", return_value=prop):
+            result = asyncio.run(
+                try_server_invest_property_turn(_investor(), MagicMock())
+            )
+        assert result is not None
+        speak = str(result.data.get("speak_to_user") or "")
+        assert "How many tokens" in speak
+        assert "Gold Plaza" in speak
+        assert result.data.get("next_field") == "token_amount"
+        assert result.data.get("invest_property_target") is True
+        assert "Here are the properties open for investment" not in speak
+    finally:
+        _clear_workflow_session("INVEST_PROPERTY")
+        reset_current_messages(msg_token)
+        reset_current_thread_id(token)
 
 
 def test_format_invest_target_is_single_property_not_catalog():

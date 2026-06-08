@@ -86,6 +86,7 @@ from backend.ai.investor_guards import (
     has_explicit_claim_intent,
     has_investor_portfolio_intent,
     has_explicit_invest_intent,
+    is_invest_property_follow_up_turn,
     has_marketplace_browse_intent,
     invest_classify_invalid_token_amount_turn,
     invest_invalid_token_amount_message,
@@ -1110,9 +1111,9 @@ def _enrich_invest_preflight_result(
         if row:
             amount_hint = parsed.get("token_amount") or data.get("token_amount")
             summary = format_invest_target_property_speak(row, token_amount=amount_hint)
-            data["speak_to_user"] = (
-                f"{summary}\n\nHow many tokens would you like to buy?"
-            )
+            from backend.ai.investor_invest_flow import INVEST_TOKEN_ASK
+
+            data["speak_to_user"] = f"{summary}\n\n{INVEST_TOKEN_ASK}"
             data["speak_verbatim"] = True
             data["instruction"] = (
                 "Read speak_to_user verbatim. This is the single property the investor "
@@ -1126,6 +1127,35 @@ def _enrich_invest_preflight_result(
                 token_amount=parsed.get("token_amount"),
             )
 
+    if result.ok and not str(data.get("speak_to_user") or "").strip():
+        next_field = data.get("next_field")
+        from backend.ai.investor_invest_flow import INVEST_PROPERTY_ASK, INVEST_TOKEN_ASK
+
+        if next_field == "property_name":
+            data["speak_to_user"] = INVEST_PROPERTY_ASK
+            data["speak_verbatim"] = True
+        elif next_field == "token_amount" and property_id:
+            row = _load_invest_property_row(db, int(property_id)) if db is not None else None
+            if row:
+                data["speak_to_user"] = (
+                    f"{format_invest_target_property_speak(row)}\n\n{INVEST_TOKEN_ASK}"
+                )
+                data["speak_verbatim"] = True
+        elif data.get("awaiting_invest_confirmation"):
+            pid = data.get("property_id") or property_id
+            row = (
+                _load_invest_property_row(db, int(pid))
+                if db is not None and pid
+                else None
+            )
+            if row:
+                data["speak_to_user"] = format_invest_confirmation_summary(
+                    row,
+                    data.get("filled", {}).get("token_amount")
+                    or data.get("token_amount"),
+                )
+                data["speak_verbatim"] = True
+
     return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
 
 
@@ -1133,81 +1163,24 @@ async def try_server_invest_property_turn(
     user: AuthUser, db: Any
 ) -> ToolResult | None:
     """Resolve explicit invest orders server-side so the LLM cannot dump the full catalog."""
+    from backend.ai.investor_invest_flow import run_invest_property_preflight
+
     if canonical_role(user.role) != "investor":
         return None
 
     utterance = _latest_human_utterance().strip()
-    if not utterance:
-        return None
-    if abort_invest_workflow_if_interrupted(utterance):
-        return None
-    if has_marketplace_browse_intent(utterance):
-        return None
-    if has_investor_portfolio_intent(utterance):
-        return None
-    if has_investor_wallet_affordability_intent(utterance):
-        return None
-    if investor_turn_interrupts_workflow(
-        utterance, quick_action_id=_latest_human_quick_action_id()
-    ):
-        return None
-
-    session = _get_workflow_session(_INVEST_MODAL)
-    active = invest_workflow_active(session)
-    awaiting_confirm = bool(session.get("awaiting_invest_confirmation"))
-    if not active and not awaiting_confirm and not has_explicit_invest_intent(utterance):
-        return None
-
-    if awaiting_confirm:
-        yn = parse_yes_no_confirmation(utterance)
-        fill_args: dict[str, Any] = {}
-        if yn is True:
-            fill_args["confirm_invest"] = True
-        elif yn is False:
-            fill_args["confirm_invest"] = False
-        result = await _fill_invest_property(fill_args, user, db)
-        return _enrich_invest_preflight_result(result, db, parsed={})
-
-    quick_action_id = _latest_human_quick_action_id()
-    names_property = invest_utterance_names_property(
-        utterance, quick_action_id=quick_action_id
+    return await run_invest_property_preflight(
+        user,
+        db,
+        utterance=utterance,
+        quick_action_id=_latest_human_quick_action_id(),
+        history=_current_history(),
+        session=_get_workflow_session(_INVEST_MODAL),
+        abort_invest_workflow=abort_invest_workflow_if_interrupted,
+        ensure_invest_session=lambda: _ensure_invest_session_started({}, user, db),
+        fill_invest_property=_fill_invest_property,
+        enrich_invest_result=_enrich_invest_preflight_result,
     )
-
-    if (
-        not active
-        and not awaiting_confirm
-        and invest_turn_attempts_decimal_token_amount(utterance)
-    ):
-        if not names_property:
-            started = await _start_invest_property({}, user, db)
-            return _enrich_invest_preflight_result(started, db, parsed={})
-        await _start_invest_property({}, user, db)
-        parsed = parse_invest_order_from_utterance(utterance)
-        fill_args = {
-            k: str(v) for k, v in parsed.items() if v not in (None, "")
-        }
-        result = await _fill_invest_property(fill_args, user, db)
-        return _enrich_invest_preflight_result(result, db, parsed=parsed)
-
-    if not names_property and (
-        has_explicit_invest_intent(utterance) or wants_to_begin_invest_workflow(utterance)
-    ) and not active:
-        started = await _start_invest_property({}, user, db)
-        return _enrich_invest_preflight_result(started, db, parsed={})
-
-    parsed = parse_invest_order_from_utterance(utterance)
-    fill_args: dict[str, Any] = {
-        k: str(v) for k, v in parsed.items() if v not in (None, "")
-    }
-
-    if not names_property and not active:
-        return None
-
-    if not active and names_property:
-        await _start_invest_property({}, user, db)
-
-    result = await _fill_invest_property(fill_args, user, db)
-    return _enrich_invest_preflight_result(result, db, parsed=parsed)
 
 
 def _enrich_pay_rent_preflight_result(result: ToolResult) -> ToolResult:
@@ -5545,14 +5518,27 @@ def _validate_property_investable(prop: dict) -> str | None:
     return None
 
 
-def _resolve_property_by_name(db: Any, name: str) -> tuple[dict | None, str | None]:
-    """Fuzzy-match a spoken property name to a single investable listing."""
-    query = (name or "").strip()
+def _list_investable_properties(db: Any) -> list[dict]:
     cursor = db.cursor(dictionary=True)
     try:
         items = _list_properties(cursor)
     finally:
         cursor.close()
+    return [prop for prop in items if _validate_property_investable(prop) is None]
+
+
+def _resolve_property_by_name(
+    db: Any,
+    name: str,
+    *,
+    candidate_ids: list[int] | None = None,
+) -> tuple[dict | None, str | None]:
+    """Fuzzy-match a spoken property name to a single investable listing."""
+    query = (name or "").strip()
+    items = _list_investable_properties(db)
+    if candidate_ids:
+        allowed = {int(pid) for pid in candidate_ids}
+        items = [prop for prop in items if int(prop.get("id") or 0) in allowed]
     return _resolve_investable_property_from_items(items, query)
 
 
@@ -5773,19 +5759,16 @@ def _invest_replay_confirmation(
     )
 
 
-async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
-    """Begin guided invest: ask property name first, then token amount."""
-    user_text = extract_last_human_utterance(_current_history())
-    if not (has_explicit_invest_intent(user_text) or wants_to_begin_invest_workflow(user_text)):
-        return ToolResult(
-            ok=False,
-            error=invest_tool_blocked_message(),
-            data={"blocked_wallet_ui": True, "modal": _INVEST_MODAL},
-        )
+def _open_invest_workflow_session(*, reset_unless_partial: bool = True) -> ToolResult:
+    """Initialize guided-invest session state and return the property-name prompt."""
+    from backend.ai.investor_invest_flow import (
+        invest_property_ask_instruction,
+        invest_property_ask_speak,
+    )
 
     modal = _INVEST_MODAL
     session = _get_workflow_session(modal)
-    if session.get("submitted") or not session.get("filled"):
+    if reset_unless_partial and (session.get("submitted") or not session.get("filled")):
         _clear_workflow_session(modal)
         session = {}
     filled = dict(session.get("filled") or {})
@@ -5801,22 +5784,6 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
             "completing_submit": False,
         },
     )
-    speak = (
-        f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
-        f"What is the {next_field.replace('_', ' ')}?"
-        if filled
-        else "Which property would you like to invest in?"
-    )
-    instruction = (
-        f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
-        f"Ask for {next_field} only — do NOT re-ask fields already in filled. "
-        "Do NOT list every marketplace property."
-        if filled
-        else (
-            "Read speak_to_user verbatim. Ask only for the property name — "
-            "do NOT ask for token count yet and do NOT read the full marketplace catalog."
-        )
-    )
     return ToolResult(
         ok=True,
         data={
@@ -5824,13 +5791,64 @@ async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> Tool
             "filled": filled,
             "missing": missing,
             "next_field": next_field,
-            "speak_to_user": speak,
+            "speak_to_user": invest_property_ask_speak(filled=filled or None),
             "speak_verbatim": True,
             "invest_property_target": True,
-            "instruction": instruction,
+            "instruction": invest_property_ask_instruction(filled=filled or None),
         },
         actions=[],
     )
+
+
+async def _ensure_invest_session_started(
+    _args: dict, _user: AuthUser, _db: Any
+) -> ToolResult:
+    """Open or resume guided invest for server preflight (property follow-ups allowed)."""
+    from backend.ai.investor_invest_flow import may_start_invest_workflow
+
+    utterance = extract_last_human_utterance(_current_history())
+    history = _current_history()
+    session = _get_workflow_session(_INVEST_MODAL)
+    follow_up = is_invest_property_follow_up_turn(
+        utterance,
+        history,
+        quick_action_id=_latest_human_quick_action_id(),
+    )
+    if not may_start_invest_workflow(
+        utterance,
+        history,
+        session,
+        follow_up=follow_up,
+        quick_action_id=_latest_human_quick_action_id(),
+    ):
+        return ToolResult(
+            ok=False,
+            error=invest_tool_blocked_message(),
+            data={"blocked_wallet_ui": True, "modal": _INVEST_MODAL},
+        )
+    if invest_workflow_active(session):
+        return ToolResult(
+            ok=True,
+            data={
+                "resumed": True,
+                "filled": dict(session.get("filled") or {}),
+                "next_field": session.get("next_field"),
+                "invest_property_target": True,
+            },
+        )
+    return _open_invest_workflow_session()
+
+
+async def _start_invest_property(_args: dict, _user: AuthUser, _db: Any) -> ToolResult:
+    """Begin guided invest: ask property name or #id first, then token amount."""
+    user_text = extract_last_human_utterance(_current_history())
+    if not (has_explicit_invest_intent(user_text) or wants_to_begin_invest_workflow(user_text)):
+        return ToolResult(
+            ok=False,
+            error=invest_tool_blocked_message(),
+            data={"blocked_wallet_ui": True, "modal": _INVEST_MODAL},
+        )
+    return _open_invest_workflow_session()
 
 
 register(ToolSpec(
@@ -5958,9 +5976,40 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     resolved_name: str | None = None
     resolved_prop: dict | None = None
     if accumulated.get("property_name"):
-        prop, err = _resolve_property_by_name(db, accumulated["property_name"])
+        from backend.ai.investor_invest_flow import (
+            disambiguation_candidate_ids,
+            is_property_disambiguation_error,
+        )
+        from backend.ai.property_name_resolution import (
+            list_disambiguation_candidate_properties,
+        )
+
+        property_query = str(accumulated["property_name"])
+        prior_candidates = prior_session.get("disambiguation_candidate_ids")
+        prop, err = _resolve_property_by_name(
+            db,
+            property_query,
+            candidate_ids=prior_candidates,
+        )
         if err:
             missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
+            session_payload: dict[str, Any] = {
+                "in_progress": True,
+                "filled": accumulated,
+                "next_field": "property_name",
+                "submitted": False,
+                "completing_submit": False,
+            }
+            if is_property_disambiguation_error(err):
+                candidates = list_disambiguation_candidate_properties(
+                    _list_investable_properties(db),
+                    property_query,
+                )
+                if candidates:
+                    session_payload["disambiguation_candidate_ids"] = (
+                        disambiguation_candidate_ids(candidates)
+                    )
+            _set_workflow_session(modal, session_payload)
             return ToolResult(
                 ok=False,
                 error=err,
@@ -6136,9 +6185,10 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         and next_field == "token_amount"
         and not explicit_token_this_turn
     ):
+        from backend.ai.investor_invest_flow import INVEST_TOKEN_ASK
+
         out_data["speak_to_user"] = (
-            f"{format_invest_target_property_speak(resolved_prop)}\n\n"
-            "How many tokens would you like to buy?"
+            f"{format_invest_target_property_speak(resolved_prop)}\n\n{INVEST_TOKEN_ASK}"
         )
         out_data["speak_verbatim"] = True
         out_data["instruction"] = (
