@@ -72,6 +72,18 @@ export function formatEthText(text: string): string {
   });
 }
 
+export function formatAmountWithUnit(
+  value: string | number | null | undefined,
+  unit: string | null | undefined,
+): string {
+  const normalizedUnit = String(unit ?? "").trim();
+  if (/^eth$/i.test(normalizedUnit)) {
+    return formatEth(value);
+  }
+  const normalizedValue = value ?? "0";
+  return normalizedUnit ? `${normalizedValue} ${normalizedUnit}` : String(normalizedValue);
+}
+
 export function percent(numerator: number | string | null | undefined, denominator: number | string | null | undefined, digits = 1): number {
   const n = Number(numerator ?? 0);
   const d = Number(denominator ?? 0);

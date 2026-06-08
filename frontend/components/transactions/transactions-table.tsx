@@ -38,7 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import { cn, formatDateTime, formatEth, shortAddress } from "@/lib/utils";
+import { cn, formatAmountWithUnit, formatDateTime, formatEth, shortAddress } from "@/lib/utils";
 import type { Transaction } from "@/lib/types";
 
 const PAGE_SIZE = 12;
@@ -260,8 +260,9 @@ export function TransactionsTable({
                     {walletLabel}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    <span className="text-sm font-medium">{t.display_amount}</span>
-                    <span className="ml-1 text-sm text-muted-foreground">{t.amount_unit}</span>
+                    <span className="text-sm font-medium">
+                      {formatAmountWithUnit(t.display_amount, t.amount_unit)}
+                    </span>
                   </TableCell>
                   <TableCell>{statusBadge(t.status)}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{formatDateTime(t.timestamp)}</TableCell>
@@ -395,7 +396,7 @@ function TransactionDialog({ tx, onClose }: { tx: Transaction | null; onClose: (
         </DialogHeader>
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-          <DetailField label="Amount" value={`${tx.display_amount} ${tx.amount_unit}`} />
+          <DetailField label="Amount" value={formatAmountWithUnit(tx.display_amount, tx.amount_unit)} />
           <DetailField
             label="Property"
             value={tx.property_name || (tx.property_id ? `#${tx.property_id}` : "—")}
@@ -407,7 +408,7 @@ function TransactionDialog({ tx, onClose }: { tx: Transaction | null; onClose: (
           />
           <DetailField label="Block" value={tx.block_number ?? "—"} />
           <DetailField label="Date" value={formatDateTime(tx.timestamp)} />
-          {tx.gas_fee ? <DetailField label="Gas Fee" value={formatEth(tx.gas_fee)} /> : null}
+          {tx.gas_fee ? <DetailField label="Gas Fee" value={formatEth(tx.gas_fee, { fromWei: true, digits: 3 })} /> : null}
           {tx.amount_spent ? <DetailField label="Amount Spent" value={formatEth(tx.amount_spent)} /> : null}
           {tx.remaining_balance ? (
             <DetailField label="Remaining Balance" value={formatEth(tx.remaining_balance)} />

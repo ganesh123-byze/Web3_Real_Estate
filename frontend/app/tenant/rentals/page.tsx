@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Building2, CheckCircle2, CreditCard, MapPin, Receipt, Search, ShieldCheck, Wallet } from "lucide-react";
+import { CheckCircle2, CreditCard, MapPin, Receipt, Search, ShieldCheck, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatWalletTransactionError } from "@/lib/wallet-errors";
 import { queryKeys, useTenantActiveRentals, useTenantProperties } from "@/lib/queries";
@@ -205,43 +205,47 @@ function RentalCard({
               {isActiveRental ? "Renting" : rentReady ? "Rent ready" : "Rent not set"}
             </Badge>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Fact label="Monthly Rent" value={monthlyRent > 0 ? formatEth(monthlyRent) : "Not set"} />
-            <Fact label="Property Value" value={formatCurrency(property.total_value)} />
-            <Fact label="Supply" value={formatNumber(supply)} />
-            <Fact label="Ownership Sold" value={`${soldPct.toFixed(1)}%`} />
-          </div>
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Token Sale Progress</span>
-              <span className="font-medium tabular-nums">{formatNumber(sold)} / {formatNumber(supply)}</span>
-            </div>
-            <Progress value={soldPct} className="h-1.5" />
-          </div>
-          <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-            <div className="min-w-0 text-[11px] text-muted-foreground font-mono">{shortAddress(property.token_address, 6, 4)}</div>
-            <Button
-              size="sm"
-              variant={property.can_pay_rent === false ? "secondary" : "default"}
-              disabled={!wallet || !property.rent_enabled || property.can_pay_rent === false}
-              onClick={(event) => {
-                event.stopPropagation();
-                setOpen(true);
-              }}
-            >
-              {property.can_pay_rent === false ? (
-                <>
-                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                  {property.rent_claimed_by_other_tenant ? "Occupied" : "Paid ✔"}
-                </>
-              ) : (
-                <>
-                  <Receipt className="mr-1 h-3.5 w-3.5" />
-                  Rent Now
-                </>
-              )}
-            </Button>
-          </div>
+          {!isActiveRental ? (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <Fact label="Monthly Rent" value={monthlyRent > 0 ? formatEth(monthlyRent) : "Not set"} />
+                <Fact label="Property Value" value={formatCurrency(property.total_value)} />
+                <Fact label="Supply" value={formatNumber(supply)} />
+                <Fact label="Ownership Sold" value={`${soldPct.toFixed(1)}%`} />
+              </div>
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Token Sale Progress</span>
+                  <span className="font-medium tabular-nums">{formatNumber(sold)} / {formatNumber(supply)}</span>
+                </div>
+                <Progress value={soldPct} className="h-1.5" />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+                <div className="min-w-0 text-[11px] text-muted-foreground font-mono">{shortAddress(property.token_address, 6, 4)}</div>
+                <Button
+                  size="sm"
+                  variant={property.can_pay_rent === false ? "secondary" : "default"}
+                  disabled={!wallet || !property.rent_enabled || property.can_pay_rent === false}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(true);
+                  }}
+                >
+                  {property.can_pay_rent === false ? (
+                    <>
+                      <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                      {property.rent_claimed_by_other_tenant ? "Occupied" : "Paid ✔"}
+                    </>
+                  ) : (
+                    <>
+                      <Receipt className="mr-1 h-3.5 w-3.5" />
+                      Rent Now
+                    </>
+                  )}
+                </Button>
+              </div>
+            </>
+          ) : null}
           {property.can_pay_rent === false ? (
             <div className="rounded-md border border-success/25 bg-success/5 px-3 py-2 text-xs font-medium text-success">
               {property.rent_claimed_by_other_tenant
