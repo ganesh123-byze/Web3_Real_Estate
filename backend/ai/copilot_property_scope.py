@@ -24,14 +24,47 @@ def transaction_excludes_archived_property(alias: str = "p", tx_alias: str = "t"
     return f"AND ({tx_alias}.property_id IS NULL OR {alias}.id IS NOT NULL)"
 
 
+def property_is_copilot_visible(property_item: dict) -> bool:
+    """Active (not archived) and matches dashboard listing rules — same as the UI."""
+    if not property_item:
+        return False
+    if not bool(property_item.get("is_active", True)):
+        return False
+    return property_is_dashboard_listable(property_item)
+
+
 def filter_dashboard_listable_properties(cursor, rows: list[dict]) -> list[dict]:
     """Match admin/investor UI: active, token deployed, sale inventory finalized."""
     listable: list[dict] = []
     for row in rows or []:
         enriched = enrich_property_with_supply(cursor, row)
-        if property_is_dashboard_listable(enriched):
+        if property_is_copilot_visible(enriched):
             listable.append(enriched)
     return listable
+
+
+def list_copilot_properties(
+    cursor,
+    *,
+    owner_wallet: str | None = None,
+) -> list[dict]:
+    """Dashboard-visible properties for copilot tools (excludes archived/incomplete)."""
+    if owner_wallet:
+        cursor.execute(
+            f"SELECT * FROM properties WHERE LOWER(owner_wallet) = LOWER(%s) "
+            f"AND {ACTIVE_PROPERTY_SQL} ORDER BY id DESC",
+            (owner_wallet,),
+        )
+    else:
+        cursor.execute(
+            f"SELECT * FROM properties WHERE {ACTIVE_PROPERTY_SQL} ORDER BY id DESC"
+        )
+    return filter_dashboard_listable_properties(cursor, cursor.fetchall() or [])
+
+
+def fetch_copilot_property(cursor, property_id: int) -> dict | None:
+    """Single property when it is dashboard-visible; None if archived or incomplete."""
+    return fetch_active_property(cursor, property_id)
 
 
 def count_dashboard_listable_active(cursor) -> int:
@@ -50,7 +83,7 @@ def fetch_active_property(cursor, property_id: int) -> dict | None:
     if not row:
         return None
     enriched = enrich_property_with_supply(cursor, row)
-    if not property_is_dashboard_listable(enriched):
+    if not property_is_copilot_visible(enriched):
         return None
     return enriched
 
