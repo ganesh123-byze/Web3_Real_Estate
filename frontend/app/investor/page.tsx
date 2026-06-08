@@ -19,7 +19,7 @@ import {
   useProperties,
   useWalletBalances,
 } from "@/lib/queries";
-import { cn, formatDateTime, formatEth, formatNumber } from "@/lib/utils";
+import { cn, formatAmountWithUnit, formatDateTime, formatEth, formatNumber } from "@/lib/utils";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import {
   InvestorClaimDialog,
@@ -203,7 +203,7 @@ export default function InvestorDashboardPage() {
                       <div className="truncate text-sm font-medium">{tx.action_label}</div>
                       <div className="text-xs text-muted-foreground">{tx.property_name ?? "Platform"} · {formatDateTime(tx.timestamp)}</div>
                     </div>
-                    <div className={cn("text-right text-xs font-medium", tx.type === "REWARDS_CLAIMED" ? "text-success" : "text-foreground")}>{tx.display_amount} {tx.amount_unit}</div>
+                    <div className={cn("text-right text-xs font-medium", tx.type === "REWARDS_CLAIMED" ? "text-success" : "text-foreground")}>{formatAmountWithUnit(tx.display_amount, tx.amount_unit)}</div>
                   </a>
                 ))
               )}
