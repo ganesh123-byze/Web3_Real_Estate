@@ -129,33 +129,45 @@ export function useUsers() {
 }
 
 export function useRentAnalytics() {
+  const session = useSessionAccount();
+  const wallet = session?.user?.wallet_address ?? null;
   return useQuery({
-    queryKey: queryKeys.rentAnalytics,
+    queryKey: [...queryKeys.rentAnalytics, wallet] as const,
     queryFn: () => api.get<RentAnalytics>("/owner/rent-analytics"),
+    enabled: !!wallet,
     refetchInterval: POLL_MS,
   });
 }
 
 export function useRentDistributions() {
+  const session = useSessionAccount();
+  const wallet = session?.user?.wallet_address ?? null;
   return useQuery({
-    queryKey: queryKeys.rentDistributions,
+    queryKey: [...queryKeys.rentDistributions, wallet] as const,
     queryFn: () => api.get<RentDistribution[]>("/owner/distributions"),
+    enabled: !!wallet,
     refetchInterval: POLL_MS,
   });
 }
 
 export function useRentPayments() {
+  const session = useSessionAccount();
+  const wallet = session?.user?.wallet_address ?? null;
   return useQuery({
-    queryKey: queryKeys.rentPayments,
+    queryKey: [...queryKeys.rentPayments, wallet] as const,
     queryFn: () => api.get<RentPayment[]>("/owner/rent-payments"),
+    enabled: !!wallet,
     refetchInterval: POLL_MS,
   });
 }
 
 export function useActiveRentals() {
+  const session = useSessionAccount();
+  const wallet = session?.user?.wallet_address ?? null;
   return useQuery({
-    queryKey: queryKeys.rentActiveRentals,
+    queryKey: [...queryKeys.rentActiveRentals, wallet] as const,
     queryFn: () => api.get<unknown[]>("/owner/active-rentals"),
+    enabled: !!wallet,
     refetchInterval: POLL_MS,
   });
 }

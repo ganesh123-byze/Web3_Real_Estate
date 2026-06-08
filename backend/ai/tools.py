@@ -84,10 +84,17 @@ from backend.ai.investor_guards import (
     has_investor_portfolio_intent,
     has_explicit_invest_intent,
     has_marketplace_browse_intent,
+    invest_classify_invalid_token_amount_turn,
+    invest_invalid_token_amount_message,
     invest_tool_blocked_message,
+    invest_turn_attempts_decimal_token_amount,
+    invest_turn_attempts_invalid_token_amount,
+    invest_utterance_names_property,
     invest_workflow_active,
     invest_turn_explicit_token_amount,
     invest_utterance_is_token_count_only,
+    invest_token_amount_field_is_valid,
+    is_generic_invest_phrase,
     parse_invest_order_from_utterance,
     should_clear_stale_invest_token_amount,
     wants_to_begin_invest_workflow,
@@ -527,15 +534,22 @@ def _merge_last_user_utterance(
             accumulated[next_field] = parsed[next_field]
             return accumulated
         if next_field == "token_amount":
+            if invest_turn_attempts_invalid_token_amount(
+                text, next_field=next_field
+            ):
+                return accumulated
             amount = parse_invest_token_amount(text)
             if amount:
                 accumulated[next_field] = amount
                 return accumulated
-            digit = re.search(r"\b(\d+)\b", text)
-            if digit and int(digit.group(1)) > 0:
-                accumulated[next_field] = digit.group(1)
-                return accumulated
+            if re.fullmatch(r"\d+", text.strip()):
+                value = int(text.strip())
+                if value > 0:
+                    accumulated[next_field] = str(value)
+                    return accumulated
         if next_field == "property_name":
+            if is_generic_invest_phrase(text):
+                return accumulated
             hint = extract_invest_property_hint_from_utterance(text)
             if hint:
                 accumulated[next_field] = hint
@@ -1114,10 +1128,15 @@ async def try_server_investor_marketplace_browse(
         return None
 
     utterance = _latest_human_utterance().strip()
-    if not utterance or not has_marketplace_browse_intent(utterance):
+    quick_action_id = _latest_human_quick_action_id()
+    from backend.ai.investor_marketplace import marketplace_browse_turn_matches
+
+    if not marketplace_browse_turn_matches(
+        utterance, quick_action_id=quick_action_id
+    ):
         return None
 
-    abort_invest_workflow_if_interrupted(utterance)
+    abort_invest_workflow_if_interrupted(utterance or "")
     return await _list_properties_tool({}, user, db)
 
 
@@ -1251,22 +1270,43 @@ async def try_server_invest_property_turn(
         result = await _fill_invest_property(fill_args, user, db)
         return _enrich_invest_preflight_result(result, db, parsed={})
 
-    parsed = parse_invest_order_from_utterance(utterance)
-    if not parsed.get("property_name"):
-        hint = extract_invest_property_hint_from_utterance(utterance)
-        if hint:
-            parsed["property_name"] = hint
+    quick_action_id = _latest_human_quick_action_id()
+    names_property = invest_utterance_names_property(
+        utterance, quick_action_id=quick_action_id
+    )
 
+    if (
+        not active
+        and not awaiting_confirm
+        and invest_turn_attempts_decimal_token_amount(utterance)
+    ):
+        if not names_property:
+            started = await _start_invest_property({}, user, db)
+            return _enrich_invest_preflight_result(started, db, parsed={})
+        await _start_invest_property({}, user, db)
+        parsed = parse_invest_order_from_utterance(utterance)
+        fill_args = {
+            k: str(v) for k, v in parsed.items() if v not in (None, "")
+        }
+        result = await _fill_invest_property(fill_args, user, db)
+        return _enrich_invest_preflight_result(result, db, parsed=parsed)
+
+    if not names_property and (
+        has_explicit_invest_intent(utterance) or wants_to_begin_invest_workflow(utterance)
+    ) and not active:
+        started = await _start_invest_property({}, user, db)
+        return _enrich_invest_preflight_result(started, db, parsed={})
+
+    parsed = parse_invest_order_from_utterance(utterance)
     fill_args: dict[str, Any] = {
         k: str(v) for k, v in parsed.items() if v not in (None, "")
     }
 
-    if not fill_args and wants_to_begin_invest_workflow(utterance) and not active:
-        started = await _start_invest_property({}, user, db)
-        return _enrich_invest_preflight_result(started, db, parsed={})
-
-    if not fill_args and not active:
+    if not names_property and not active:
         return None
+
+    if not active and names_property:
+        await _start_invest_property({}, user, db)
 
     result = await _fill_invest_property(fill_args, user, db)
     return _enrich_invest_preflight_result(result, db, parsed=parsed)
@@ -1570,18 +1610,17 @@ async def _get_my_portfolio(_args: dict, user: AuthUser, db: Any) -> ToolResult:
         rows = cursor.fetchall() or []
     finally:
         cursor.close()
-    from backend.config.settings import TOKEN_DECIMALS
-    from backend.services.blockchain import from_base_units
+    from backend.services.token_ownership_metrics import (
+        ownership_percentage_of_supply,
+        whole_supply_from_property,
+        whole_tokens_from_base,
+    )
 
     holdings = []
     for r in rows:
-        base = int(r.get("token_amount_base") or 0)
-        whole = int(from_base_units(base, TOKEN_DECIMALS)) if base else 0
-        try:
-            supply_whole = int(Decimal(str(r.get("token_supply") or 0)))
-        except (TypeError, ValueError, ArithmeticError):
-            supply_whole = 0
-        pct = round((whole / supply_whole) * 100, 4) if supply_whole else 0.0
+        whole = whole_tokens_from_base(int(r.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(r.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole, digits=4)
         holdings.append({
             "property_id": r["property_id"],
             "property_name": r["property_name"],
@@ -1987,14 +2026,18 @@ async def _get_my_investors(_args: dict, user: AuthUser, db: Any) -> ToolResult:
     finally:
         cursor.close()
 
+    from backend.services.token_ownership_metrics import (
+        ownership_percentage_of_supply,
+        whole_supply_from_property,
+        whole_tokens_from_base,
+    )
+
     by_property: dict[int, dict] = {}
     for r in rows:
         pid = int(r["property_id"])
-        base = int(r.get("token_amount_base") or 0)
-        supply = int(r.get("token_supply") or 0)
-        whole = base // (10 ** 18) if base else 0
-        total_whole = supply // (10 ** 18) if supply else 0
-        pct = round((whole / total_whole) * 100, 2) if total_whole else 0
+        whole = whole_tokens_from_base(int(r.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(r.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole)
         bucket = by_property.setdefault(pid, {
             "property_id": pid,
             "property_name": r["property_name"],
@@ -5759,6 +5802,49 @@ def _invest_confirmation_instruction() -> str:
     )
 
 
+def _invest_reject_invalid_token_amount_result(
+    utterance: str,
+    accumulated: dict[str, str],
+    *,
+    property_id: int | None = None,
+    reason: str = "decimal",
+) -> ToolResult:
+    """Reject invalid token counts (decimal, negative, or zero) with a clear prompt."""
+    modal = _INVEST_MODAL
+    accumulated = dict(accumulated)
+    accumulated.pop("token_amount", None)
+    missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
+    message = invest_invalid_token_amount_message(utterance, reason=reason)
+    _set_workflow_session(
+        modal,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": "token_amount",
+            "submitted": False,
+            "completing_submit": False,
+            "property_id": property_id,
+        },
+    )
+    return ToolResult(
+        ok=False,
+        error=message,
+        data={
+            "filled": accumulated,
+            "missing": missing,
+            "submitted": False,
+            "next_field": "token_amount",
+            "property_id": property_id,
+            "invest_property_target": True,
+            "speak_to_user": message,
+            "speak_verbatim": True,
+            "instruction": (
+                "Read speak_to_user verbatim. Ask again for a whole number of tokens only."
+            ),
+        },
+    )
+
+
 def _invest_enter_confirmation(
     accumulated: dict[str, str],
     *,
@@ -5911,6 +5997,20 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         prior_session = {}
 
     utterance = extract_last_human_utterance(_current_history())
+    invalid_token_reason = invest_classify_invalid_token_amount_turn(
+        utterance,
+        next_field=prior_session.get("next_field"),
+        args_token=args.get("token_amount"),
+    )
+    if invalid_token_reason:
+        prior_filled = dict(prior_session.get("filled") or {})
+        return _invest_reject_invalid_token_amount_result(
+            utterance,
+            prior_filled,
+            property_id=prior_session.get("property_id"),
+            reason=invalid_token_reason,
+        )
+
     if prior_session.get("awaiting_invest_confirmation"):
         confirm = _parse_confirm_invest_arg(args.get("confirm_invest"))
         if confirm is None:
@@ -5967,6 +6067,25 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
     accumulated = _merge_last_user_utterance(
         accumulated, modal, _INVEST_FIELDS, _INVEST_REQUIRED
     )
+
+    if accumulated.get("token_amount") and not invest_token_amount_field_is_valid(
+        str(accumulated["token_amount"])
+    ):
+        token_value = utterance or str(accumulated.get("token_amount") or "")
+        invalid_reason = (
+            invest_classify_invalid_token_amount_turn(
+                token_value,
+                next_field="token_amount",
+                args_token=str(accumulated.get("token_amount") or ""),
+            )
+            or "zero"
+        )
+        return _invest_reject_invalid_token_amount_result(
+            token_value,
+            accumulated,
+            property_id=prior_session.get("property_id"),
+            reason=invalid_reason,
+        )
 
     if should_clear_stale_invest_token_amount(
         utterance,

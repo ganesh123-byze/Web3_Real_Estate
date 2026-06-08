@@ -31,6 +31,11 @@ from backend.api._helpers import (
     sync_investors_to_contract,
     sync_rent_amount_to_contract,
 )
+from backend.services.token_ownership_metrics import (
+    ownership_percentage_of_supply,
+    whole_supply_from_property,
+    whole_tokens_from_base,
+)
 from backend.api.deps import (
     get_current_user,
     get_db,
@@ -72,6 +77,12 @@ from backend.services.blockchain import (
     wait_for_transaction_receipt,
 )
 from backend.services.blockchain_indexer import _handle_rent_events, reconcile_transaction
+from backend.services.owner_rent_scope import (
+    fetch_owner_active_rentals,
+    fetch_owner_rent_analytics,
+    fetch_owner_rent_distributions,
+    fetch_owner_rent_payments,
+)
 from backend.services.tenant_catalog import fetch_tenant_rental_properties
 from backend.services.tenant_rent_eligibility import (
     build_tenant_property_rent_fields,
@@ -250,31 +261,13 @@ def sync_rent_chain(
 
 
 @router.get("/owner/rent-analytics", response_model=RentAnalytics, dependencies=[Depends(require_property_owner)])
-def admin_rent_analytics(db=Depends(get_db)):
+def admin_rent_analytics(
+    db=Depends(get_db),
+    user: AuthUser = Depends(get_current_user),
+):
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT COALESCE(SUM(CAST(amount_wei AS DECIMAL(36,0))), 0) AS collected, "
-            "COUNT(*) AS cnt FROM rent_payments"
-        )
-        payments = cursor.fetchone()
-
-        cursor.execute(
-            "SELECT COALESCE(SUM(CAST(total_distributed AS DECIMAL(36,0))), 0) AS distributed, "
-            "COUNT(*) AS cnt FROM rent_distributions"
-        )
-        dists = cursor.fetchone()
-
-        cursor.execute("SELECT COUNT(*) AS cnt FROM tenant_rentals WHERE status = 'active'")
-        active = cursor.fetchone()
-
-        return RentAnalytics(
-            total_rent_collected_wei=str(int(payments["collected"] or 0)),
-            total_rent_distributed_wei=str(int(dists["distributed"] or 0)),
-            total_payments=int(payments["cnt"] or 0),
-            total_distributions=int(dists["cnt"] or 0),
-            active_rentals=int(active["cnt"] or 0),
-        )
+        return fetch_owner_rent_analytics(cursor, user.wallet_address)
     finally:
         cursor.close()
 
@@ -313,11 +306,9 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
     for row in rows:
         wallet = str(row["wallet_address"])
         key = wallet.lower()
-        base = int(row.get("token_amount_base") or 0)
-        supply = int(row.get("token_supply") or 0)
-        whole = base // (10 ** 18) if base else 0
-        supply_whole = supply // (10 ** 18) if supply else 0
-        pct = round((whole / supply_whole) * 100, 2) if supply_whole else 0.0
+        whole = whole_tokens_from_base(int(row.get("token_amount_base") or 0))
+        supply_whole = whole_supply_from_property(row.get("token_supply"))
+        pct = ownership_percentage_of_supply(whole, supply_whole)
         bucket = by_wallet.setdefault(
             key,
             {
@@ -374,71 +365,37 @@ def list_owner_investors(db=Depends(get_db), user: AuthUser = Depends(get_curren
 
 
 @router.get("/owner/distributions", response_model=list[RentDistributionRead], dependencies=[Depends(require_property_owner)])
-def admin_distributions(db=Depends(get_db)):
+def admin_distributions(
+    db=Depends(get_db),
+    user: AuthUser = Depends(get_current_user),
+):
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT rd.*, p.name AS property_name "
-            "FROM rent_distributions rd "
-            "JOIN properties p ON p.id = rd.property_id "
-            "ORDER BY rd.distributed_at DESC"
-        )
-        rows = cursor.fetchall()
-        for r in rows:
-            r["distributed_at"] = (
-                r["distributed_at"].isoformat() if r.get("distributed_at") else ""
-            )
-        return rows
+        return fetch_owner_rent_distributions(cursor, user.wallet_address)
     finally:
         cursor.close()
 
 
 @router.get("/owner/rent-payments", response_model=list[RentPaymentRead], dependencies=[Depends(require_property_owner)])
-def admin_rent_payments(db=Depends(get_db)):
+def admin_rent_payments(
+    db=Depends(get_db),
+    user: AuthUser = Depends(get_current_user),
+):
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT rp.*, p.name AS property_name, t.wallet_address AS tenant_wallet, "
-            "u.full_name AS tenant_full_name, "
-            "COALESCE(NULLIF(u.display_id, ''), CASE WHEN u.role = 'property_owner' THEN 'ADM-' WHEN u.role = 'tenant' THEN 'TEN-' ELSE 'INV-' END || LPAD(u.id::text, 3, '0')) AS tenant_display_id, "
-            "COALESCE(u.profile_role, u.role) AS tenant_profile_role "
-            "FROM rent_payments rp "
-            "JOIN tenants t ON t.id = rp.tenant_id "
-            "JOIN properties p ON p.id = rp.property_id "
-            "LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address) "
-            "ORDER BY rp.payment_date DESC"
-        )
-        rows = cursor.fetchall()
-        for r in rows:
-            r["payment_date"] = (
-                r["payment_date"].isoformat() if r.get("payment_date") else ""
-            )
-        return rows
+        return fetch_owner_rent_payments(cursor, user.wallet_address)
     finally:
         cursor.close()
 
 
 @router.get("/owner/active-rentals", dependencies=[Depends(require_property_owner)])
-def admin_active_rentals(db=Depends(get_db)):
+def admin_active_rentals(
+    db=Depends(get_db),
+    user: AuthUser = Depends(get_current_user),
+):
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT tr.*, p.name AS property_name, p.location, "
-            "t.wallet_address AS tenant_wallet "
-            "FROM tenant_rentals tr "
-            "JOIN tenants t ON t.id = tr.tenant_id "
-            "JOIN properties p ON p.id = tr.property_id "
-            "ORDER BY tr.created_at DESC"
-        )
-        rows = cursor.fetchall()
-        for r in rows:
-            if r.get("rental_start_date"):
-                r["rental_start_date"] = r["rental_start_date"].isoformat()
-            if r.get("rental_end_date"):
-                r["rental_end_date"] = r["rental_end_date"].isoformat()
-            if r.get("created_at"):
-                r["created_at"] = r["created_at"].isoformat()
-        return rows
+        return fetch_owner_active_rentals(cursor, user.wallet_address)
     finally:
         cursor.close()
 

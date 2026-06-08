@@ -22,7 +22,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { cn, formatEthText } from "@/lib/utils";
+import { formatChatStatText } from "@/lib/chat-stat-format";
+import { cn } from "@/lib/utils";
 import { HighlightedAssistantText } from "@/lib/ai/assistant-text";
 import { useAgentStore } from "@/lib/ai/agent-store";
 import type { AIState } from "@/lib/ai/types";
@@ -32,6 +33,11 @@ import {
   getRoleFromPath,
   type QuickAction,
 } from "@/lib/ai/quick-actions";
+import {
+  isMarketplaceCatalogContent,
+  parseMarketplaceCatalogContent,
+} from "@/lib/ai/investor-marketplace-catalog";
+import { InvestorMarketplaceCatalogCard } from "@/components/ai/investor-marketplace-catalog-card";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   Store,
@@ -447,10 +453,12 @@ function PortfolioInsightCard({ content }: { content: string }) {
 function isRichAssistantContent(content: string) {
   const normalizedContent = content.toLowerCase();
   return (
+    isMarketplaceCatalogContent(content) ||
     normalizedContent.includes("yield & returns summary") ||
     normalizedContent.includes("investment summary") ||
     normalizedContent.includes("rent payment summary") ||
-    normalizedContent.includes("avg. rental yield") ||
+    normalizedContent.includes("tokens available") ||
+    normalizedContent.includes("price per token") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
     normalizedContent.includes("total invested")
@@ -465,7 +473,7 @@ function normalizeInvestSummaryForCard(content: string): string {
       .replace(/\nhow many tokens would you like to buy\??\s*$/i, "")
       .trim();
     const firstLine = normalized.match(/^investment target:\s*(.+)$/im)?.[1]?.trim() ?? "";
-    const propertyLine = firstLine ? `Property: ${firstLine}` : "";
+    const propertyLine = firstLine ? `Property name: ${firstLine}` : "";
     const detailLine = body.split("\n").find((line) => line.includes("—")) ?? body.split("\n")[0] ?? "";
     const parts = detailLine
       .split("—")
@@ -473,10 +481,15 @@ function normalizeInvestSummaryForCard(content: string): string {
       .filter(Boolean);
     const rows = [propertyLine];
     for (const part of parts) {
-      if (/sold/i.test(part)) rows.push(`Capital appreciation: +${part.replace(/sold/i, "").trim()} sold`);
-      else if (/tokens available/i.test(part)) rows.push(`Tokens available: ${part.replace(/tokens available/i, "").trim()}`);
-      else if (/eth per token/i.test(part)) rows.push(`Token price: ${part.replace(/per token/i, "").trim()}`);
-      else if (/monthly rent/i.test(part)) rows.push(`Monthly rental income: ${part.replace(/monthly rent/i, "").trim()}`);
+      if (/tokens available/i.test(part)) {
+        rows.push(`Tokens available: ${part.replace(/tokens available/i, "").trim()}`);
+      } else if (/eth per token|per token/i.test(part)) {
+        rows.push(`Price per token: ${part.replace(/per token/i, "").trim()}`);
+      } else if (/monthly rent/i.test(part)) {
+        rows.push(`Monthly rent: ${part.replace(/monthly rent/i, "").trim()}`);
+      } else if (!/sold/i.test(part)) {
+        rows.push(`Location: ${part}`);
+      }
     }
     return ["Investment summary", ...rows.filter(Boolean)].join("\n");
   }
@@ -484,8 +497,12 @@ function normalizeInvestSummaryForCard(content: string): string {
 }
 
 function AssistantMessageContent({ content }: { content: string }) {
-  const displayContent = formatEthText(content);
+  const displayContent = formatChatStatText(content);
   const normalizedContent = displayContent.toLowerCase();
+  const marketplaceCatalog = parseMarketplaceCatalogContent(displayContent);
+  if (marketplaceCatalog) {
+    return <InvestorMarketplaceCatalogCard catalog={marketplaceCatalog} />;
+  }
   if (normalizedContent.includes("rent payment summary")) {
     const rentConfirmationPrompt = displayContent
       .match(/\n\n(reply yes[\s\S]*)$/i)?.[1]
@@ -506,9 +523,13 @@ function AssistantMessageContent({ content }: { content: string }) {
     );
   }
   if (
-    normalizedContent.includes("yield & returns summary") ||
+    (normalizedContent.includes("yield & returns summary") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
     normalizedContent.includes("investment summary") ||
-    normalizedContent.includes("avg. rental yield") ||
+    (normalizedContent.includes("tokens available") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
+    (normalizedContent.includes("price per token") &&
+      !isMarketplaceCatalogContent(displayContent)) ||
     normalizedContent.includes("investment target:")
   ) {
     const investConfirmationPrompt = displayContent

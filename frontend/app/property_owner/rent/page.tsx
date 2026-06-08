@@ -30,14 +30,14 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/common/empty";
 import {
-  useProperties,
+  useManagedProperties,
   useRentAnalytics,
   useRentDistributions,
   useRentPayments,
 } from "@/lib/queries";
 import { useSetRent } from "@/lib/mutations";
 import { formatDateTime, formatEth } from "@/lib/utils";
-import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
+import { identityDisplayName } from "@/lib/identity";
 import { txExplorerUrl } from "@/lib/runtime-config";
 import type { Property } from "@/lib/types";
 
@@ -47,44 +47,20 @@ const stickyHeadClass =
   "sticky top-0 z-20 h-10 whitespace-nowrap bg-card py-2 text-sm";
 const tableCellClass = "whitespace-nowrap py-3 text-sm";
 
-function sameWallet(a?: string | null, b?: string | null): boolean {
-  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
-}
-
 export default function RentManagementPage() {
-  const properties = useProperties();
+  const properties = useManagedProperties();
   const rent = useRentAnalytics();
   const distributions = useRentDistributions();
   const payments = useRentPayments();
-  const sessionIdentity = currentSessionIdentity();
-  const adminWallet = sessionIdentity?.wallet_address ?? null;
-  const adminProperties = useMemo(
-    () =>
-      (properties.data ?? []).filter(
-        (property) => property.can_manage || sameWallet(property.owner_wallet, adminWallet),
-      ),
-    [adminWallet, properties.data],
+  const adminProperties = properties.data ?? [];
+  const recentRentPayments = useMemo(
+    () => (payments.data ?? []).slice(0, 8),
+    [payments.data],
   );
-  const adminPropertyIds = useMemo(
-    () => new Set(adminProperties.map((property) => Number(property.id))),
-    [adminProperties],
+  const recentRentDistributions = useMemo(
+    () => (distributions.data ?? []).slice(0, 8),
+    [distributions.data],
   );
-  const adminRentPayments = useMemo(
-    () =>
-      (payments.data ?? [])
-        .filter((payment) => adminPropertyIds.has(Number(payment.property_id)))
-        .slice(0, 8),
-    [adminPropertyIds, payments.data],
-  );
-  const adminRentDistributions = useMemo(
-    () =>
-      (distributions.data ?? [])
-        .filter((distribution) => adminPropertyIds.has(Number(distribution.property_id)))
-        .slice(0, 8),
-    [adminPropertyIds, distributions.data],
-  );
-  const paymentsLoading = properties.isLoading || payments.isLoading;
-  const distributionsLoading = properties.isLoading || distributions.isLoading;
 
   return (
     <>
@@ -161,7 +137,7 @@ export default function RentManagementPage() {
               <CardDescription className="text-sm">From tenants on Sepolia.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              {paymentsLoading ? (
+              {payments.isLoading ? (
                 <div className={scrollTableViewportClass}>
               <Table className="min-w-[760px] text-sm">
                 <TableBody>
@@ -175,7 +151,7 @@ export default function RentManagementPage() {
                 </TableBody>
               </Table>
               </div>
-              ) : adminRentPayments.length === 0 ? (
+              ) : recentRentPayments.length === 0 ? (
                 <div className="px-4 pb-4">
                   <EmptyState
                     title="No rent payments yet"
@@ -195,7 +171,7 @@ export default function RentManagementPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {adminRentPayments.map((p) => {
+                  {recentRentPayments.map((p) => {
                       const tenantLabel = identityDisplayName(
                         {
                           wallet_address: p.tenant_wallet,
@@ -242,7 +218,7 @@ export default function RentManagementPage() {
               <CardDescription className="text-sm">Splits broadcast to investor wallets.</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
-              {distributionsLoading ? (
+              {distributions.isLoading ? (
                 <div className={scrollTableViewportClass}>
               <Table className="min-w-[760px] text-sm">
                 <TableBody>
@@ -256,7 +232,7 @@ export default function RentManagementPage() {
                 </TableBody>
               </Table>
               </div>
-              ) : adminRentDistributions.length === 0 ? (
+              ) : recentRentDistributions.length === 0 ? (
                 <div className="px-4 pb-4">
                   <EmptyState
                     title="No distributions yet"
@@ -276,7 +252,7 @@ export default function RentManagementPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {adminRentDistributions.map((d) => (
+                  {recentRentDistributions.map((d) => (
                       <TableRow key={d.id ?? d.distribution_tx_hash}>
                         <TableCell className={tableCellClass}>
                           {d.property_name ?? `#${d.property_id}`}

@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CheckCircle2, ShieldCheck, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatWalletTransactionError } from "@/lib/wallet-errors";
-import { queryKeys } from "@/lib/queries";
+import { queryKeys, useWalletBalances } from "@/lib/queries";
 import {
   Dialog,
   DialogContent,
@@ -18,10 +18,22 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn, formatEth, formatNumber, shortAddress } from "@/lib/utils";
+import {
+  formatInvestDialogText,
+  formatInvestEthAmount,
+  formatInvestEthFromWei,
+} from "@/components/investor/investor-display-format";
+import { cn, formatNumber, shortAddress } from "@/lib/utils";
 import type { InvestmentPrepareResponse, Property } from "@/lib/types";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
-import { investmentCostWei } from "@/components/investor/investor-utils";
+import { parseWalletNativeBalanceWei } from "@/components/investor/investor-funding-utils";
+import { checkManualInvestOrder } from "@/components/investor/investor-invest-order-utils";
+import {
+  INVEST_TOKEN_AMOUNT_HINT,
+  INVEST_TOKEN_AMOUNT_MIN_ERROR,
+  investmentCostWei,
+  validateInvestTokenAmountInput,
+} from "@/components/investor/investor-utils";
 import { sendInvestmentTx } from "@/components/investor/contract-actions";
 import {
   clearPendingWorkflowActions,
@@ -50,9 +62,21 @@ export function InvestorInvestDialog({
   const [amount, setAmount] = useState("1");
   const [step, setStep] = useState<"idle" | "prepare" | "wallet" | "confirm">("idle");
   const [busy, setBusy] = useState(false);
-  const tokenAmount = Math.max(0, Math.trunc(Number(amount || 0)));
+  const walletBalances = useWalletBalances(open ? wallet : null);
+  const amountValidation = validateInvestTokenAmountInput(amount);
+  const tokenAmount = amountValidation.valid ? amountValidation.wholeAmount : 0;
   const costWei = investmentCostWei(property, tokenAmount);
-  const costEth = Number(costWei) / 1e18;
+  const walletBalanceWei = parseWalletNativeBalanceWei(walletBalances.data);
+  const orderCheck = useMemo(
+    () =>
+      checkManualInvestOrder({
+        property,
+        tokenAmount,
+        costWei,
+        balanceWei: walletBalanceWei,
+      }),
+    [property, costWei, walletBalanceWei, tokenAmount],
+  );
   const sessionIdentity = currentSessionIdentity();
   const walletLabel =
     wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
@@ -63,8 +87,31 @@ export function InvestorInvestDialog({
     event.preventDefault();
     if (busy) return;
     const workflowValues = getWorkflowFormValues("INVEST_PROPERTY");
-    const submitAmount = Math.max(0, Math.trunc(Number(workflowValues.token_amount ?? amount ?? 0)));
-    if (!wallet || !property.token_address || submitAmount <= 0) return;
+    const submitValidation = validateInvestTokenAmountInput(
+      String(workflowValues.token_amount ?? amount ?? ""),
+    );
+    if (!submitValidation.valid) {
+      toast.error(submitValidation.error ?? INVEST_TOKEN_AMOUNT_MIN_ERROR);
+      return;
+    }
+    const submitAmount = submitValidation.wholeAmount;
+    const submitCostWei = investmentCostWei(property, submitAmount);
+    const submitOrder = checkManualInvestOrder({
+      property,
+      tokenAmount: submitAmount,
+      costWei: submitCostWei,
+      balanceWei: parseWalletNativeBalanceWei(walletBalances.data),
+    });
+    if (!submitOrder.ok) {
+      const message =
+        submitOrder.error ??
+        (submitOrder.reason === "balance_pending"
+          ? "Your wallet balance is still loading. Please wait a moment and try again."
+          : "This investment cannot be submitted right now. Please review the amount and try again.");
+      toast.error(formatInvestDialogText(message));
+      return;
+    }
+    if (!wallet || !property.token_address) return;
     setBusy(true);
     try {
       setStep("prepare");
@@ -156,20 +203,66 @@ export function InvestorInvestDialog({
             <Label>Token amount</Label>
             <Input
               data-workflow-field="INVEST_PROPERTY.token_amount"
-              type="number"
-              min="1"
-              step="1"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              aria-invalid={!amountValidation.valid}
+              className={cn(!amountValidation.valid && amount.trim() !== "" && "border-destructive/60")}
               required
             />
+            {!amountValidation.valid && amount.trim() !== "" ? (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-1.5 text-[11px] leading-snug text-destructive"
+              >
+                {amountValidation.error}
+              </p>
+            ) : (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                {INVEST_TOKEN_AMOUNT_HINT}
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
-            <InvestFact label="Estimated cost" value={formatEth(costEth)} />
-            <InvestFact label="Wallet" value={walletLabel} />
-            <InvestFact label="Token price" value={formatEth(property.token_sale_price_eth ?? 0)} />
+            <InvestFact
+              label="Estimated cost"
+              value={
+                amountValidation.valid ? `${formatInvestEthFromWei(costWei)} ETH` : "—"
+              }
+            />
+            <InvestFact
+              label="Wallet"
+              value={
+                walletBalances.isLoading
+                  ? walletLabel
+                  : walletBalanceWei !== null
+                    ? `${walletLabel} · ${formatInvestEthFromWei(walletBalanceWei)} ETH`
+                    : walletLabel
+              }
+            />
+            <InvestFact
+              label="Token price"
+              value={`${formatInvestEthAmount(property.token_sale_price_eth ?? 0)} ETH`}
+            />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
           </div>
+          {amountValidation.valid && !orderCheck.ok && orderCheck.error ? (
+            <p
+              role="alert"
+              className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-[11px] leading-snug text-destructive"
+            >
+              {formatInvestDialogText(orderCheck.error)}
+            </p>
+          ) : null}
+          {amountValidation.valid &&
+          orderCheck.reason === "balance_pending" &&
+          !orderCheck.error ? (
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Checking wallet balance…
+            </p>
+          ) : null}
           <div className="space-y-2 text-xs text-muted-foreground">
             <InvestStep
               active={step === "prepare"}
@@ -189,7 +282,16 @@ export function InvestorInvestDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || tokenAmount <= 0 || !wallet}>
+            <Button
+              type="submit"
+              disabled={
+                busy ||
+                !amountValidation.valid ||
+                !wallet ||
+                !orderCheck.ok ||
+                walletBalances.isLoading
+              }
+            >
               {busy ? "Processing…" : "Invest via MetaMask"}
             </Button>
           </DialogFooter>

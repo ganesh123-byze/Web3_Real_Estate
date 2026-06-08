@@ -4,6 +4,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.ai.chat_stat_format import (
+    format_chat_stat_eth_amount,
+    format_chat_stat_percentage_label,
+)
 from backend.ai.investor_guards import extract_last_human_utterance, _normalize_text
 
 
@@ -42,16 +46,7 @@ def has_owner_analytics_intent(text: str) -> bool:
 
 
 def _format_eth_amount(raw: Any) -> str:
-    text = str(raw or "0").strip()
-    if not text:
-        return "0"
-    try:
-        value = float(text)
-    except (TypeError, ValueError):
-        return text
-    if value == int(value):
-        return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
+    return format_chat_stat_eth_amount(raw)
 
 
 def format_owner_analytics_overview_speak(data: dict[str, Any]) -> str:
@@ -201,6 +196,16 @@ def _short_wallet(wallet: str) -> str:
     return f"{w[:6]}…{w[-4:]}"
 
 
+def _format_owner_investor_ownership_pct(pct: Any) -> str:
+    try:
+        value = float(pct)
+    except (TypeError, ValueError):
+        return "0%"
+    if value <= 0:
+        return "0%"
+    return format_chat_stat_percentage_label(value)
+
+
 def format_owner_investors_speak(data: dict[str, Any]) -> str:
     """Verbatim investors summary for My investors quick action / chat."""
     total = int(data.get("total_investors") or 0)
@@ -223,8 +228,8 @@ def format_owner_investors_speak(data: dict[str, Any]) -> str:
         for inv in investors[:5]:
             wallet = _short_wallet(str(inv.get("wallet_address") or ""))
             tokens = inv.get("token_amount")
-            pct = inv.get("ownership_percentage")
-            lines.append(f"   • {wallet}: {tokens} tokens ({pct}% of supply)")
+            pct = _format_owner_investor_ownership_pct(inv.get("ownership_percentage"))
+            lines.append(f"   • {wallet}: {tokens} tokens ({pct} of supply)")
         if len(investors) > 5:
             lines.append(f"   • …and {len(investors) - 5} more")
         lines.append("")

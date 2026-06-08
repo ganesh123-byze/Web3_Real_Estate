@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.ai.chat_stat_format import format_chat_stat_eth_amount
+
 PAY_RENT_SUMMARY_HEADING = "Rent payment summary"
 
 _PAY_RENT_INFO = re.compile(
@@ -152,7 +154,7 @@ def format_pay_rent_target_speak(prop: dict[str, Any]) -> str:
     name = str(prop.get("name") or f"Property {prop.get('id')}")
     pid = prop.get("id")
     location = str(prop.get("location") or "").strip()
-    rent = str(prop.get("monthly_rent_eth") or "").strip()
+    rent = format_chat_stat_eth_amount(prop.get("monthly_rent_eth") or "")
 
     lines = [PAY_RENT_SUMMARY_HEADING, f"Property: {name} (#{pid})"]
     if location:
@@ -235,7 +237,7 @@ def format_tenant_rental_catalog_speak(
         name = str(prop.get("name") or f"Property {prop.get('id')}")
         pid = prop.get("id")
         location = str(prop.get("location") or "").strip()
-        rent = str(prop.get("monthly_rent_eth") or "").strip()
+        rent = format_chat_stat_eth_amount(prop.get("monthly_rent_eth") or "")
         detail_bits: list[str] = []
         if location:
             detail_bits.append(location)

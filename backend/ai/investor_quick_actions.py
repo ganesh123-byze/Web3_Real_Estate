@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from backend.ai.investor_guards import _normalize_text, has_investor_portfolio_intent
+from backend.ai.investor_marketplace import has_marketplace_browse_intent
 from backend.ai.investor_wallet_affordability import has_investor_wallet_affordability_intent
 
 INVESTOR_QUICK_ACTION_IDS = frozenset(
@@ -21,15 +22,6 @@ _INVESTOR_YIELD_INTENT = re.compile(
     r"claimable|earned|earnings?"
     r")\b",
     re.IGNORECASE,
-)
-
-_MARKETPLACE_BROWSE_INTENT = re.compile(
-    r"(?i)"
-    r"(?:\b(?:take\s+me\s+to|go\s+to|open)\s+(?:the\s+)?marketplace\b)|"
-    r"(?:\bbrowse\s+(?:the\s+)?marketplace\b)|"
-    r"(?:\bmarketplace\b.*\b(?:show|available|properties|opportunities)\b)|"
-    r"(?:\b(?:show|list|what).*\b(?:available|for\s+sale|opportunities)\b)|"
-    r"(?:\bproperties?\s+(?:to\s+)?invest\s+in\b)"
 )
 
 _INVESTOR_TRANSACTIONS_INTENT = re.compile(
@@ -53,7 +45,7 @@ def is_investor_advisory_intent(text: str) -> bool:
         return False
     if has_investor_wallet_affordability_intent(utterance):
         return True
-    if _MARKETPLACE_BROWSE_INTENT.search(utterance):
+    if has_marketplace_browse_intent(utterance):
         return True
     if has_investor_portfolio_intent(utterance):
         return True
