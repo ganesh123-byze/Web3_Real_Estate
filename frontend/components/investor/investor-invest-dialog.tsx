@@ -29,6 +29,13 @@ import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { parseWalletNativeBalanceWei } from "@/components/investor/investor-funding-utils";
 import { checkManualInvestOrder } from "@/components/investor/investor-invest-order-utils";
 import {
+  isInvestDialogTransactionInFlight,
+  isInvestSubmitDisabled,
+  resolveInvestOrderBalanceWei,
+  shouldShowInvestPreSubmitOrderFeedback,
+  type InvestDialogStep,
+} from "@/components/investor/investor-invest-dialog-utils";
+import {
   INVEST_TOKEN_AMOUNT_HINT,
   INVEST_TOKEN_AMOUNT_MIN_ERROR,
   investmentCostWei,
@@ -60,23 +67,39 @@ export function InvestorInvestDialog({
   const queryClient = useQueryClient();
   const formRef = useRef<HTMLFormElement | null>(null);
   const [amount, setAmount] = useState("1");
-  const [step, setStep] = useState<"idle" | "prepare" | "wallet" | "confirm">("idle");
+  const [step, setStep] = useState<InvestDialogStep>("idle");
   const [busy, setBusy] = useState(false);
+  const [lockedFundingBalanceWei, setLockedFundingBalanceWei] = useState<bigint | null>(null);
   const walletBalances = useWalletBalances(open ? wallet : null);
   const amountValidation = validateInvestTokenAmountInput(amount);
   const tokenAmount = amountValidation.valid ? amountValidation.wholeAmount : 0;
   const costWei = investmentCostWei(property, tokenAmount);
   const walletBalanceWei = parseWalletNativeBalanceWei(walletBalances.data);
+  const balanceWeiForOrderCheck = resolveInvestOrderBalanceWei({
+    step,
+    busy,
+    liveBalanceWei: walletBalanceWei,
+    lockedBalanceWei: lockedFundingBalanceWei,
+  });
   const orderCheck = useMemo(
     () =>
       checkManualInvestOrder({
         property,
         tokenAmount,
         costWei,
-        balanceWei: walletBalanceWei,
+        balanceWei: balanceWeiForOrderCheck,
       }),
-    [property, costWei, walletBalanceWei, tokenAmount],
+    [property, costWei, balanceWeiForOrderCheck, tokenAmount],
   );
+  const showPreSubmitOrderFeedback = shouldShowInvestPreSubmitOrderFeedback(step, busy);
+  const submitDisabled = isInvestSubmitDisabled({
+    busy,
+    step,
+    amountValid: amountValidation.valid,
+    wallet,
+    orderCheck,
+    balanceLoading: walletBalances.isLoading,
+  });
   const sessionIdentity = currentSessionIdentity();
   const walletLabel =
     wallet && sessionIdentity?.wallet_address?.toLowerCase() === wallet.toLowerCase()
@@ -91,6 +114,7 @@ export function InvestorInvestDialog({
       String(workflowValues.token_amount ?? amount ?? ""),
     );
     if (!submitValidation.valid) {
+      setStep("idle");
       toast.error(submitValidation.error ?? INVEST_TOKEN_AMOUNT_MIN_ERROR);
       return;
     }
@@ -103,6 +127,7 @@ export function InvestorInvestDialog({
       balanceWei: parseWalletNativeBalanceWei(walletBalances.data),
     });
     if (!submitOrder.ok) {
+      setStep("idle");
       const message =
         submitOrder.error ??
         (submitOrder.reason === "balance_pending"
@@ -112,6 +137,10 @@ export function InvestorInvestDialog({
       return;
     }
     if (!wallet || !property.token_address) return;
+    const fundingBalanceWei = parseWalletNativeBalanceWei(walletBalances.data);
+    if (fundingBalanceWei !== null) {
+      setLockedFundingBalanceWei(fundingBalanceWei);
+    }
     setBusy(true);
     try {
       setStep("prepare");
@@ -147,6 +176,7 @@ export function InvestorInvestDialog({
     } catch (err: unknown) {
       clearPendingWorkflowActions("INVEST_PROPERTY");
       setStep("idle");
+      setLockedFundingBalanceWei(null);
       const errMsg = formatWalletTransactionError(err, "Investment failed. Please try again.");
       toast.error(errMsg);
       emitWorkflowCompletion({ modal: "INVEST_PROPERTY", status: "error", message: errMsg });
@@ -154,6 +184,13 @@ export function InvestorInvestDialog({
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (open) return;
+    setStep("idle");
+    setBusy(false);
+    setLockedFundingBalanceWei(null);
+  }, [open]);
 
   useEffect(() => {
     const handleAction = (action: Parameters<Parameters<typeof subscribeWorkflowAction>[0]>[0]) => {
@@ -248,7 +285,10 @@ export function InvestorInvestDialog({
             />
             <InvestFact label="Available" value={formatNumber(property.tokens_available ?? 0)} />
           </div>
-          {amountValidation.valid && !orderCheck.ok && orderCheck.error ? (
+          {showPreSubmitOrderFeedback &&
+          amountValidation.valid &&
+          !orderCheck.ok &&
+          orderCheck.error ? (
             <p
               role="alert"
               className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-[11px] leading-snug text-destructive"
@@ -256,7 +296,8 @@ export function InvestorInvestDialog({
               {formatInvestDialogText(orderCheck.error)}
             </p>
           ) : null}
-          {amountValidation.valid &&
+          {showPreSubmitOrderFeedback &&
+          amountValidation.valid &&
           orderCheck.reason === "balance_pending" &&
           !orderCheck.error ? (
             <p className="text-[11px] leading-snug text-muted-foreground">
@@ -282,17 +323,10 @@ export function InvestorInvestDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={
-                busy ||
-                !amountValidation.valid ||
-                !wallet ||
-                !orderCheck.ok ||
-                walletBalances.isLoading
-              }
-            >
-              {busy ? "Processing…" : "Invest via MetaMask"}
+            <Button type="submit" disabled={submitDisabled}>
+              {busy || isInvestDialogTransactionInFlight(step, false)
+                ? "Processing…"
+                : "Invest via MetaMask"}
             </Button>
           </DialogFooter>
         </form>

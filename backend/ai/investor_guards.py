@@ -76,13 +76,23 @@ _INVEST_TRANSACTIONAL = re.compile(
 # Imperative claim — user wants to withdraw yield, not just see amounts.
 _CLAIM_TRANSACTIONAL = re.compile(
     r"\b("
-    r"(?:please\s+)?claim\s+(?:my\s+)?(?:rewards|yield|rental\s+yield|earnings)|"
-    r"(?:please\s+)?withdraw\s+(?:my\s+)?(?:rewards|yield)|"
+    r"(?:please\s+)?claim\s+(?:my\s+|the\s+)?(?:rewards|yield|rental\s+yield|earnings?)|"
+    r"(?:please\s+)?withdraw\s+(?:my\s+|the\s+)?(?:rewards|yield)|"
     r"claim\s+(?:from|on|for)\b|"
     r"i\s+want\s+to\s+claim|"
     r"let(?:'s|\s+us)\s+claim"
     r")\b",
     re.IGNORECASE,
+)
+
+_GENERIC_CLAIM_PHRASE = re.compile(
+    r"(?i)^(?:"
+    r"claim(?:\s+my|\s+the)?\s+(?:rewards|yield|rental\s+yield|earnings?)|"
+    r"withdraw\s+(?:my\s+)?(?:rewards|yield)|"
+    r"i\s+want\s+to\s+claim(?:\s+(?:my\s+)?(?:rewards|yield))?|"
+    r"let(?:'s|\s+us)\s+claim(?:\s+(?:my\s+)?(?:rewards|yield))?|"
+    r"claim\s+pending\s+yield"
+    r")$"
 )
 
 # Bare invest openers — not a property name (mirror tenant pay-rent generic phrases).
@@ -279,6 +289,25 @@ def invest_workflow_active(session: dict | None) -> bool:
     )
 
 
+def wants_to_begin_claim_workflow(text: str) -> bool:
+    """True when the user opens a guided claim flow without naming a property."""
+    t = _normalize_text(text)
+    if not t:
+        return False
+    return bool(_GENERIC_CLAIM_PHRASE.match(t))
+
+
+def claim_workflow_active(session: dict | None) -> bool:
+    """True while a guided claim form is collecting fields (not after submit)."""
+    if not session:
+        return False
+    if session.get("submitted"):
+        return False
+    return bool(
+        session.get("in_progress") or session.get("awaiting_claim_confirmation")
+    )
+
+
 def _assistant_message_role(msg: Any) -> str:
     if isinstance(msg, dict):
         return (msg.get("type") or msg.get("role") or "").lower()
@@ -354,6 +383,20 @@ def investor_invest_wallet_permitted(
     if invest_workflow_active(invest_session):
         return True
     return has_explicit_invest_intent(user_text)
+
+
+def investor_claim_wallet_permitted(
+    user_text: str,
+    claim_session: dict | None = None,
+) -> bool:
+    """Whether claim modal / MetaMask submit actions may be emitted this turn."""
+    if claim_session and claim_session.get("completing_submit"):
+        return True
+    if claim_session and claim_session.get("awaiting_claim_confirmation"):
+        return False
+    if claim_workflow_active(claim_session):
+        return True
+    return has_explicit_claim_intent(user_text)
 
 
 def has_explicit_claim_intent(text: str) -> bool:
@@ -454,11 +497,17 @@ def format_investor_portfolio_speak(
     return "\n".join(lines)
 
 
-def wallet_ui_allowed(modal: str, user_text: str, *, invest_session: dict | None = None) -> bool:
+def wallet_ui_allowed(
+    modal: str,
+    user_text: str,
+    *,
+    invest_session: dict | None = None,
+    claim_session: dict | None = None,
+) -> bool:
     if modal == "INVEST_PROPERTY":
         return investor_invest_wallet_permitted(user_text, invest_session)
     if modal == "CLAIM_REWARDS":
-        return has_explicit_claim_intent(user_text)
+        return investor_claim_wallet_permitted(user_text, claim_session)
     return True
 
 
@@ -467,14 +516,16 @@ def sanitize_investor_wallet_actions(
     actions: list[AgentAction],
     *,
     invest_session: dict | None = None,
+    claim_session: dict | None = None,
 ) -> list[AgentAction]:
     """Drop invest/claim modal actions unless permitted for this turn."""
     if not actions:
         return actions
     user_text = extract_last_human_utterance(messages)
     invest_ok = investor_invest_wallet_permitted(user_text, invest_session)
-    claim_ok = has_explicit_claim_intent(user_text)
-    completing = bool((invest_session or {}).get("completing_submit"))
+    claim_ok = investor_claim_wallet_permitted(user_text, claim_session)
+    invest_completing = bool((invest_session or {}).get("completing_submit"))
+    claim_completing = bool((claim_session or {}).get("completing_submit"))
 
     filtered: list[AgentAction] = []
     for action in actions:
@@ -487,10 +538,14 @@ def sanitize_investor_wallet_actions(
         if (
             action.type == "SUBMIT_FORM"
             and modal == "INVEST_PROPERTY"
-            and not (invest_ok and completing)
+            and not (invest_ok and invest_completing)
         ):
             continue
-        if action.type == "SUBMIT_FORM" and modal == "CLAIM_REWARDS" and not claim_ok:
+        if (
+            action.type == "SUBMIT_FORM"
+            and modal == "CLAIM_REWARDS"
+            and not (claim_ok and claim_completing)
+        ):
             continue
         filtered.append(action)
     return filtered

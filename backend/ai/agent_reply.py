@@ -27,6 +27,10 @@ def tool_data_requires_verbatim_reply(data: dict[str, Any] | None) -> bool:
         return True
     if data.get("awaiting_pay_rent_confirmation"):
         return True
+    if data.get("awaiting_claim_confirmation"):
+        return True
+    if data.get("claim_yield_target"):
+        return True
     if data.get("pay_rent_property_target"):
         return True
     if data.get("awaiting_delete_confirmation"):

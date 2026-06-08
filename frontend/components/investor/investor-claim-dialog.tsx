@@ -20,6 +20,7 @@ import { cn, formatEth, shortAddress } from "@/lib/utils";
 import { currentSessionIdentity, identityDisplayName } from "@/lib/identity";
 import { sendClaimRewardsTx } from "@/components/investor/contract-actions";
 import {
+  clearPendingWorkflowActions,
   emitWorkflowCompletion,
   isWorkflowModalAction,
   subscribeWorkflowAction,
@@ -83,16 +84,18 @@ export function InvestorClaimDialog({
         tx_hash: tx.hash,
       });
       toast.success(`Claimed ${formatEth(result.claimed_amount_eth)}.`);
+      clearPendingWorkflowActions("CLAIM_REWARDS");
       emitWorkflowCompletion({
         modal: "CLAIM_REWARDS",
         status: "success",
-        message: `Claimed ${formatEth(result.claimed_amount_eth)} from ${reward.property_name ?? `Property #${reward.property_id}`}.`,
+        message: `Yield claimed successfully: ${formatEth(result.claimed_amount_eth)} from ${reward.property_name ?? `Property #${reward.property_id}`}.`,
       });
       queryClient.invalidateQueries({ queryKey: ["investor"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions });
       onClose();
       setStep("idle");
     } catch (err: any) {
+      clearPendingWorkflowActions("CLAIM_REWARDS");
       const errMsg = err?.message || "Claim failed.";
       toast.error(errMsg);
       emitWorkflowCompletion({ modal: "CLAIM_REWARDS", status: "error", message: errMsg });
@@ -106,6 +109,7 @@ export function InvestorClaimDialog({
       if (!isWorkflowModalAction(action, "CLAIM_REWARDS")) return;
       if (action.property_id !== undefined && !workflowPropertyMatches(action, reward?.property_id ?? "")) return;
       if (action.type === "SUBMIT_FORM") {
+        setStep("prepare");
         const tryClaim = (attemptsLeft: number) => {
           window.setTimeout(() => {
             if (open) {

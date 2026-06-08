@@ -36,6 +36,7 @@ from backend.ai.investor_guards import sanitize_investor_wallet_actions
 from backend.ai.prompts import system_prompt_for_role
 from backend.ai.schemas import AgentAction, ChatMessage, ChatResponse, InterruptResponse
 from backend.ai.tools import (
+    claim_workflow_session,
     create_property_deploy_pending,
     create_property_pending_name,
     create_property_server_submit_eligible,
@@ -54,6 +55,7 @@ from backend.ai.tools import (
     try_server_edit_property_continuation,
     try_server_investor_marketplace_browse,
     try_server_invest_property_turn,
+    try_server_investor_claim_yield_turn,
     try_server_investor_portfolio_overview,
     try_server_investor_wallet_affordability,
     try_server_tenant_pay_rent_turn,
@@ -256,7 +258,10 @@ async def _call_tools(state: AgentState, user: AuthUser, db: Any) -> dict:
     if role == "investor" and actions:
         before = len(actions)
         actions = sanitize_investor_wallet_actions(
-            messages, actions, invest_session=invest_workflow_session()
+            messages,
+            actions,
+            invest_session=invest_workflow_session(),
+            claim_session=claim_workflow_session(),
         )
         if len(actions) < before:
             LOGGER.info(
@@ -460,6 +465,8 @@ async def run_agent(
             preflight = await try_server_investor_wallet_affordability(user, db)
         if preflight is None and role == "investor":
             preflight = await try_server_invest_property_turn(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_investor_claim_yield_turn(user, db)
         if preflight is None and role == "tenant":
             preflight = await try_server_tenant_rental_browse(user, db)
         if preflight is None and role == "tenant":
@@ -640,6 +647,8 @@ async def stream_agent(
             preflight = await try_server_investor_wallet_affordability(user, db)
         if preflight is None and role == "investor":
             preflight = await try_server_invest_property_turn(user, db)
+        if preflight is None and role == "investor":
+            preflight = await try_server_investor_claim_yield_turn(user, db)
         if preflight is None and role == "tenant":
             preflight = await try_server_tenant_rental_browse(user, db)
         if preflight is None and role == "tenant":

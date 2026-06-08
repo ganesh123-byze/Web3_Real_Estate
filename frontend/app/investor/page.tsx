@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Building2, LineChart } from "lucide-react";
 import { InvestorTopbar } from "@/components/investor/investor-topbar";
 import { InvestorKpiCard } from "@/components/investor/investor-kpi-card";
@@ -25,6 +25,7 @@ import {
   InvestorClaimDialog,
   useInvestorClaimRewardsListener,
 } from "@/components/investor/investor-claim-dialog";
+import { takePendingModalOpen } from "@/lib/ai/action-executor";
 import { InvestorEarningsAndClaimSections } from "@/components/investor/investor-earnings-claim-sections";
 import type { ClaimableRewardProperty } from "@/lib/types";
 import { buildInvestorMetrics, humanTokenAmount, ownershipPercent } from "@/components/investor/investor-utils";
@@ -61,6 +62,13 @@ export default function InvestorDashboardPage() {
   const [selectedClaim, setSelectedClaim] = useState<ClaimableRewardProperty | null>(null);
   const recentTransactions = (transactions.data ?? []).slice(0, 4);
   useInvestorClaimRewardsListener(claimableProperties, setSelectedClaim);
+
+  useEffect(() => {
+    const next = claimableProperties.find((reward) =>
+      takePendingModalOpen("CLAIM_REWARDS", reward.property_id),
+    );
+    if (next) setSelectedClaim(next);
+  }, [claimableProperties]);
 
   return (
     <>

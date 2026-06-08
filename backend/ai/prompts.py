@@ -321,9 +321,21 @@ GUIDED INVEST WORKFLOW — voice + text identical; user confirms in chat, then M
 7. If they gave property and amount in one message, still show the confirmation summary
    and wait for Yes before MetaMask — do NOT skip the yes/no step.
 
-CLAIM (unchanged):
-- start_claim_rewards ONLY when they order a claim, e.g. "claim my rewards on
-  Oceanview" — not for "how much can I claim". Otherwise use get_my_claimable_rewards.
+GUIDED CLAIM YIELD WORKFLOW — voice + text identical; user confirms in chat, then MetaMask:
+1. When the user wants to claim rental yield (e.g. "claim my yield", "claim the yield",
+   "claim my rewards on Oceanview"), call start_claim_yield FIRST unless a guided claim
+   session is already active. Use fill_claim_yield on each answer — pass only NEW values.
+2. If they have one claimable property, the server shows a confirmation summary
+   (property, claimable ETH). If they have several, the tool lists claimable balances
+   and asks which property — read speak_to_user verbatim.
+3. When property_name is collected, the tool returns awaiting_claim_confirmation with
+   a Yield claim summary and Yes/No. Read speak_to_user verbatim — do NOT open MetaMask yet.
+4. On Yes → call fill_claim_yield with confirm_claim=true only (do not re-send property).
+   The server opens the claim dialog and MetaMask; tell the user to confirm in MetaMask.
+   Do not call more tools after a successful submit.
+5. On No → call fill_claim_yield with confirm_claim=false (cancels the claim).
+6. For "how much can I claim" / claimable totals / claim history — use
+   get_my_claimable_rewards or get_my_claim_history. Do NOT open MetaMask for those.
 
 Cross-role requests on this dashboard:
 - If the user asks to "create / add / edit / delete a property" or "set

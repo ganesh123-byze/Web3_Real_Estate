@@ -75,8 +75,16 @@ from backend.ai.investor_wallet_affordability import (
     read_wallet_balance_wei,
     wallet_affordability_property_prompt,
 )
+from backend.ai.investor_claim_flow import (
+    claim_property_ask_instruction,
+    claim_property_ask_speak,
+    investor_turn_interrupts_claim_workflow,
+    run_claim_yield_preflight,
+)
+from backend.ai.investor_claim_summary import format_claim_confirmation_summary
 from backend.ai.investor_guards import (
     claim_tool_blocked_message,
+    claim_workflow_active,
     extract_invest_property_hint_from_utterance,
     extract_last_human_utterance,
     format_invest_confirmation_summary,
@@ -159,6 +167,8 @@ from backend.services.rent_payment_funding import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+_CLAIM_MODAL = "CLAIM_REWARDS"
 
 # ---------------------------------------------------------------------------
 # Conversation context — exposes the current message history to tools that
@@ -376,6 +386,34 @@ def abort_invest_workflow_if_interrupted(utterance: str) -> bool:
     _clear_workflow_session(_INVEST_MODAL)
     LOGGER.info(
         "[invest] Cleared guided invest session (quick_action=%s)",
+        quick_action_id or "advisory_intent",
+    )
+    return True
+
+
+def _claim_session_interruptible(session: dict[str, Any] | None) -> bool:
+    if not session:
+        return False
+    if session.get("submitted") and not session.get("completing_submit"):
+        return False
+    return bool(
+        session.get("in_progress") or session.get("awaiting_claim_confirmation")
+    )
+
+
+def abort_claim_workflow_if_interrupted(utterance: str) -> bool:
+    """Drop guided claim draft when the user pivots to a quick action or browse intent."""
+    quick_action_id = _latest_human_quick_action_id()
+    if not investor_turn_interrupts_claim_workflow(
+        utterance, quick_action_id=quick_action_id
+    ):
+        return False
+    session = _get_workflow_session(_CLAIM_MODAL)
+    if not _claim_session_interruptible(session):
+        return False
+    _clear_workflow_session(_CLAIM_MODAL)
+    LOGGER.info(
+        "[claim] Cleared guided claim session (quick_action=%s)",
         quick_action_id or "advisory_intent",
     )
     return True
@@ -1179,6 +1217,108 @@ async def try_server_invest_property_turn(
         ensure_invest_session=lambda: _ensure_invest_session_started({}, user, db),
         fill_invest_property=_fill_invest_property,
         enrich_invest_result=_enrich_invest_preflight_result,
+    )
+
+
+def _enrich_claim_preflight_result(result: ToolResult, db: Any) -> ToolResult:
+    """Keep claim preflight on one property and authoritative speak_to_user lines."""
+    data = dict(result.data or {})
+    data["claim_yield_target"] = True
+
+    if not result.ok:
+        message = (result.error or data.get("speak_to_user") or "").strip()
+        if message:
+            data["speak_to_user"] = message
+            data["speak_verbatim"] = True
+            return ToolResult(ok=True, data=data, actions=result.actions)
+        return result
+
+    if data.get("submitted"):
+        data.setdefault("speak_verbatim", True)
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+    if data.get("awaiting_claim_confirmation"):
+        pid = data.get("property_id")
+        row = next(
+            (
+                item
+                for item in data.get("claimable_properties") or []
+                if int(item.get("property_id") or 0) == int(pid or 0)
+            ),
+            None,
+        )
+        if row:
+            data["speak_to_user"] = format_claim_confirmation_summary(row)
+            data["speak_verbatim"] = True
+        data.setdefault("speak_verbatim", True)
+        return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+    if data.get("next_field") == "property_name" and not data.get("property_id"):
+        claimable = data.get("claimable_properties") or []
+        if len(claimable) > 1:
+            lines = ["Claimable yield by property:"]
+            for item in claimable:
+                name = item.get("property_name") or f"Property #{item.get('property_id')}"
+                lines.append(
+                    f"- {name} (#{item.get('property_id')}): "
+                    f"{item.get('claimable_amount_eth')} ETH"
+                )
+            lines.append("")
+            lines.append(claim_property_ask_speak(filled=data.get("filled")))
+            data["speak_to_user"] = "\n".join(lines)
+        else:
+            data.setdefault("speak_to_user", claim_property_ask_speak(filled=data.get("filled")))
+        data["speak_verbatim"] = True
+        data.setdefault("instruction", claim_property_ask_instruction(filled=data.get("filled")))
+
+    return ToolResult(ok=result.ok, data=data, actions=result.actions, error=result.error)
+
+
+async def try_server_investor_claim_yield_turn(
+    user: AuthUser, db: Any
+) -> ToolResult | None:
+    """Resolve explicit yield-claim orders server-side (chat/voice)."""
+    if canonical_role(user.role) != "investor":
+        return None
+
+    utterance = _latest_human_utterance().strip()
+    if not utterance:
+        return None
+
+    session = _get_workflow_session(_CLAIM_MODAL)
+    if (
+        has_explicit_claim_intent(utterance)
+        and not claim_workflow_active(session)
+        and not session.get("awaiting_claim_confirmation")
+        and not session.get("completing_submit")
+    ):
+        claimable = _list_claimable_reward_rows(user, db)
+        if not claimable:
+            return ToolResult(
+                ok=True,
+                data={
+                    "speak_to_user": (
+                        "You have no claimable rental yield right now. "
+                        "Rewards appear here after tenants pay rent and distributions accrue."
+                    ),
+                    "speak_verbatim": True,
+                    "claim_yield_target": True,
+                },
+                actions=[],
+            )
+
+    return await run_claim_yield_preflight(
+        user,
+        db,
+        utterance=utterance,
+        quick_action_id=_latest_human_quick_action_id(),
+        history=_current_history(),
+        session=session,
+        abort_claim_workflow=abort_claim_workflow_if_interrupted,
+        ensure_claim_session=lambda: _ensure_claim_session_started({}, user, db),
+        fill_claim_yield=_fill_claim_yield,
+        enrich_claim_result=_enrich_claim_preflight_result,
+        list_claimable_properties=_list_claimable_reward_rows,
     )
 
 
@@ -7062,54 +7202,599 @@ register(ToolSpec(
 ))
 
 
-async def _start_claim_rewards(args: dict, _user: AuthUser, db: Any) -> ToolResult:
+_CLAIM_FIELDS = ("property_name",)
+_CLAIM_REQUIRED = ("property_name",)
+
+
+def claim_workflow_session() -> dict:
+    """Current guided claim session for this thread (used by agent guards)."""
+    return _get_workflow_session(_CLAIM_MODAL)
+
+
+def _list_claimable_reward_rows(user: AuthUser, db: Any) -> list[dict[str, Any]]:
+    """Claimable yield rows for the signed-in investor wallet."""
+    wallet = (user.wallet_address or "").strip()
+    if not wallet:
+        return []
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"""
+            SELECT irp.property_id,
+                   p.name AS property_name,
+                   SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))) AS claimable_wei,
+                   COUNT(*) AS pending_payouts
+            FROM investor_rent_payouts irp
+            {active_property_join("p.id = irp.property_id")}
+            WHERE LOWER(irp.investor_wallet) = LOWER(%s)
+              AND COALESCE(irp.claim_status, 'claimable') = 'claimable'
+            GROUP BY irp.property_id, p.name
+            HAVING SUM(CAST(irp.payout_amount_wei AS DECIMAL(36,0))) > 0
+            ORDER BY claimable_wei DESC
+            """,
+            (wallet,),
+        )
+        rows = cursor.fetchall() or []
+    finally:
+        cursor.close()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        wei = int(row.get("claimable_wei") or 0)
+        if wei <= 0:
+            continue
+        items.append(
+            {
+                "property_id": int(row["property_id"]),
+                "property_name": row.get("property_name"),
+                "claimable_amount_wei": str(wei),
+                "claimable_amount_eth": _eth(wei),
+                "pending_payouts": int(row.get("pending_payouts") or 0),
+            }
+        )
+    return items
+
+
+def _claimable_items_as_properties(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": int(item["property_id"]),
+            "name": item.get("property_name") or f"Property {item['property_id']}",
+            "property_id": int(item["property_id"]),
+            "claimable_amount_eth": item.get("claimable_amount_eth"),
+            "pending_payouts": item.get("pending_payouts"),
+        }
+        for item in items
+    ]
+
+
+def _resolve_claimable_property(
+    user: AuthUser,
+    db: Any,
+    name: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Fuzzy-match a spoken property name to a single claimable listing."""
+    query = (name or "").strip()
+    items = _list_claimable_reward_rows(user, db)
+    if not items:
+        return None, "You have no claimable rental yield right now."
+    props = _claimable_items_as_properties(items)
+    pid = _property_id_from_query(query)
+    if pid is not None:
+        match = next((item for item in items if int(item["property_id"]) == pid), None)
+        if match:
+            return match, None
+        return None, f"Property #{pid} has no claimable yield for your wallet."
+    from backend.ai.property_name_resolution import resolve_investable_property_from_items
+
+    prop, err = resolve_investable_property_from_items(
+        props,
+        query,
+        is_investable=lambda _row: None,
+    )
+    if err or not prop:
+        return None, err or "I could not match that property to a claimable yield balance."
+    match = next(
+        (item for item in items if int(item["property_id"]) == int(prop["id"])),
+        None,
+    )
+    return match, None if match else "That property has no claimable yield for your wallet."
+
+
+def _claim_actions_on_submit(property_id: int) -> list[AgentAction]:
+    pid = int(property_id)
+    return [
+        AgentAction(type="NAVIGATE", route="/investor"),
+        AgentAction(type="OPEN_MODAL", modal=_CLAIM_MODAL, property_id=pid),
+        AgentAction(type="SUBMIT_FORM", modal=_CLAIM_MODAL, property_id=pid),
+    ]
+
+
+def _parse_confirm_claim_arg(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    return bool(value)
+
+
+def _claim_confirmation_instruction() -> str:
+    return (
+        "Read speak_to_user verbatim — it is the full yield claim summary with Yes/No. "
+        "Wait for the user's reply. On Yes call fill_claim_yield with confirm_claim=true "
+        "only (do not re-send the property name). On No call fill_claim_yield with "
+        "confirm_claim=false."
+    )
+
+
+def _claim_enter_confirmation(
+    accumulated: dict[str, str],
+    *,
+    claim_row: dict[str, Any],
+) -> ToolResult:
+    property_id = int(claim_row["property_id"])
+    resolved_name = str(claim_row.get("property_name") or f"Property {property_id}")
+    summary = format_claim_confirmation_summary(claim_row)
+    _set_workflow_session(
+        _CLAIM_MODAL,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": None,
+            "submitted": False,
+            "completing_submit": False,
+            "awaiting_claim_confirmation": True,
+            "property_id": property_id,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": accumulated,
+            "missing": [],
+            "submitted": False,
+            "next_field": None,
+            "property_id": property_id,
+            "property_name": resolved_name,
+            "awaiting_claim_confirmation": True,
+            "confirmation_summary": summary,
+            "speak_to_user": summary,
+            "speak_verbatim": True,
+            "claim_yield_target": True,
+            "claimable_properties": [claim_row],
+            "instruction": _claim_confirmation_instruction(),
+        },
+        actions=[],
+    )
+
+
+def _claim_replay_confirmation(
+    session: dict[str, Any],
+    user: AuthUser,
+    db: Any,
+) -> ToolResult:
+    filled = dict(session.get("filled") or {})
+    property_id = session.get("property_id")
+    claim_row, err = _resolve_claimable_property(
+        user,
+        db,
+        filled.get("property_name") or f"#{property_id}",
+    )
+    if err or not claim_row:
+        return ToolResult(
+            ok=False,
+            error=err or "Claimable property not found.",
+            data={
+                "filled": filled,
+                "missing": [],
+                "submitted": False,
+                "claim_yield_target": True,
+            },
+        )
+    return _claim_enter_confirmation(filled, claim_row=claim_row)
+
+
+async def _execute_claim_rewards_ui(
+    property_id: int,
+    user: AuthUser,
+    db: Any,
+) -> ToolResult:
+    """Validate claimable balance, then open MetaMask via the claim dialog."""
+    pid = int(property_id)
+    cursor = db.cursor(dictionary=True)
+    try:
+        prop = fetch_active_property(cursor, pid)
+        if not prop:
+            return ToolResult(ok=False, error=property_unavailable_message(pid))
+    finally:
+        cursor.close()
+
+    wallet = (user.wallet_address or "").strip()
+    if not wallet:
+        return ToolResult(ok=False, error="Wallet address is required to claim yield.")
+
+    from backend.services.blockchain import get_property_claimable_rewards, get_web3
+
+    web3 = get_web3()
+    checksum = web3.to_checksum_address(wallet)
+    try:
+        chain_claimable_wei = int(get_property_claimable_rewards(pid, checksum))
+    except Exception as exc:  # noqa: BLE001
+        return ToolResult(
+            ok=False,
+            error=f"Could not read claimable yield on-chain: {exc}",
+            data={"property_id": pid, "sync_failed": True},
+        )
+    if chain_claimable_wei <= 0:
+        return ToolResult(
+            ok=False,
+            error="No claimable yield for this property right now.",
+            data={"property_id": pid, "property_name": prop.get("name")},
+        )
+
+    speak = (
+        f"Opening yield claim for {prop['name']}. "
+        "Confirm the transaction in MetaMask when it opens."
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "message": speak,
+            "property_id": pid,
+            "property_name": prop.get("name"),
+            "claimable_amount_eth": _eth(chain_claimable_wei),
+            "success_message": speak,
+            "speak_to_user": speak,
+            "claim_yield_target": True,
+        },
+        actions=_claim_actions_on_submit(pid),
+    )
+
+
+async def _ensure_claim_session_started(
+    _args: dict,
+    user: AuthUser,
+    db: Any,
+) -> ToolResult:
+    return await _start_claim_yield({}, user, db)
+
+
+async def _start_claim_yield(_args: dict, _user: AuthUser, db: Any) -> ToolResult:
+    """Begin guided yield claim: collect property (if needed), confirm, then MetaMask."""
+    modal = _CLAIM_MODAL
+    session = _get_workflow_session(modal)
+    if session.get("submitted") or not session.get("filled"):
+        _clear_workflow_session(modal)
+        session = {}
+    filled = dict(session.get("filled") or {})
+    claimable = _list_claimable_reward_rows(_user, db)
+    next_field = "property_name"
+    _set_workflow_session(
+        modal,
+        {
+            "in_progress": True,
+            "filled": filled,
+            "next_field": next_field,
+            "submitted": False,
+            "completing_submit": False,
+        },
+    )
+    if not claimable:
+        speak = (
+            "You have no claimable rental yield right now. "
+            "Rewards appear here after tenants pay rent and distributions accrue."
+        )
+    elif len(claimable) == 1:
+        speak = (
+            f"You have claimable yield in {claimable[0].get('property_name')}. "
+            "I'll show a confirmation summary next."
+        )
+    elif filled:
+        speak = (
+            f"Already collected: {', '.join(f'{k}={v}' for k, v in filled.items())}. "
+            f"What is the {next_field.replace('_', ' ')}?"
+        )
+    else:
+        lines = ["Claimable yield by property:"]
+        for item in claimable:
+            name = item.get("property_name") or f"Property #{item.get('property_id')}"
+            lines.append(
+                f"- {name} (#{item.get('property_id')}): "
+                f"{item.get('claimable_amount_eth')} ETH"
+            )
+        lines.append("")
+        lines.append(claim_property_ask_speak())
+        speak = "\n".join(lines)
+    return ToolResult(
+        ok=True,
+        data={
+            "workflow": "claim_yield",
+            "filled": filled,
+            "missing": [f for f in _CLAIM_REQUIRED if f not in filled or not filled.get(f)],
+            "next_field": next_field,
+            "claimable_properties": claimable,
+            "speak_to_user": speak,
+            "speak_verbatim": True,
+            "claim_yield_target": True,
+            "instruction": claim_property_ask_instruction(filled=filled or None),
+        },
+        actions=[],
+    )
+
+
+async def _fill_claim_yield(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    """Collect property name, confirm yes/no, then open MetaMask."""
+    modal = _CLAIM_MODAL
+    tool_name = "fill_claim_yield"
+    prior_session = _get_workflow_session(modal)
+    claimable = _list_claimable_reward_rows(user, db)
+
+    utterance = extract_last_human_utterance(_current_history())
+    if prior_session.get("awaiting_claim_confirmation"):
+        confirm = _parse_confirm_claim_arg(args.get("confirm_claim"))
+        if confirm is None:
+            confirm = parse_yes_no_confirmation(utterance)
+        if confirm is False:
+            _clear_workflow_session(modal)
+            return ToolResult(
+                ok=True,
+                data={
+                    "speak_to_user": (
+                        "Yield claim cancelled. Say claim my yield when you are ready to try again."
+                    ),
+                    "speak_verbatim": True,
+                    "claim_yield_target": True,
+                },
+                actions=[],
+            )
+        if confirm is True:
+            filled = dict(prior_session.get("filled") or {})
+            _set_workflow_session(
+                modal,
+                {**prior_session, "awaiting_claim_confirmation": False},
+            )
+            return await _fill_claim_yield(
+                {
+                    "property_name": filled.get("property_name"),
+                    "submit": True,
+                },
+                user,
+                db,
+            )
+        if not args.get("property_name") and not args.get("submit"):
+            return _claim_replay_confirmation(prior_session, user, db)
+
+    accumulated = _recover_form_state(modal, tool_name, _CLAIM_FIELDS)
+    for field in _CLAIM_FIELDS:
+        value = args.get(field)
+        if value is None or value == "":
+            continue
+        accumulated[field] = str(value).strip()
+
+    accumulated = _merge_last_user_utterance(
+        accumulated, modal, _CLAIM_FIELDS, _CLAIM_REQUIRED
+    )
+
+    claim_row: dict[str, Any] | None = None
+    property_id: int | None = None
+    resolved_name: str | None = None
+    if accumulated.get("property_name"):
+        claim_row, err = _resolve_claimable_property(user, db, accumulated["property_name"])
+        if err:
+            missing = [
+                f for f in _CLAIM_REQUIRED if f not in accumulated or not accumulated.get(f)
+            ]
+            return ToolResult(
+                ok=False,
+                error=err,
+                data={
+                    "filled": accumulated,
+                    "missing": missing,
+                    "next_field": "property_name",
+                    "submitted": False,
+                    "claimable_properties": claimable,
+                    "claim_yield_target": True,
+                },
+            )
+        property_id = int(claim_row["property_id"])
+        resolved_name = str(claim_row.get("property_name") or accumulated["property_name"])
+        accumulated["property_id"] = str(property_id)
+        accumulated["property_name"] = resolved_name
+
+    missing = [f for f in _CLAIM_REQUIRED if f not in accumulated or not accumulated.get(f)]
+    submit = bool(args.get("submit"))
+    next_field = missing[0] if missing else None
+
+    instruction: str | None = None
+    if accumulated and next_field:
+        instruction = (
+            "Already collected: "
+            + ", ".join(f"{k}={v!r}" for k, v in accumulated.items())
+            + f". Ask the user for {next_field} next."
+        )
+    elif not missing:
+        instruction = _claim_confirmation_instruction()
+
+    if submit and not missing and property_id is not None:
+        result = await _execute_claim_rewards_ui(property_id, user, db)
+        if not result.ok:
+            return ToolResult(
+                ok=False,
+                error=result.error,
+                data={
+                    **(result.data or {}),
+                    "filled": accumulated,
+                    "missing": [],
+                    "submitted": False,
+                    "property_id": property_id,
+                    "property_name": resolved_name,
+                    "claim_yield_target": True,
+                },
+            )
+        _set_workflow_session(
+            modal,
+            {
+                "in_progress": False,
+                "filled": accumulated,
+                "next_field": None,
+                "submitted": True,
+                "completing_submit": True,
+                "property_id": property_id,
+            },
+        )
+        payload = result.data or {}
+        speak = str(payload.get("speak_to_user") or payload.get("message") or "")
+        return ToolResult(
+            ok=True,
+            data={
+                "filled": accumulated,
+                "missing": [],
+                "submitted": True,
+                "property_id": property_id,
+                "property_name": resolved_name,
+                "success_message": speak,
+                "speak_to_user": speak,
+                "instruction": "Tell the user to confirm the transaction in MetaMask.",
+                "claim_yield_target": True,
+            },
+            actions=result.actions,
+        )
+
+    if submit and missing:
+        return ToolResult(
+            ok=False,
+            error=(
+                "Cannot submit yet. Still missing: "
+                + ", ".join(missing)
+                + f". Ask the user for {next_field} next."
+            ),
+            data={
+                "filled": accumulated,
+                "missing": missing,
+                "submitted": False,
+                "next_field": next_field,
+                "instruction": instruction,
+                "claimable_properties": claimable,
+                "claim_yield_target": True,
+            },
+        )
+
+    if not missing and claim_row is not None:
+        return _claim_enter_confirmation(accumulated, claim_row=claim_row)
+
+    _set_workflow_session(
+        modal,
+        {
+            "in_progress": True,
+            "filled": accumulated,
+            "next_field": next_field,
+            "submitted": False,
+            "completing_submit": False,
+            "property_id": property_id,
+        },
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "filled": accumulated,
+            "missing": missing,
+            "submitted": False,
+            "next_field": next_field,
+            "property_id": property_id,
+            "property_name": resolved_name,
+            "instruction": instruction,
+            "claimable_properties": claimable,
+            "claim_yield_target": True,
+        },
+        actions=[],
+    )
+
+
+register(ToolSpec(
+    name="start_claim_yield",
+    description=(
+        "Begin the guided yield-claim workflow when the user wants to claim rental "
+        "rewards (e.g. 'claim my yield'). Use fill_claim_yield on each answer."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    roles=frozenset({"investor"}),
+    handler=_start_claim_yield,
+))
+
+
+register(ToolSpec(
+    name="fill_claim_yield",
+    description=(
+        "Drive the guided yield-claim workflow after start_claim_yield. Pass only NEW "
+        "values; the server merges prior turns. When property_name is collected the tool "
+        "returns awaiting_claim_confirmation — wait for Yes/No. On Yes call with "
+        "confirm_claim=true only to open MetaMask."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "property_name": {
+                "type": "string",
+                "description": "Spoken property name, e.g. 'Sunset Villas' or '#4'.",
+            },
+            "confirm_claim": {
+                "type": "boolean",
+                "description": (
+                    "Only when awaiting_claim_confirmation is true: true after the user "
+                    "says Yes to proceed, false when they cancel."
+                ),
+            },
+            "submit": {
+                "type": "boolean",
+                "description": "Internal/server use after confirmation.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    roles=frozenset({"investor"}),
+    handler=_fill_claim_yield,
+))
+
+
+async def _start_claim_rewards(args: dict, user: AuthUser, db: Any) -> ToolResult:
+    """Legacy shortcut when property_id is already known — prefer guided claim flow."""
     user_text = extract_last_human_utterance(_current_history())
     if not has_explicit_claim_intent(user_text):
         return ToolResult(
             ok=False,
             error=claim_tool_blocked_message(),
-            data={"blocked_wallet_ui": True, "modal": "CLAIM_REWARDS"},
+            data={"blocked_wallet_ui": True, "modal": _CLAIM_MODAL},
         )
     pid = args.get("property_id")
     if not pid:
-        return ToolResult(ok=False, error="property_id is required.")
-    cursor = db.cursor(dictionary=True)
-    try:
-        prop = fetch_active_property(cursor, int(pid))
-        if not prop:
-            return ToolResult(ok=False, error=property_unavailable_message(int(pid)))
-    finally:
-        cursor.close()
-    return ToolResult(
-        ok=True,
-        data={
-            "message": (
-                f"Opened the claim dialog for {prop['name']}. "
-                "The user must tap Claim via MetaMask when ready — never auto-submit from chat."
-            ),
-            "property_id": int(pid),
-        },
-        actions=[
-            AgentAction(type="NAVIGATE", route="/investor"),
-            AgentAction(type="OPEN_MODAL", modal="CLAIM_REWARDS", property_id=int(pid)),
-        ],
+        return await _start_claim_yield({}, user, db)
+    return await _fill_claim_yield(
+        {"property_name": f"#{int(pid)}"},
+        user,
+        db,
     )
 
 
 register(ToolSpec(
     name="start_claim_rewards",
     description=(
-        "LAST RESORT — only when the user's latest message explicitly orders a claim "
-        "(e.g. 'claim my rewards on Sunset Villas'). Never use for 'how much can I "
-        "claim', claimable totals, or claim history — use get_my_claimable_rewards or "
-        "get_my_claim_history instead. User confirms in the dialog via MetaMask."
+        "Shortcut when property_id is known. Prefer start_claim_yield + fill_claim_yield "
+        "for chat/voice. Never use for claimable totals or history — use "
+        "get_my_claimable_rewards or get_my_claim_history instead."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "property_id": {"type": "integer", "description": "ID of the property to claim rewards from."},
+            "property_id": {
+                "type": "integer",
+                "description": "Optional ID when the user named a specific property.",
+            },
         },
-        "required": ["property_id"],
         "additionalProperties": False,
     },
     roles=frozenset({"investor"}),
