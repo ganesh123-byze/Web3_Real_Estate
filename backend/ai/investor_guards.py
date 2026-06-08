@@ -18,7 +18,7 @@ from backend.ai.schemas import AgentAction
 
 _INVESTOR_WALLET_MODALS = frozenset({"INVEST_PROPERTY", "CLAIM_REWARDS"})
 
-INVEST_TARGET_SUMMARY_HEADING = "Investment summary"
+INVEST_TARGET_SUMMARY_HEADING = "Property summary"
 PORTFOLIO_YIELD_SUMMARY_HEADING = "Yield & returns summary"
 INVESTOR_PORTFOLIO_HEADING = "Your portfolio details"
 
@@ -991,45 +991,14 @@ def _format_eth_amount(raw: Any) -> str:
     return format_chat_stat_eth_amount(raw)
 
 
-def _derive_invest_property_summary_rows(prop: dict[str, Any]) -> list[str]:
-    """Label: value rows for the investor Investment summary card in chat/voice."""
-    name = str(prop.get("name") or f"Property {prop.get('id')}")
-    pid = prop.get("id")
-    location = str(prop.get("location") or "").strip()
-    available = _format_token_count(prop.get("tokens_available"))
-    token_price = _format_eth_amount(prop.get("token_sale_price_eth"))
-    try:
-        monthly_rent = float(prop.get("monthly_rent_eth") or 0)
-    except (TypeError, ValueError):
-        monthly_rent = 0.0
-
-    return [
-        f"Property name: {name} (#{pid})",
-        f"Location: {location or '—'}",
-        f"Tokens available: {available}",
-        (
-            f"Price per token: {token_price} ETH"
-            if token_price and token_price not in ("0", "0.0")
-            else "Price per token: —"
-        ),
-        (
-            f"Monthly rent: {_format_eth_amount(monthly_rent)} ETH"
-            if monthly_rent > 0
-            else "Monthly rent: —"
-        ),
-    ]
-
-
 def format_invest_confirmation_summary(
     prop: dict[str, Any],
     token_amount: int | str | None,
 ) -> str:
     """Full invest order summary with yes/no confirmation footer."""
-    summary = format_invest_target_property_speak(prop, token_amount=token_amount)
-    return (
-        f"{summary}\n\n"
-        "Reply Yes to proceed with this investment in MetaMask, or No to cancel."
-    )
+    from backend.ai.investor_invest_summary import format_invest_confirmation_summary as _fmt
+
+    return _fmt(prop, token_amount)
 
 
 def format_invest_target_property_speak(
@@ -1037,33 +1006,15 @@ def format_invest_target_property_speak(
     *,
     token_amount: int | str | None = None,
 ) -> str:
-    """Single-property summary for an invest order — investment summary card format."""
-    lines = [INVEST_TARGET_SUMMARY_HEADING, *_derive_invest_property_summary_rows(prop)]
+    """Property preview or investment order summary for chat/voice cards."""
+    from backend.ai.investor_invest_summary import (
+        format_invest_order_summary_speak,
+        format_invest_property_summary_speak,
+    )
 
     if token_amount is not None:
-        try:
-            amount_int = int(token_amount)
-        except (TypeError, ValueError):
-            amount_int = None
-        price = _format_eth_amount(prop.get("token_sale_price_eth"))
-        if amount_int and amount_int > 0:
-            if price and price not in ("0", "0.0"):
-                try:
-                    total = float(price) * amount_int
-                    lines.append(
-                        f"Order size: {amount_int} token{'s' if amount_int != 1 else ''} "
-                        f"(about {_format_eth_amount(total)} ETH plus gas)"
-                    )
-                except (TypeError, ValueError):
-                    lines.append(
-                        f"Order size: {amount_int} token{'s' if amount_int != 1 else ''}"
-                    )
-            else:
-                lines.append(
-                    f"Order size: {amount_int} token{'s' if amount_int != 1 else ''}"
-                )
-
-    return "\n".join(lines)
+        return format_invest_order_summary_speak(prop, token_amount)
+    return format_invest_property_summary_speak(prop)
 
 
 from backend.ai.investor_marketplace import (  # noqa: E402

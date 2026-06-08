@@ -521,7 +521,7 @@ def test_invest_property_id_asks_for_token_count_not_previous_amount():
         speak = str(result.data.get("speak_to_user") or "")
         assert "How many tokens" in speak
         assert "Burj Vista" in speak
-        assert "Investment summary" in speak
+        assert "Property summary" in speak
         assert "How many tokens" in speak
         assert "MetaMask" not in speak
         assert result.data.get("filled", {}).get("token_amount") in (None, "")
@@ -740,28 +740,30 @@ def test_marketplace_then_property_name_starts_invest_workflow():
 
 
 def test_format_invest_target_is_single_property_not_catalog():
-    text = format_invest_target_property_speak(
-        {
-            "id": 5,
-            "name": "Gold Plaza",
-            "location": "Hyderabad",
-            "token_symbol": "GP",
-            "sold_percentage": "12",
-            "tokens_available": "900",
-            "token_sale_price_eth": "0.5",
-            "monthly_rent_eth": "1",
-        },
-        token_amount=1,
-    )
-    assert "Investment summary" in text
-    assert "Property name: Gold Plaza (#5)" in text
-    assert "Location: Hyderabad" in text
-    assert "Tokens available: 900" in text
-    assert "Price per token: 0.5 ETH" in text
-    assert "Monthly rent: 1 ETH" in text
-    assert "Avg. rental yield:" not in text
-    assert "Order size: 1 token" in text
-    assert "Here are the properties open for investment" not in text
+    prop = {
+        "id": 5,
+        "name": "Gold Plaza",
+        "location": "Hyderabad",
+        "token_symbol": "GP",
+        "sold_percentage": "12",
+        "tokens_available": "900",
+        "token_sale_price_eth": "0.5",
+        "monthly_rent_eth": "1",
+    }
+    preview = format_invest_target_property_speak(prop)
+    assert "Property summary" in preview
+    assert "Property Name: Gold Plaza (#5)" in preview
+    assert "Location: Hyderabad" in preview
+    assert "Tokens Available: 900" in preview
+    assert "Monthly Rent: 1 ETH" in preview
+    assert "Price per token" not in preview
+    assert "Here are the properties open for investment" not in preview
+
+    order = format_invest_target_property_speak(prop, token_amount=1)
+    assert "Investment summary" in order
+    assert "Token buying: 1 token" in order
+    assert "Total amount: 0.5 ETH" in order
+    assert "Avg. rental yield:" not in order
 
 
 def test_preflight_invest_order_not_marketplace_catalog():
