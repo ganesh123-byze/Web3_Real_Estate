@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -24,6 +25,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning className={inter.variable}>
       <body className="min-h-screen bg-background font-sans text-foreground">
+        {/* Fallback when build-time env is empty (e.g. Render static); Vercel uses NEXT_PUBLIC_* first. */}
+        <Script src="/runtime-config.js" strategy="beforeInteractive" />
         <BackgroundMesh />
         <Providers>{children}</Providers>
       </body>
