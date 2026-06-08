@@ -59,7 +59,7 @@ def test_invest_waits_for_confirmation_when_all_fields_arrive_same_turn(monkeypa
         monkeypatch.setattr(
             tools,
             "_resolve_property_by_name",
-            lambda _db, _name: (
+            lambda _db, _name, **kwargs: (
                 {"id": 7, "name": "Oceanview", "token_address": "0x1", "tokens_available": "100"},
                 None,
             ),
@@ -74,7 +74,10 @@ def test_invest_waits_for_confirmation_when_all_fields_arrive_same_turn(monkeypa
         assert res.ok
         assert bool(res.data.get("awaiting_invest_confirmation")) is True
         assert bool(res.data.get("submitted")) is False
-        assert "Reply Yes" in str(res.data.get("speak_to_user") or "")
+        speak = str(res.data.get("speak_to_user") or "")
+        assert "Investment summary" in speak
+        assert "Token buying: 5 tokens" in speak
+        assert "Reply Yes" in speak
         assert not any(a.type == "SUBMIT_FORM" for a in res.actions)
     finally:
         tools._clear_workflow_session("INVEST_PROPERTY")
@@ -90,7 +93,7 @@ def test_invest_submits_after_confirmation_yes(monkeypatch):
         monkeypatch.setattr(
             tools,
             "_resolve_property_by_name",
-            lambda _db, _name: (
+            lambda _db, _name, **kwargs: (
                 {
                     "id": 11,
                     "name": "Sunset Villas",
@@ -106,6 +109,7 @@ def test_invest_submits_after_confirmation_yes(monkeypatch):
         assert first.ok
         assert bool(first.data.get("submitted")) is False
         assert first.data.get("next_field") == "token_amount"
+        assert "Property summary" in str(first.data.get("speak_to_user") or "")
 
         tools.set_current_messages(
             [
@@ -120,7 +124,10 @@ def test_invest_submits_after_confirmation_yes(monkeypatch):
         assert second.ok
         assert bool(second.data.get("awaiting_invest_confirmation")) is True
         assert bool(second.data.get("submitted")) is False
-        assert "Reply Yes" in str(second.data.get("speak_to_user") or "")
+        speak_second = str(second.data.get("speak_to_user") or "")
+        assert "Investment summary" in speak_second
+        assert "Token buying: 12 tokens" in speak_second
+        assert "Reply Yes" in speak_second
 
         tools.set_current_messages(
             [

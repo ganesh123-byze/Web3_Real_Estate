@@ -1109,8 +1109,7 @@ def _enrich_invest_preflight_result(
     if property_id and next_field == "token_amount":
         row = _load_invest_property_row(db, int(property_id)) if db is not None else None
         if row:
-            amount_hint = parsed.get("token_amount") or data.get("token_amount")
-            summary = format_invest_target_property_speak(row, token_amount=amount_hint)
+            summary = format_invest_target_property_speak(row)
             from backend.ai.investor_invest_flow import INVEST_TOKEN_ASK
 
             data["speak_to_user"] = f"{summary}\n\n{INVEST_TOKEN_ASK}"
@@ -5648,19 +5647,19 @@ def _invest_confirmation_instruction() -> str:
     )
 
 
-def _invest_reject_invalid_token_amount_result(
+def _invest_reject_token_amount_result(
     utterance: str,
     accumulated: dict[str, str],
     *,
     property_id: int | None = None,
-    reason: str = "decimal",
+    message: str,
+    instruction: str,
 ) -> ToolResult:
-    """Reject invalid token counts (decimal, negative, or zero) with a clear prompt."""
+    """Reject a token_amount answer and keep collecting tokens for the same property."""
     modal = _INVEST_MODAL
     accumulated = dict(accumulated)
     accumulated.pop("token_amount", None)
     missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
-    message = invest_invalid_token_amount_message(utterance, reason=reason)
     _set_workflow_session(
         modal,
         {
@@ -5684,10 +5683,87 @@ def _invest_reject_invalid_token_amount_result(
             "invest_property_target": True,
             "speak_to_user": message,
             "speak_verbatim": True,
-            "instruction": (
-                "Read speak_to_user verbatim. Ask again for a whole number of tokens only."
-            ),
+            "instruction": instruction,
         },
+    )
+
+
+def _invest_reject_invalid_token_amount_result(
+    utterance: str,
+    accumulated: dict[str, str],
+    *,
+    property_id: int | None = None,
+    reason: str = "decimal",
+) -> ToolResult:
+    """Reject invalid token counts (decimal, negative, or zero) with a clear prompt."""
+    return _invest_reject_token_amount_result(
+        utterance,
+        accumulated,
+        property_id=property_id,
+        message=invest_invalid_token_amount_message(utterance, reason=reason),
+        instruction=(
+            "Read speak_to_user verbatim. Ask again for a whole number of tokens only."
+        ),
+    )
+
+
+def _invest_reject_exceeds_available_tokens_result(
+    token_amount: str,
+    accumulated: dict[str, str],
+    *,
+    property_id: int | None,
+    prop: dict[str, Any],
+) -> ToolResult:
+    """Reject token counts above the listing's tokens_available."""
+    from backend.ai.investor_invest_validation import invest_exceeds_available_tokens_message
+
+    return _invest_reject_token_amount_result(
+        token_amount,
+        accumulated,
+        property_id=property_id,
+        message=invest_exceeds_available_tokens_message(token_amount, prop),
+        instruction=(
+            "Read speak_to_user verbatim. Ask again for a token count that does not "
+            "exceed the available supply shown in the property summary."
+        ),
+    )
+
+
+def _invest_property_row_for_supply_check(
+    db: Any,
+    property_id: int | None,
+    resolved_prop: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if db is not None and property_id is not None:
+        fresh = _load_invest_property_row(db, int(property_id))
+        if fresh:
+            return fresh
+    return resolved_prop
+
+
+def _invest_check_token_amount_within_supply(
+    accumulated: dict[str, str],
+    *,
+    property_id: int | None,
+    resolved_prop: dict[str, Any] | None,
+    db: Any,
+) -> ToolResult | None:
+    """Return a rejection result when token_amount exceeds tokens_available."""
+    from backend.ai.investor_invest_validation import invest_token_amount_exceeds_available
+
+    token_value = str(accumulated.get("token_amount") or "").strip()
+    if not token_value or not invest_token_amount_field_is_valid(token_value):
+        return None
+    prop = _invest_property_row_for_supply_check(db, property_id, resolved_prop)
+    if not prop:
+        return None
+    if not invest_token_amount_exceeds_available(token_value, prop):
+        return None
+    return _invest_reject_exceeds_available_tokens_result(
+        token_value,
+        accumulated,
+        property_id=property_id,
+        prop=prop,
     )
 
 
@@ -6037,6 +6113,15 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
         if prev_pid is not None and int(prev_pid) != property_id:
             accumulated.pop("token_amount", None)
 
+    supply_block = _invest_check_token_amount_within_supply(
+        accumulated,
+        property_id=property_id,
+        resolved_prop=resolved_prop,
+        db=db,
+    )
+    if supply_block is not None:
+        return supply_block
+
     missing = [f for f in _INVEST_REQUIRED if f not in accumulated or not accumulated.get(f)]
     submit = bool(args.get("submit"))
     next_field = missing[0] if missing else None
@@ -6073,9 +6158,16 @@ async def _fill_invest_property(args: dict, _user: AuthUser, db: Any) -> ToolRes
                 data={"filled": accumulated, "missing": ["token_amount"], "next_field": "token_amount"},
             )
 
-        property_row = resolved_prop
-        if db is not None:
-            property_row = _load_invest_property_row(db, property_id) or property_row
+        property_row = _invest_property_row_for_supply_check(db, property_id, resolved_prop)
+        supply_block = _invest_check_token_amount_within_supply(
+            accumulated,
+            property_id=property_id,
+            resolved_prop=property_row,
+            db=db,
+        )
+        if supply_block is not None:
+            return supply_block
+
         if not property_row:
             return ToolResult(
                 ok=False,

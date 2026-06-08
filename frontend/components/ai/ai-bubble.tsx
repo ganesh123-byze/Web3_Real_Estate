@@ -348,7 +348,7 @@ function splitSummaryCardContent(content: string): { title: string; body: string
   const trimmed = content.trim();
   const lines = trimmed.split("\n");
   const first = lines[0]?.trim() ?? "";
-  if (/^(yield & returns summary|investment summary|rent payment summary)$/i.test(first)) {
+  if (/^(yield & returns summary|property summary|investment summary|rent payment summary)$/i.test(first)) {
     return { title: first, body: lines.slice(1).join("\n").trim() };
   }
   return { title: "Yield & returns summary", body: trimmed };
@@ -356,12 +356,14 @@ function splitSummaryCardContent(content: string): { title: string; body: string
 
 function YieldSummaryCard({ content }: { content: string }) {
   const { title, body } = splitSummaryCardContent(content);
-  const metrics = parseMetricRows(body).slice(0, 5);
-  const heading = /^investment summary$/i.test(title)
-    ? "Investment summary"
-    : /^rent payment summary$/i.test(title)
-      ? "Rent payment summary"
-      : "Yield & returns summary";
+  const metrics = parseMetricRows(body).slice(0, 8);
+  const heading = /^property summary$/i.test(title)
+    ? "Property summary"
+    : /^investment summary$/i.test(title)
+      ? "Investment summary"
+      : /^rent payment summary$/i.test(title)
+        ? "Rent payment summary"
+        : "Yield & returns summary";
 
   return (
     <section className="w-full min-w-0 overflow-hidden rounded-[16px] bg-white px-4 py-3 text-[14px] text-[#1A1A2E] dark:border dark:border-[#1e2947] dark:bg-[#070b1a] dark:text-slate-100">
@@ -457,9 +459,12 @@ function isRichAssistantContent(content: string) {
   return (
     isMarketplaceCatalogContent(content) ||
     normalizedContent.includes("yield & returns summary") ||
+    normalizedContent.includes("property summary") ||
     normalizedContent.includes("investment summary") ||
     normalizedContent.includes("rent payment summary") ||
     normalizedContent.includes("tokens available") ||
+    normalizedContent.includes("token buying") ||
+    normalizedContent.includes("total amount") ||
     normalizedContent.includes("price per token") ||
     normalizedContent.includes("investment target:") ||
     normalizedContent.includes("portfolio insight") ||
@@ -493,7 +498,7 @@ function normalizeInvestSummaryForCard(content: string): string {
         rows.push(`Location: ${part}`);
       }
     }
-    return ["Investment summary", ...rows.filter(Boolean)].join("\n");
+    return ["Property summary", ...rows.filter(Boolean)].join("\n");
   }
   return normalized;
 }
@@ -527,11 +532,8 @@ function AssistantMessageContent({ content }: { content: string }) {
   if (
     (normalizedContent.includes("yield & returns summary") &&
       !isMarketplaceCatalogContent(displayContent)) ||
+    normalizedContent.includes("property summary") ||
     normalizedContent.includes("investment summary") ||
-    (normalizedContent.includes("tokens available") &&
-      !isMarketplaceCatalogContent(displayContent)) ||
-    (normalizedContent.includes("price per token") &&
-      !isMarketplaceCatalogContent(displayContent)) ||
     normalizedContent.includes("investment target:")
   ) {
     const investConfirmationPrompt = displayContent

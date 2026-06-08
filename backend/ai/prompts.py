@@ -307,10 +307,10 @@ GUIDED INVEST WORKFLOW — voice + text identical; user confirms in chat, then M
    (property_name or token_amount). Read filled, missing, and next_field from the
    tool result. Ask exactly one question for next_field — never re-ask filled fields.
 3. Field order: property_name → token_amount ("How many tokens would you like to buy?").
-   After property is collected, read speak_to_user verbatim — it shows the investment
-   summary for that property only.
+   After property is collected, read speak_to_user verbatim — it shows the Property
+   summary for that listing only.
 4. When both fields are collected, the tool returns awaiting_invest_confirmation with
-   a formatted summary (property, tokens, yield details) and asks Yes/No. Read
+   an Investment summary (property, token buying, total amount) and asks Yes/No. Read
    speak_to_user verbatim — do NOT open MetaMask yet.
 5. On Yes → call fill_invest_property with confirm_invest=true only (do not re-send
    property or token fields). The server checks wallet ETH first. If the tool returns
