@@ -128,12 +128,17 @@ export default function InvestorPortfolioPage() {
           </Card>
 
           <Card>
-            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <CardHeader className="relative pr-24">
               <div>
                 <CardTitle>Holdings</CardTitle>
                 <CardDescription>Ownership positions reconciled from SecurityToken balances.</CardDescription>
               </div>
-              <ViewModeToggle value={holdingsView} onChange={setHoldingsView} ariaLabel="Holdings view" />
+              <ViewModeToggle
+                value={holdingsView}
+                onChange={setHoldingsView}
+                ariaLabel="Holdings view"
+                className="absolute right-5 top-5"
+              />
             </CardHeader>
             <CardContent>
               {portfolio.isLoading || properties.isLoading ? (
@@ -166,12 +171,17 @@ export default function InvestorPortfolioPage() {
         ) : null}
 
         <Card>
-          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <CardHeader className="relative pr-24">
             <div>
               <CardTitle>Wallet Tokens</CardTitle>
               <CardDescription>Live token balances read from deployed property contracts.</CardDescription>
             </div>
-            <ViewModeToggle value={walletTokenView} onChange={setWalletTokenView} ariaLabel="Wallet token view" />
+            <ViewModeToggle
+              value={walletTokenView}
+              onChange={setWalletTokenView}
+              ariaLabel="Wallet token view"
+              className="absolute right-5 top-5"
+            />
           </CardHeader>
           <CardContent>
             {balances.isLoading ? (

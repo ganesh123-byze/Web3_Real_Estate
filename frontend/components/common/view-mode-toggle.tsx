@@ -30,7 +30,7 @@ export function ViewModeToggle({
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        "inline-flex w-full rounded-xl border border-border bg-muted/40 p-1 shadow-sm sm:w-auto",
+        "ml-auto inline-flex w-fit shrink-0 rounded-full bg-muted/45 p-0.5",
         className,
       )}
     >
@@ -41,27 +41,28 @@ export function ViewModeToggle({
           <button
             key={optionValue}
             type="button"
+            aria-label={`${label} view`}
             aria-pressed={active}
+            title={`${label} view`}
             onClick={() => onChange(optionValue)}
             className={cn(
-              "relative flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-colors sm:flex-none",
+              "relative grid h-7 w-7 place-items-center rounded-full transition-colors",
               active ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
             {active ? (
               <motion.span
                 layoutId={`${id}-active-view-mode`}
-                className="absolute inset-0 rounded-lg bg-primary"
+                className="absolute inset-0 rounded-full bg-primary"
                 transition={{ type: "spring", stiffness: 420, damping: 34 }}
               />
             ) : null}
             <motion.span
-              className="relative z-10 inline-flex items-center gap-1.5"
+              className="relative z-10 inline-flex items-center"
               animate={active ? { scale: 1.04, y: -1 } : { scale: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 380, damping: 22 }}
             >
               <Icon className="h-3.5 w-3.5" />
-              <span>{label}</span>
             </motion.span>
           </button>
         );

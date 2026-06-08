@@ -26,12 +26,17 @@ export function InvestorEarningsAndClaimSections() {
   return (
     <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <CardHeader className="relative pr-24">
           <div>
             <CardTitle>Earnings by Property</CardTitle>
             <CardDescription>Aggregated rental accruals per property.</CardDescription>
           </div>
-          <ViewModeToggle value={earningsView} onChange={setEarningsView} ariaLabel="Earnings by property view" />
+          <ViewModeToggle
+            value={earningsView}
+            onChange={setEarningsView}
+            ariaLabel="Earnings by property view"
+            className="absolute right-5 top-5"
+          />
         </CardHeader>
         <CardContent>
           {distributions.isLoading ? (
@@ -87,12 +92,17 @@ export function InvestorEarningsAndClaimSections() {
       </Card>
 
       <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <CardHeader className="relative pr-24">
           <div>
             <CardTitle>Claim History</CardTitle>
             <CardDescription>Completed withdrawal transactions.</CardDescription>
           </div>
-          <ViewModeToggle value={claimHistoryView} onChange={setClaimHistoryView} ariaLabel="Claim history view" />
+          <ViewModeToggle
+            value={claimHistoryView}
+            onChange={setClaimHistoryView}
+            ariaLabel="Claim history view"
+            className="absolute right-5 top-5"
+          />
         </CardHeader>
         <CardContent>
           {history.isLoading ? (
