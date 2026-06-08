@@ -25,6 +25,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { formatChatStatText } from "@/lib/chat-stat-format";
 import { cn } from "@/lib/utils";
 import { HighlightedAssistantText } from "@/lib/ai/assistant-text";
+import { scrollChatTranscriptToBottom } from "@/lib/ai/chat-transcript-scroll";
+import { useChatTranscriptScroll } from "@/lib/ai/use-chat-transcript-scroll";
 import { useAgentStore } from "@/lib/ai/agent-store";
 import type { AIState } from "@/lib/ai/types";
 import { unlockAudio } from "@/lib/ai/voice";
@@ -717,6 +719,7 @@ export function AIBubble() {
   const pathname = usePathname();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
   const restoreComposerFocusRef = useRef(false);
   const store = useAgentStore();
   const { open, messages, state, error, voiceMode, micLevel, aiSpeaking } = store;
@@ -725,11 +728,24 @@ export function AIBubble() {
   const quickActions = useMemo(() => getQuickActions(role), [role]);
   const panelTitle = `EstateChain Copilot - ${getChatRoleLabel(role)}`;
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, state]);
+  const transcriptScrollRevision = useMemo(() => {
+    const last = messages[messages.length - 1];
+    return `${messages.length}:${last?.content?.length ?? 0}:${state}:${error ?? ""}`;
+  }, [messages, state, error]);
+
+  useChatTranscriptScroll({
+    containerRef: scrollRef,
+    endRef: transcriptEndRef,
+    active: open,
+    revision: transcriptScrollRevision,
+  });
+
+  const scrollTranscriptToBottom = useCallback(() => {
+    scrollChatTranscriptToBottom({
+      container: scrollRef.current,
+      endMarker: transcriptEndRef.current,
+    });
+  }, []);
 
   useEffect(() => {
     if (open) unlockAudio();
@@ -852,6 +868,7 @@ export function AIBubble() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.97 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            onAnimationComplete={scrollTranscriptToBottom}
             className={cn(
               "pointer-events-auto relative flex flex-col overflow-hidden",
               showWelcome
@@ -1008,6 +1025,7 @@ export function AIBubble() {
                     <span className="font-semibold">Error:</span> {error}
                   </div>
                 )}
+                <div ref={transcriptEndRef} aria-hidden className="h-px w-full shrink-0" />
               </div>
             </div>
 
