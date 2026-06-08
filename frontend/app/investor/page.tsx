@@ -59,6 +59,7 @@ export default function InvestorDashboardPage() {
   const claimableProperties = claimable.data?.properties ?? [];
   const nextClaim = claimableProperties[0];
   const [selectedClaim, setSelectedClaim] = useState<ClaimableRewardProperty | null>(null);
+  const recentTransactions = (transactions.data ?? []).slice(0, 4);
   useInvestorClaimRewardsListener(claimableProperties, setSelectedClaim);
 
   return (
@@ -106,7 +107,7 @@ export default function InvestorDashboardPage() {
                   className="min-h-[210px] border-0"
                 />
               ) : (
-                holdings.slice(0, 4).map((holding) => {
+                holdings.slice(0, 3).map((holding) => {
                   const property = propertyMap.get(Number(holding.property_id));
                   const pct = ownershipPercent(holding, property);
                   return (
@@ -187,25 +188,29 @@ export default function InvestorDashboardPage() {
                 <Link href="/investor/transactions">View All</Link>
               </Button>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent>
               {transactions.isLoading ? (
-                Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
-              ) : (transactions.data ?? []).length === 0 ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+                </div>
+              ) : recentTransactions.length === 0 ? (
                 <EmptyState
                   title="No activity yet"
                   description="Your latest indexed transactions will appear here."
                   className="min-h-[210px] border-0"
                 />
               ) : (
-                (transactions.data ?? []).slice(0, 5).map((tx) => (
-                  <a key={tx.tx_hash} href={txExplorerUrl(tx.tx_hash)} target="_blank" rel="noreferrer" className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2 transition-colors hover:bg-muted">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{tx.action_label}</div>
-                      <div className="text-xs text-muted-foreground">{tx.property_name ?? "Platform"} · {formatDateTime(tx.timestamp)}</div>
-                    </div>
-                    <div className={cn("text-right text-xs font-medium", tx.type === "REWARDS_CLAIMED" ? "text-success" : "text-foreground")}>{formatAmountWithUnit(tx.display_amount, tx.amount_unit)}</div>
-                  </a>
-                ))
+                <div className="max-h-[260px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+                  {recentTransactions.map((tx) => (
+                    <a key={tx.tx_hash} href={txExplorerUrl(tx.tx_hash)} target="_blank" rel="noreferrer" className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2 transition-colors hover:bg-muted">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">{tx.action_label}</div>
+                        <div className="text-xs text-muted-foreground">{tx.property_name ?? "Platform"} · {formatDateTime(tx.timestamp)}</div>
+                      </div>
+                      <div className={cn("shrink-0 text-right text-xs font-medium", tx.type === "REWARDS_CLAIMED" ? "text-success" : "text-foreground")}>{formatAmountWithUnit(tx.display_amount, tx.amount_unit)}</div>
+                    </a>
+                  ))}
+                </div>
               )}
             </CardContent>
         </Card>

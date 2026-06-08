@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Building2, ChevronDown, Coins, History, Wallet } from "lucide-react";
+import { type MouseEvent, useMemo, useState } from "react";
+import { Building2, Coins, History, Wallet } from "lucide-react";
 import { motion } from "framer-motion";
 import { InvestorTopbar } from "@/components/investor/investor-topbar";
 import { InvestorKpiCard } from "@/components/investor/investor-kpi-card";
@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState } from "@/components/common/empty";
+import { type ViewMode, ViewModeToggle } from "@/components/common/view-mode-toggle";
 import { InvestmentSimulationWorkbench } from "@/components/investor/investment-simulation-workbench";
 import { useInvestorYieldSummary, usePortfolio, useProperties, useWalletBalances } from "@/lib/queries";
 import { cn, formatCurrency, formatEth, shortAddress } from "@/lib/utils";
@@ -19,7 +20,15 @@ import { useCurrentWallet } from "@/components/investor/use-current-wallet";
 import type { PortfolioItem, Property, WalletBalanceToken } from "@/lib/types";
 
 const ALLOCATION_COLORS = ["#4f46e5", "#22c6e8", "#8b5cf6", "#06b6d4", "#a855f7"];
-type PortfolioView = "cards" | "table";
+type PortfolioView = ViewMode;
+type AllocationHover = {
+  key: string;
+  label: string;
+  value: string;
+  x: number;
+  y: number;
+  color: string;
+};
 
 export default function InvestorPortfolioPage() {
   const wallet = useCurrentWallet();
@@ -113,17 +122,7 @@ export default function InvestorPortfolioPage() {
                   className="min-h-[260px] border-0"
                 />
               ) : (
-                <>
-                  <PortfolioAllocationDonut items={chartData} />
-                  <div className="space-y-1.5">
-                    {chartData.map((item, index) => (
-                      <div key={item.id} className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full" style={{ background: ALLOCATION_COLORS[index % ALLOCATION_COLORS.length] }} /> {item.name}</div>
-                        <span className="tabular-nums text-muted-foreground">{formatCurrency(item.value)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
+                <PortfolioAllocationDonut items={chartData} />
               )}
             </CardContent>
           </Card>
@@ -134,7 +133,7 @@ export default function InvestorPortfolioPage() {
                 <CardTitle>Holdings</CardTitle>
                 <CardDescription>Ownership positions reconciled from SecurityToken balances.</CardDescription>
               </div>
-              <PortfolioViewSelect value={holdingsView} onChange={setHoldingsView} ariaLabel="Holdings view" />
+              <ViewModeToggle value={holdingsView} onChange={setHoldingsView} ariaLabel="Holdings view" />
             </CardHeader>
             <CardContent>
               {portfolio.isLoading || properties.isLoading ? (
@@ -172,7 +171,7 @@ export default function InvestorPortfolioPage() {
               <CardTitle>Wallet Tokens</CardTitle>
               <CardDescription>Live token balances read from deployed property contracts.</CardDescription>
             </div>
-            <PortfolioViewSelect value={walletTokenView} onChange={setWalletTokenView} ariaLabel="Wallet token view" />
+            <ViewModeToggle value={walletTokenView} onChange={setWalletTokenView} ariaLabel="Wallet token view" />
           </CardHeader>
           <CardContent>
             {balances.isLoading ? (
@@ -199,37 +198,6 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
 
 function formatTokenBalance(value: WalletBalanceToken["balance"]) {
   return Number(value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 4 });
-}
-
-function PortfolioViewSelect({
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  value: PortfolioView;
-  onChange: (value: PortfolioView) => void;
-  ariaLabel: string;
-}) {
-  return (
-    <div className="relative w-full sm:w-[180px] sm:shrink-0">
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as PortfolioView)}
-        aria-label={ariaLabel}
-        className={cn(
-          "h-9 w-full cursor-pointer appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm shadow-sm",
-          "text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        )}
-      >
-        <option value="cards">Card View</option>
-        <option value="table">Table View</option>
-      </select>
-      <ChevronDown
-        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-        aria-hidden
-      />
-    </div>
-  );
 }
 
 function HoldingCards({
@@ -369,45 +337,132 @@ function PortfolioAllocationDonut({
 }: {
   items: Array<{ id: number | string; name: string; value: number }>;
 }) {
+  const [hover, setHover] = useState<AllocationHover | null>(null);
   const totalValue = items.reduce((sum, item) => sum + item.value, 0);
   const radius = 65;
   const strokeWidth = 28;
   const circumference = 2 * Math.PI * radius;
+  const indexedItems = items.map((item, index) => ({
+    ...item,
+    key: String(item.id),
+    color: ALLOCATION_COLORS[index % ALLOCATION_COLORS.length],
+    percent: totalValue > 0 ? (item.value / totalValue) * 100 : 0,
+  }));
   let offset = 0;
 
-  return (
-    <div className="mx-auto grid h-[220px] w-full max-w-[336px] place-items-center">
-      <svg
-        className="h-[220px] w-full overflow-visible"
-        viewBox="0 0 220 220"
-        role="img"
-        aria-label="Portfolio allocation by property"
-      >
-        {items.map((item, index) => {
-          const share = totalValue > 0 ? item.value / totalValue : 0;
-          const dash = Math.max(0, share * circumference - 4);
-          const gap = circumference - dash;
-          const rotation = -90 + (offset / circumference) * 360;
-          offset += share * circumference;
+  function updateHover(
+    event: MouseEvent<SVGCircleElement>,
+    item: (typeof indexedItems)[number],
+  ) {
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    if (!rect) return;
+    setHover({
+      key: item.key,
+      label: item.name,
+      value: `${item.percent.toFixed(item.percent >= 10 ? 0 : 1)}%`,
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      color: item.color,
+    });
+  }
 
-          return (
-            <circle
-              key={item.id}
-              cx="110"
-              cy="110"
-              r={radius}
-              fill="none"
-              stroke={ALLOCATION_COLORS[index % ALLOCATION_COLORS.length]}
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${dash} ${gap}`}
-              strokeLinecap="round"
-              transform={`rotate(${rotation} 110 110)`}
-            >
-              <title>{item.name}: {formatCurrency(item.value)}</title>
-            </circle>
-          );
-        })}
-      </svg>
+  return (
+    <div className="grid gap-4 lg:grid-cols-[minmax(190px,0.9fr)_minmax(180px,1.1fr)] lg:items-center">
+      <div className="relative mx-auto h-[230px] w-full max-w-[260px]">
+        <svg
+          className="h-[230px] w-full overflow-visible"
+          viewBox="0 0 220 220"
+          role="img"
+          aria-label="Portfolio allocation by property"
+          onMouseLeave={() => setHover(null)}
+        >
+          <circle
+            cx="110"
+            cy="110"
+            r={radius}
+            fill="none"
+            stroke="hsl(var(--muted))"
+            strokeWidth={strokeWidth}
+            opacity="0.45"
+          />
+          {indexedItems.map((item) => {
+            if (item.percent <= 0) return null;
+            const share = item.percent / 100;
+            const dash = Math.min(circumference, Math.max(share * circumference - 4, 6));
+            const gap = circumference - dash;
+            const rotation = -90 + (offset / circumference) * 360;
+            offset += share * circumference;
+
+            return (
+              <circle
+                key={item.key}
+                className="cursor-pointer transition-all duration-150"
+                cx="110"
+                cy="110"
+                r={radius}
+                fill="none"
+                stroke={item.color}
+                strokeWidth={hover?.key === item.key ? strokeWidth + 4 : strokeWidth}
+                strokeDasharray={`${dash} ${gap}`}
+                strokeLinecap="round"
+                opacity={hover && hover.key !== item.key ? 0.58 : 1}
+                transform={`rotate(${rotation} 110 110)`}
+                onMouseEnter={(event) => updateHover(event, item)}
+                onMouseMove={(event) => updateHover(event, item)}
+              >
+                <title>{item.name}: {item.percent.toFixed(item.percent >= 10 ? 0 : 1)}%</title>
+              </circle>
+            );
+          })}
+        </svg>
+        <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total</div>
+            <div className="text-sm font-semibold tabular-nums">{formatCurrency(totalValue)}</div>
+          </div>
+        </div>
+        {hover ? (
+          <div
+            className="pointer-events-none absolute z-20 rounded-xl border border-border bg-popover px-3 py-2 text-xs shadow-xl"
+            style={{
+              left: hover.x,
+              top: hover.y,
+              transform: "translate(-50%, calc(-100% - 10px))",
+            }}
+          >
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ background: hover.color }} />
+              <span className="font-medium text-popover-foreground">{hover.label}</span>
+              <span className="font-semibold tabular-nums text-popover-foreground">{hover.value}</span>
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="max-h-[230px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+        {indexedItems.map((item) => (
+          <div
+            key={item.key}
+            className={cn(
+              "rounded-lg px-2 py-1 transition-opacity",
+              hover && hover.key !== item.key ? "opacity-60" : "opacity-100",
+            )}
+          >
+            <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.color }} />
+                <span className="truncate font-medium text-foreground">{item.name}</span>
+              </div>
+              <span className="shrink-0 font-semibold tabular-nums">{item.percent.toFixed(0)}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-muted">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${Math.min(item.percent, 100)}%`, background: item.color }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
