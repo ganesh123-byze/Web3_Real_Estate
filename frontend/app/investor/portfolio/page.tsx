@@ -59,12 +59,14 @@ export default function InvestorPortfolioPage() {
   const metrics = buildInvestorMetrics(holdings, properties.data ?? []);
   const chartData = holdings.map((h) => {
     const property = propertyMap.get(Number(h.property_id));
+    const ownershipPct = ownershipPercent(h, property);
     return {
       id: h.property_id,
       name: h.property_name.length > 18 ? `${h.property_name.slice(0, 16)}…` : h.property_name,
       value: holdingValue(h, property),
+      ownershipPct,
     };
-  }).filter((item) => item.value > 0);
+  }).filter((item) => item.value > 0 && item.ownershipPct > 0);
 
   const simulationSlices = useMemo(
     () => chartData.filter((c) => c.value > 0).map((c) => ({ id: c.id, name: c.name, value: c.value })),
@@ -110,7 +112,7 @@ export default function InvestorPortfolioPage() {
           <Card>
             <CardHeader>
               <CardTitle>Allocation</CardTitle>
-              <CardDescription>Estimated value share by property.</CardDescription>
+              <CardDescription>Ownership share by property.</CardDescription>
             </CardHeader>
             <CardContent>
               {portfolio.isLoading || properties.isLoading ? (
@@ -345,18 +347,18 @@ function WalletTokenTable({ tokens }: { tokens: WalletBalanceToken[] }) {
 function PortfolioAllocationDonut({
   items,
 }: {
-  items: Array<{ id: number | string; name: string; value: number }>;
+  items: Array<{ id: number | string; name: string; value: number; ownershipPct: number }>;
 }) {
   const [hover, setHover] = useState<AllocationHover | null>(null);
   const totalValue = items.reduce((sum, item) => sum + item.value, 0);
-  const radius = 65;
+  const radius = 78;
   const strokeWidth = 28;
   const circumference = 2 * Math.PI * radius;
   const indexedItems = items.map((item, index) => ({
     ...item,
     key: String(item.id),
     color: ALLOCATION_COLORS[index % ALLOCATION_COLORS.length],
-    percent: totalValue > 0 ? (item.value / totalValue) * 100 : 0,
+    percent: item.ownershipPct,
   }));
   let offset = 0;
 
@@ -369,7 +371,7 @@ function PortfolioAllocationDonut({
     setHover({
       key: item.key,
       label: item.name,
-      value: `${item.percent.toFixed(item.percent >= 10 ? 0 : 1)}%`,
+      value: formatOwnershipPercent(item.percent),
       x: event.clientX - rect.left,
       y: event.clientY - rect.top,
       color: item.color,
@@ -377,18 +379,18 @@ function PortfolioAllocationDonut({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(190px,0.9fr)_minmax(180px,1.1fr)] lg:items-center">
-      <div className="relative mx-auto h-[230px] w-full max-w-[260px]">
+    <div className="grid min-w-0 gap-3 sm:grid-cols-[200px_minmax(0,1fr)] sm:items-center">
+      <div className="relative mx-auto h-[200px] w-[200px]">
         <svg
-          className="h-[230px] w-full overflow-visible"
-          viewBox="0 0 220 220"
+          className="h-[200px] w-[200px] overflow-visible"
+          viewBox="0 0 200 200"
           role="img"
-          aria-label="Portfolio allocation by property"
+          aria-label="Portfolio ownership allocation by property"
           onMouseLeave={() => setHover(null)}
         >
           <circle
-            cx="110"
-            cy="110"
+            cx="100"
+            cy="100"
             r={radius}
             fill="none"
             stroke="hsl(var(--muted))"
@@ -398,7 +400,7 @@ function PortfolioAllocationDonut({
           {indexedItems.map((item) => {
             if (item.percent <= 0) return null;
             const share = item.percent / 100;
-            const dash = Math.min(circumference, Math.max(share * circumference - 4, 6));
+            const dash = Math.min(circumference, Math.max(share * circumference - 3, 16));
             const gap = circumference - dash;
             const rotation = -90 + (offset / circumference) * 360;
             offset += share * circumference;
@@ -407,8 +409,8 @@ function PortfolioAllocationDonut({
               <circle
                 key={item.key}
                 className="cursor-pointer transition-all duration-150"
-                cx="110"
-                cy="110"
+                cx="100"
+                cy="100"
                 r={radius}
                 fill="none"
                 stroke={item.color}
@@ -416,11 +418,11 @@ function PortfolioAllocationDonut({
                 strokeDasharray={`${dash} ${gap}`}
                 strokeLinecap="round"
                 opacity={hover && hover.key !== item.key ? 0.58 : 1}
-                transform={`rotate(${rotation} 110 110)`}
+                transform={`rotate(${rotation} 100 100)`}
                 onMouseEnter={(event) => updateHover(event, item)}
                 onMouseMove={(event) => updateHover(event, item)}
               >
-                <title>{item.name}: {item.percent.toFixed(item.percent >= 10 ? 0 : 1)}%</title>
+                <title>{item.name}: {formatOwnershipPercent(item.percent)}</title>
               </circle>
             );
           })}
@@ -453,16 +455,16 @@ function PortfolioAllocationDonut({
           <div
             key={item.key}
             className={cn(
-              "rounded-lg px-2 py-1 transition-opacity",
+              "min-w-0 rounded-lg px-2 py-1 transition-opacity",
               hover && hover.key !== item.key ? "opacity-60" : "opacity-100",
             )}
           >
-            <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+            <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2 text-xs">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.color }} />
                 <span className="truncate font-medium text-foreground">{item.name}</span>
               </div>
-              <span className="shrink-0 font-semibold tabular-nums">{item.percent.toFixed(0)}%</span>
+              <span className="shrink-0 font-semibold tabular-nums">{formatOwnershipPercent(item.percent)}</span>
             </div>
             <div className="h-1.5 rounded-full bg-muted">
               <div
@@ -475,4 +477,8 @@ function PortfolioAllocationDonut({
       </div>
     </div>
   );
+}
+
+function formatOwnershipPercent(percentValue: number): string {
+  return `${percentValue >= 10 ? percentValue.toFixed(0) : percentValue.toFixed(1)}%`;
 }
