@@ -106,6 +106,7 @@ frontend/public/**/*.wasm
 
 # Generated per deploy / dev (see scripts/generate-runtime-config.js)
 frontend/runtime-config.js
+frontend/public/runtime-config.js
 
 # ── Hardhat / Solidity ───────────────────────────────────────────────────────
 cache/

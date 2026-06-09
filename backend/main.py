@@ -10,9 +10,9 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai.checkpointer import close_checkpointer, setup_checkpointer
 from backend.api.routes import router as api_router
+from backend.config.cors_policy import cors_headers_for_request
 from backend.config.settings import (
-    get_cors_origin_regex,
-    get_cors_origins,
+    get_cors_policy,
     validate_required_settings,
     LOG_LEVEL,
     RUN_INDEXER_IN_WEB,
@@ -66,25 +66,49 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Real Estate Web3 Backend", lifespan=lifespan)
 
-allowed_origins = get_cors_origins()
-allowed_origin_regex = get_cors_origin_regex()
-if allowed_origins or allowed_origin_regex:
+_cors_policy = get_cors_policy()
+if _cors_policy.allowed_origins or _cors_policy.allowed_origin_regex:
+    logging.getLogger(__name__).info(
+        "CORS enabled: %d explicit origin(s)%s",
+        len(_cors_policy.allowed_origins),
+        f", regex={_cors_policy.allowed_origin_regex!r}"
+        if _cors_policy.allowed_origin_regex
+        else "",
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed_origins,
-        allow_origin_regex=allowed_origin_regex,
+        allow_origins=list(_cors_policy.allowed_origins),
+        allow_origin_regex=_cors_policy.allowed_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
 
+def _json_with_cors(
+    request: Request,
+    content: dict,
+    *,
+    status_code: int,
+) -> JSONResponse:
+    """Ensure API errors still carry CORS headers (browser would otherwise hide the real fault)."""
+    response = JSONResponse(content, status_code=status_code)
+    for key, value in cors_headers_for_request(_cors_policy, request.headers.get("origin")).items():
+        response.headers[key] = value
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    detail = exc.detail
+    content = detail if isinstance(detail, dict) else {"detail": detail}
+    return _json_with_cors(request, content, status_code=exc.status_code)
+
+
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    if isinstance(exc, HTTPException):
-        raise exc
     logging.exception("Unhandled exception during request: %s", exc)
-    return JSONResponse({"detail": "Internal server error."}, status_code=500)
+    return _json_with_cors(request, {"detail": "Internal server error."}, status_code=500)
 
 
 @app.exception_handler(RequestValidationError)
@@ -100,7 +124,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             detail = f"{loc}: {msg}"
         elif msg:
             detail = msg
-    return JSONResponse({"detail": detail, "errors": errors}, status_code=422)
+    return _json_with_cors(
+        request,
+        {"detail": detail, "errors": errors},
+        status_code=422,
+    )
 
 
 if FRONTEND_DIR.exists():

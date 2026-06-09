@@ -112,6 +112,7 @@ from backend.ai.investor_guards import (
     wants_to_begin_invest_workflow,
     parse_invest_token_amount,
 )
+from backend.ai.owner_analytics_aggregate import fetch_owner_investment_volume
 from backend.ai.owner_guards import (
     has_owner_analytics_intent,
     has_owner_browse_intent,
@@ -2212,17 +2213,7 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
     )
     recent_transactions = [_format_transaction(r) for r in (cursor.fetchall() or [])]
 
-    cursor.execute(
-        f"""
-        SELECT COUNT(*) AS n, COALESCE(SUM(CAST(t.amount_spent AS DECIMAL(36,18))), 0) AS spent
-        FROM transactions t
-        {active_property_join("p.id = t.property_id")}
-        WHERE LOWER(p.owner_wallet) = LOWER(%s)
-          AND UPPER(t.type) IN ('INVESTMENT_FUNDED', 'INVESTMENT_COMPLETED')
-        """,
-        (owner_wallet,),
-    )
-    inv_agg = cursor.fetchone() or {}
+    inv_count, inv_volume_wei = fetch_owner_investment_volume(cursor, owner_wallet)
 
     property_perf = sorted(
         [
@@ -2253,8 +2244,8 @@ def _build_owner_analytics_overview(cursor, user: AuthUser) -> dict:
             "rent_payments_count": int(rent_pay.get("payments_count") or 0),
             "total_rent_distributed_eth": _eth(int(rent_dist.get("distributed") or 0)),
             "rent_distributions_count": int(rent_dist.get("distributions_count") or 0),
-            "total_investments_recorded": int(inv_agg.get("n") or 0),
-            "total_investment_volume_eth": str(inv_agg.get("spent") or "0"),
+            "total_investments_recorded": inv_count,
+            "total_investment_volume_eth": _eth(inv_volume_wei),
             "scope": "owned_properties_only",
         },
         "my_portfolio": {

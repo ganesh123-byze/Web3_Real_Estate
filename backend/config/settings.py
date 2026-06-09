@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from pathlib import Path
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlparse, urlunparse
 
@@ -97,37 +96,24 @@ def get_admin_database_url() -> str:
     return urlunparse(parsed._replace(path="/postgres"))
 
 
+def get_cors_policy():
+    from backend.config.cors_policy import build_cors_policy
+
+    return build_cors_policy(
+        cors_origins_env=CORS_ORIGINS,
+        frontend_url=FRONTEND_URL,
+        backend_url=BACKEND_URL,
+        cors_origin_regex_env=CORS_ORIGIN_REGEX,
+        deploy_env=DEPLOY_ENV,
+    )
+
+
 def get_cors_origins() -> list[str]:
-    origins = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
-    if FRONTEND_URL:
-        origins.append(FRONTEND_URL.rstrip("/"))
-    if BACKEND_URL:
-        origins.append(BACKEND_URL.rstrip("/"))
-    if not origins and DEPLOY_ENV != "production":
-        origins.extend([
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-        ])
-    if DEPLOY_ENV == "production" and not origins:
-        raise RuntimeError("CORS_ORIGINS or FRONTEND_URL must be configured in production")
-    return list(dict.fromkeys(origin.rstrip("/") for origin in origins))
+    return list(get_cors_policy().allowed_origins)
 
 
 def get_cors_origin_regex() -> str | None:
-    if CORS_ORIGIN_REGEX:
-        return CORS_ORIGIN_REGEX
-    if not FRONTEND_URL:
-        return None
-    host = (urlparse(FRONTEND_URL).hostname or "").lower()
-    if not host.endswith(".vercel.app"):
-        return None
-    # Production + preview URLs for the same Vercel project (e.g. *-team.vercel.app).
-    slug = host[: -len(".vercel.app")]
-    if not slug:
-        return None
-    return rf"https://{re.escape(slug)}(-[\w-]+)?\.vercel\.app"
+    return get_cors_policy().allowed_origin_regex
 
 WEB3_PROVIDER_URI = os.getenv("WEB3_PROVIDER_URI", SEPOLIA_RPC_URL)
 DEPLOYER_PRIVATE_KEY = os.getenv("DEPLOYER_PRIVATE_KEY", "")
